@@ -33,6 +33,7 @@ from ._spec import (
 )
 
 if TYPE_CHECKING:
+    from ._batch import Batched
     from ._check import Report
 
 P = ParamSpec("P")
@@ -434,39 +435,7 @@ class Fn(Generic[P, R]):
         """
         __tracebackhide__ = True
         ba = self._sig.bind(*args, **kwargs)
-        leaves: list[tuple[Spec, Any, str]] = []
-
-        def collect(spec: Spec, v: Any, path: str) -> Any:
-            leaves.append((spec, v, path))
-            return v
-
-        self._walk(ba.arguments, collect)
-        batches: list[tuple[Any, ...]] = []
-        for spec, v, path in leaves:
-            core = spec.core_rank  # type: ignore[attr-defined]
-            if core is None:
-                raise TypeError(
-                    f"{self.name}.lift(): `{path}: {spec}` has a variadic shape, so its "
-                    f"batch axes cannot be told apart from its own axes."
-                )
-            if isinstance(spec, KeySpec):
-                shape = KeySpec.batch_shape(v) or ()
-            else:
-                shape = tuple(jnp.shape(v))
-            nb = len(shape) - core
-            batches.append(shape[:nb] if nb > 0 else ())
-        try:
-            bshape = tuple(jnp.broadcast_shapes(*batches)) if batches else ()
-        except ValueError:
-            listing = "\n".join(
-                f"    {path}: {describe(v)}  = batch {b} + {spec}"
-                for (spec, v, path), b in zip(leaves, batches)
-                if b
-            )
-            raise ShapeError(
-                f"{self.name}.lift(): the batch axes of the arguments do not broadcast.\n\n"
-                f"{listing}\n\n    {self.signature}"
-            ) from None
+        leaves, batches, bshape = self._batch_plan(ba.arguments, "lift")
         if not bshape:
             return self(*args, **kwargs)
 
@@ -510,6 +479,62 @@ class Fn(Generic[P, R]):
             else:
                 g = jax.vmap(g, in_axes=in_axes, axis_size=bshape[level])
         return g(*prepared)
+
+    def _batch_plan(
+        self, arguments: Any, what: str
+    ) -> tuple[list[tuple[Spec, Any, str]], list[tuple[Any, ...]], tuple[Any, ...]]:
+        """Split each array argument's shape into batch axes + declared axes."""
+        leaves: list[tuple[Spec, Any, str]] = []
+
+        def collect(spec: Spec, v: Any, path: str) -> Any:
+            leaves.append((spec, v, path))
+            return v
+
+        self._walk(arguments, collect)
+        batches: list[tuple[Any, ...]] = []
+        for spec, v, path in leaves:
+            core = spec.core_rank  # type: ignore[attr-defined]
+            if core is None:
+                raise TypeError(
+                    f"{self.name}.{what}(): `{path}: {spec}` has a variadic shape, so its "
+                    f"batch axes cannot be told apart from its own axes."
+                )
+            if isinstance(spec, KeySpec):
+                shape = KeySpec.batch_shape(v) or ()
+            else:
+                shape = tuple(jnp.shape(v))
+            nb = len(shape) - core
+            batches.append(shape[:nb] if nb > 0 else ())
+        try:
+            bshape = tuple(jnp.broadcast_shapes(*batches)) if batches else ()
+        except ValueError:
+            listing = "\n".join(
+                f"    {path}: {describe(v)}  = batch {b} + {spec}"
+                for (spec, v, path), b in zip(leaves, batches)
+                if b
+            )
+            raise ShapeError(
+                f"{self.name}.{what}(): the batch axes of the arguments do not broadcast.\n\n"
+                f"{listing}\n\n    {self.signature}"
+            ) from None
+        return leaves, batches, bshape
+
+    def batched(self, chunk: int | None = None, *, sizes: tuple[int, ...] | None = None) -> "Batched":
+        """A compiled, vectorised version that does not recompile per batch size.
+
+        ``f.batched(chunk=64)`` compiles the lifted function once, for batches
+        of 64, and runs any batch size by splitting it into chunks of 64 and
+        padding the last one. Because lifted examples are independent, the
+        padding cannot affect the results.
+
+        ``sizes=(8, 64, 512)`` compiles one version per listed size and picks
+        the largest that fits, which wastes less work on small batches.
+        """
+        from ._batch import Batched
+
+        if (chunk is None) == (sizes is None):
+            raise TypeError("pass exactly one of `chunk` or `sizes`")
+        return Batched(self, (chunk,) if chunk is not None else tuple(sizes or ()))
 
     def _walk(self, arguments: Any, visit: Callable[[Spec, Any, str], Any]) -> dict[str, Any]:
         out: dict[str, Any] = {}

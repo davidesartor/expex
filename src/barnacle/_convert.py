@@ -254,23 +254,56 @@ def _def(name: str, params: list[str], body: list[ast.stmt], ret: ast.expr) -> a
     return f
 
 
-def _bind(names: list[str], call: ast.expr) -> ast.stmt:
+def _bind(names: list[str], call: ast.expr) -> list[ast.stmt]:
+    """Assign the helper's result back, leaving undefined variables unbound."""
     if not names:
-        return ast.Expr(value=call)
-    return ast.Assign(targets=[_tuple(names, store=True)], value=call)
+        return [ast.Expr(value=call)]
+    out: list[ast.stmt] = [ast.Assign(targets=[_tuple(names, store=True)], value=call)]
+    for n in names:
+        out.append(
+            ast.If(
+                test=ast.Compare(left=_name(n), ops=[ast.Is()], comparators=[_flow_attr("UNDEF")]),
+                body=[ast.Delete(targets=[ast.Name(id=n, ctx=ast.Del())])],
+                orelse=[],
+            )
+        )
+    return out
+
+
+def _locate(new: ast.stmt, old: ast.stmt) -> ast.stmt:
+    """Give generated code the location of the statement it replaces."""
+    for m in ast.walk(new):
+        if not hasattr(m, "lineno") and isinstance(m, (ast.stmt, ast.expr)):
+            ast.copy_location(m, old)
+    return new
 
 
 class _Exprs(ast.NodeTransformer):
     """``and`` / ``or`` / ``not`` / ``a if c else b`` -> staged helpers."""
 
-    def __init__(self, site: Callable[[ast.AST], ast.expr]):
+    def __init__(self, site: Callable[[ast.AST], ast.expr], first_param: str | None = None):
         self.site = site
+        self.first_param = first_param
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
         return node  # nested functions are left alone
 
     visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
     visit_ClassDef = visit_FunctionDef  # type: ignore[assignment]
+
+    def visit_Call(self, node: ast.Call) -> Any:
+        self.generic_visit(node)
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "super"
+            and not node.args
+            and not node.keywords
+            and self.first_param
+        ):
+            # zero-argument super() reads the *current* function's first argument,
+            # which is wrong once the call sits inside a generated branch function
+            node.args = [_name("__class__"), _name(self.first_param)]
+        return node
 
     def visit_BoolOp(self, node: ast.BoolOp) -> Any:
         self.generic_visit(node)
@@ -309,6 +342,8 @@ class _Converter:
         for m in _walk_all(fdef.body):
             if isinstance(m, (ast.Global, ast.Nonlocal)):
                 declared |= set(m.names)
+        self.declared = declared
+        self.first_param = (args.posonlyargs + args.args)[0].arg if args.posonlyargs + args.args else None
         self.locals = (set(params) | _assigned(fdef.body)) - declared
         self.builtins_ok = {
             b for b in ("range", "enumerate", "zip") if b not in self.locals and b not in shadowed
@@ -423,6 +458,8 @@ class _Converter:
         return it
 
     def _blocked(self, s: ast.stmt) -> bool:
+        if _assigned([s]) & self.declared:
+            return True  # assigns a global/nonlocal: must stay in this scope
         return _has([s], _DECL + (ast.NamedExpr,)) or _has_return([s])
 
     def if_(self, s: ast.If, live: set[str]) -> list[ast.stmt]:
@@ -435,10 +472,10 @@ class _Converter:
             return [s]
         self.count += 1
         t, f = self.fresh("true"), self.fresh("false")
-        ret = _tuple(names)
+        ret = _state(names)
         call = _call("if_", s.test, _name(t), _name(f), _state(names), _strs(names), self.site(s))
-        new = [_def(t, names, body, ret), _def(f, names, orelse, copy.deepcopy(ret)), _bind(names, call)]
-        return [ast.copy_location(n, s) for n in new]
+        new = [_def(t, names, body, ret), _def(f, names, orelse, copy.deepcopy(ret)), *_bind(names, call)]
+        return [_locate(n, s) for n in new]
 
     def while_(self, s: ast.While, live: set[str]) -> list[ast.stmt]:
         names = sorted(_assigned(s.body) & self.locals)
@@ -454,8 +491,8 @@ class _Converter:
             "while_", _name(t), _name(b), _state(names), _strs(names),
             _strs(sorted(set(names) & live)), self.site(s),
         )  # fmt: skip
-        new = [_def(t, names, [], s.test), _def(b, names, body, _tuple(names)), _bind(names, call)]
-        return [ast.copy_location(n, s) for n in new]
+        new = [_def(t, names, [], s.test), _def(b, names, body, _state(names)), *_bind(names, call)]
+        return [_locate(n, s) for n in new]
 
     def for_(self, s: ast.For, live: set[str]) -> list[ast.stmt]:
         targets = _target_names(s.target)
@@ -485,8 +522,8 @@ class _Converter:
             "for_", it, _name(b), _state(names), _strs(names),
             _strs(sorted(carried)), _strs(sorted(nameset & live)), self.site(s),
         )  # fmt: skip
-        new = [_def(b, [item, *names], [unpack, *body], _tuple(names)), _bind(names, call)]
-        return [ast.copy_location(n, s) for n in new]
+        new = [_def(b, [item, *names], [unpack, *body], _state(names)), *_bind(names, call)]
+        return [_locate(n, s) for n in new]
 
 
 # ----------------------------------------------------------------- top level
@@ -521,7 +558,7 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
     ast.increment_lineno(tree, code.co_firstlineno - 1)
     conv = _Converter(fdef, code.co_filename, set(raw.__globals__))
     conv.rewrite_appends(fdef.body)
-    exprs = _Exprs(conv.site)
+    exprs = _Exprs(conv.site, conv.first_param)
     fdef.body = [exprs.visit(s) for s in fdef.body]
     if any(
         isinstance(s, ast.If) and (_returns_via_ifs(s.body) or _returns_via_ifs(s.orelse))
@@ -544,6 +581,8 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
         arg.annotation = None
     a.defaults = [ast.Constant(None) for _ in a.defaults]
     a.kw_defaults = [None if d is None else ast.Constant(None) for d in a.kw_defaults]
+    orig_name = fdef.name
+    fdef.name = "__bn_fn__"
     cells = dict(zip(code.co_freevars, raw.__closure__ or ()))
     pre: list[ast.stmt] = [
         ast.Assign(targets=[_name(v, store=True)], value=ast.Constant(None)) for v in cells
@@ -570,6 +609,7 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
     except KeyError as e:
         raise NotConverted(f"free variable {e} could not be resolved") from None
     raw.__globals__.setdefault(FLOW, _flow)
+    inner = inner.replace(co_name=orig_name, co_qualname=raw.__qualname__)
     new = types.FunctionType(inner, raw.__globals__, raw.__name__, raw.__defaults__, closure or None)
     new.__kwdefaults__ = raw.__kwdefaults__
     new.__qualname__ = raw.__qualname__
@@ -589,7 +629,7 @@ def source(raw: Callable[..., Any]) -> str:
     ast.increment_lineno(tree, raw.__code__.co_firstlineno - 1)
     conv = _Converter(fdef, raw.__code__.co_filename, set(getattr(raw, "__globals__", {})))
     conv.rewrite_appends(fdef.body)
-    fdef.body = [_Exprs(conv.site).visit(s) for s in fdef.body]
+    fdef.body = [_Exprs(conv.site, conv.first_param).visit(s) for s in fdef.body]
     if any(
         isinstance(s, ast.If) and (_returns_via_ifs(s.body) or _returns_via_ifs(s.orelse))
         for s in fdef.body
