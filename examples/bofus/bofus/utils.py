@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-from typax import Bool, Float, Key, Static, fn
+from typax import Bool, Float, Key, fn
 
 
 @fn(jit=True)
@@ -26,7 +26,7 @@ def safe_sqrt(x: Float) -> Float:
 
 
 @fn(jit=True)
-def latin_hypercube_sample(key: Key, shape: Static[tuple[int, ...]]):
+def latin_hypercube_sample(key: Key, shape: tuple[int, ...]):
     """Sample shape[0] unit-cube points, stratified over the flattened trailing dims."""
     n, *rest = shape
     dim = math.prod(rest)

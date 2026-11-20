@@ -8,7 +8,9 @@ import jax
 import jax.numpy as jnp
 
 import typax as tx
-from typax import Dim, Etc, Key, Static, f32, f64, fn, format_reports, i32, prove
+from typax._spec import StaticSpec
+from typax import Dim, Etc, Key, Static, f32, f64, fn, i32, prove
+from typax._check import format_reports
 
 
 def status(f, **ex):
@@ -101,7 +103,7 @@ def test_call_sites_are_proved_too():
 
 def test_static_needs_default_or_examples():
     @fn
-    def a[B, D](x: f32[B, D], n: Static[int]) -> f32[B, D]:
+    def a[B, D](x: f32[B, D], n: float) -> f32[B, D]:
         return x * n
 
     @fn
@@ -116,8 +118,31 @@ def test_static_needs_default_or_examples():
     assert r.status == "unchecked" and 'examples={"n": [...]}' in r.detail
     assert status(b) == "proved"
     assert prove(c).cases == 2 and status(c) == "proved"
-    assert status(a, n=[2]) == "proved"
-    assert a.check(n=2).status == "proved"
+    assert status(a, n=[2.0]) == "proved"
+    assert a.check(n=2.0).status == "proved"
+
+
+def test_plain_python_parameters_are_static_and_get_automatic_examples():
+    import enum
+    from typing import Literal, NamedTuple
+
+    class Mode(enum.Enum):
+        SUM = "sum"
+        MEAN = "mean"
+
+    class Cfg(NamedTuple):
+        heads: int = 2
+        scale: float = 1.0
+
+    @fn(H="heads", where="D % heads == 0")
+    def split[T, D, H](x: f32[T, D], heads: int, flip: bool, how: Literal["a", "b"], mode: Mode, cfg: Cfg) -> f32[H, T]:
+        y = x.reshape(x.shape[0], heads, x.shape[1] // heads).sum(-1).T
+        return -y if flip else y * cfg.scale
+
+    for name in ("heads", "flip", "how", "mode", "cfg"):
+        assert isinstance(split.params[name].spec, StaticSpec), name
+    r = prove(split)
+    assert r.status == "proved" and r.cases == 2 * 2 * 2 * 2 * 1
 
 
 def test_failure_names_the_static_case():

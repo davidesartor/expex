@@ -5,7 +5,7 @@ import jax.scipy as jsp
 import vlse.optim
 
 import typax as tx
-from typax import Float, Int, Key, Static, fn
+from typax import Float, Int, Key, fn
 
 from . import gp, rkhs, utils
 from .rkhs import RBFMixture
@@ -101,9 +101,9 @@ def q_log_expected_improvement[Q, S](
     return jax.nn.logsumexp(log_max, axis=-1) - jnp.log(len(eps))
 
 
-@fn(jit=True, K="n")
+@fn(jit=True, K="n", where="n <= N")
 def boltzmann_select[N, K](
-    key: Key, values: Float[N], n: Static[int], eta: Static[float] = 2.0
+    key: Key, values: Float[N], n: int, eta: float = 2.0
 ) -> Int[K]:
     """Sample n distinct indices with weights exp(eta * standardized values), keeping the argmax."""
     finite = jnp.isfinite(values)
@@ -132,17 +132,17 @@ def optimize_expected_improvement[N, O, M, D, Q](
     surrogate: gp.GaussianProcess[N, O, M, D],
     l_range: tuple[Float, Float],
     a_range: tuple[Float, Float],
-    batch_size: Static[int] = 1,
-    multi_starts: Static[int] = 32,
-    n_probes: Static[int] = 1024,
-    probe_chunk: Static[int] = 1,
-    solve_chunk: Static[int] = 1,
-    gtol: Static[float] = 1e-5,
-    ftol: Static[float] = 1e-5,
-    n_mc: Static[int] = 512,
-    n_best: Static[int] = 4,
-    sigma_around_best: Static[float] = 1e-2,
-    eta: Static[float] = 2.0,
+    batch_size: int = 1,
+    multi_starts: int = 32,
+    n_probes: int = 1024,
+    probe_chunk: int = 1,
+    solve_chunk: int = 1,
+    gtol: float = 1e-5,
+    ftol: float = 1e-5,
+    n_mc: int = 512,
+    n_best: int = 4,
+    sigma_around_best: float = 1e-2,
+    eta: float = 2.0,
 ) -> RBFMixture[Q, O, M, D]:
     """Maximize Monte Carlo batch EI over RBF mixtures, screening probe batches then L-BFGS-B."""
     _, o, m, d = surrogate.f.l.shape

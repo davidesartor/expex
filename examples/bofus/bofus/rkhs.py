@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import jax.random as jr
 from jax.scipy.special import erf
 
-from typax import Float, Key, Static, fn
+from typax import Float, Key, fn
 
 from . import utils
 
@@ -23,7 +23,7 @@ class RBFMixture[*B, M, D](NamedTuple):
     a: Float[*B, M]
 
     @fn(jit=True)
-    def __call__(self, x: Float[D], periodic: Static[Periodic] = None) -> Float[*B]:
+    def __call__(self, x: Float[D], periodic: Periodic = None) -> Float[*B]:
         """Evaluate f at a single point x, lift for more. Periodic dimensions wrap."""
         return jnp.sum(self.a * jnp.exp(log_rbf(x - self.x, self.l, periodic)), axis=-1)
 
@@ -32,11 +32,11 @@ class RBFMixture[*B, M, D](NamedTuple):
     def sample(
         cls,
         key: Key,
-        shape: Static[tuple[int, ...]],
+        shape: tuple[int, ...],
         l_range: tuple[Float, Float],
         a_range: tuple[Float, Float],
-        sigma0: Static[float] = 1.0,
-        coverage: Static[float] = 1.0,
+        sigma0: float = 1.0,
+        coverage: float = 1.0,
     ) -> Self:
         """Draw iid mixtures of shape (*b, m, d) from the prior, then clip l and a to their ranges.
         log l ~ N(median, sigma0^2 / d), the median solved so the atoms fill coverage of the box (m + 1) E[phi^2] = coverage.
@@ -64,8 +64,8 @@ class RBFMixture[*B, M, D](NamedTuple):
         a = jr.normal(key_a, (*b, m)) * jnp.sqrt((m + 1) / (m * coverage))
         return cls(l.clip(*l_range), x, a.clip(*a_range))
 
-    @fn(K="m")
-    def pad_to[K](self, m: Static[int]) -> "RBFMixture[*B, K, D]":
+    @fn(K="m", where="m >= M")
+    def pad_to[K](self, m: int) -> "RBFMixture[*B, K, D]":
         """Pad with inert atoms: zero amplitude, period wide lengthscale, at the origin."""
         *b, m0, d = self.l.shape
         pad = (*b, m - m0, d)
@@ -76,7 +76,7 @@ class RBFMixture[*B, M, D](NamedTuple):
 
 
 @fn(lift=True)
-def _log_circle(theta: Float, s: Float, terms: Static[int] = 4) -> Float:
+def _log_circle(theta: Float, s: Float, terms: int = 4) -> Float:
     """log of a unit-mass gaussian of angular variance s wrapped on the circle, at angle theta."""
     n = jnp.arange(-terms, terms + 1, dtype=theta.dtype)
     if s < 2 * jnp.pi:
@@ -111,7 +111,7 @@ def inner[M1, M2, D](
     f1: RBFMixture[M1, D],
     f2: RBFMixture[M2, D],
     l0: Float[D] | None = None,
-    periodic: Static[Periodic] = None,
+    periodic: Periodic = None,
 ) -> Float:
     """Inner product in the rkhs of phi(.; l0) on [-X_MAX, X_MAX]^d, in L2 if l0 is None.
     RBF are analytic, so the rkhs inner product on the box is an isometry of the one on the line.
@@ -149,7 +149,7 @@ def distance[M1, M2, D](
     f1: RBFMixture[M1, D],
     f2: RBFMixture[M2, D],
     l0: Float[D] | None = None,
-    periodic: Static[Periodic] = None,
+    periodic: Periodic = None,
 ) -> Float:
     """Distance between RBF mixtures in the rkhs of phi(.; l0), in L2 on the box if l0 is None."""
     norms = inner(f1, f1, l0, periodic) + inner(f2, f2, l0, periodic)

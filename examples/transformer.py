@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 
 import typax as tx
-from typax import Dim, Int, Static, f32, fn
+from typax import Dim, Int, f32, fn
 
 
 class Vocab(Dim): ...
@@ -36,8 +36,8 @@ def layer_norm[D](x: f32[D]) -> f32[D]:
     return (x - x.mean()) / (x.std() + 1e-5)
 
 
-@fn(H="heads", K="D // heads", where="D % heads == 0", examples={"heads": [1, 2]})
-def split_heads[T, D, H, K](x: f32[T, D], heads: Static[int]) -> f32[H, T, K]:
+@fn(H="heads", K="D // heads", where="D % heads == 0")
+def split_heads[T, D, H, K](x: f32[T, D], heads: int) -> f32[H, T, K]:
     t, d = x.shape
     return x.reshape(t, heads, d // heads).transpose(1, 0, 2)
 
@@ -50,8 +50,8 @@ def causal_attention[T, K](q: f32[T, K], k: f32[T, K], v: f32[T, K]) -> f32[T, K
     return weights @ v
 
 
-@fn(examples={"heads": [1, 2]}, where="D % heads == 0")
-def block[T, D, F](p: Block[D, F], x: f32[T, D], heads: Static[int]) -> f32[T, D]:
+@fn(where="D % heads == 0")
+def block[T, D, F](p: Block[D, F], x: f32[T, D], heads: int) -> f32[T, D]:
     h = layer_norm.lift(x)
     q, k, v = (split_heads(h @ w, heads) for w in (p.wq, p.wk, p.wv))
     a = causal_attention.lift(q, k, v)                      # over heads
@@ -60,16 +60,16 @@ def block[T, D, F](p: Block[D, F], x: f32[T, D], heads: Static[int]) -> f32[T, D
     return x + jax.nn.gelu(layer_norm.lift(x) @ p.w1) @ p.w2
 
 
-@fn(examples={"heads": [2]}, where="D % heads == 0")
-def forward[T, D, F](m: Model[D, F], tokens: Int[T], heads: Static[int]) -> f32[T, Vocab]:
+@fn(where="D % heads == 0")
+def forward[T, D, F](m: Model[D, F], tokens: Int[T], heads: int) -> f32[T, Vocab]:
     x = m.embed[tokens]
     for b in m.blocks:
         x = block(b, x, heads)
     return layer_norm.lift(x) @ m.unembed
 
 
-@fn(examples={"heads": [2]}, where=["D % heads == 0", "T >= 2"])
-def loss[T, D, F](m: Model[D, F], tokens: Int[T], heads: Static[int]) -> f32:
+@fn(where=["D % heads == 0", "T >= 2"])
+def loss[T, D, F](m: Model[D, F], tokens: Int[T], heads: int) -> f32:
     logits = forward(m, tokens[:-1], heads)
     logp = jax.nn.log_softmax(logits)
     return -jnp.take_along_axis(logp, tokens[1:, None], axis=1).mean()
@@ -98,6 +98,6 @@ if __name__ == "__main__":
         value, model = step(model, data)
         print(f"step {i}: loss {value:.4f}")
     print()
-    print(tx.format_reports(tx.prove(__import__("__main__"))))
+    print(tx.prove(__import__("__main__")))
     print()
     print(tx.debug.timing(loss, model, data[0], 4))

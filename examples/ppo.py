@@ -21,7 +21,7 @@ import jax.numpy as jnp
 import optax
 
 import typax as tx
-from typax import Batch, Bool, Key, Static, f32, fn, i32
+from typax import Batch, Bool, Key, f32, fn, i32
 
 # ------------------------------------------------------------------ config
 
@@ -210,7 +210,7 @@ class Transition(NamedTuple):
 @fn(examples={"gamma": [0.99], "lam": [0.95]}, where="T >= 1")
 def gae[T](
     reward: f32[T], value: f32[T], done: Bool[T], last_value: f32,
-    gamma: Static[float], lam: Static[float],
+    gamma: float, lam: float,
 ) -> f32[T]:  # fmt: skip
     """Generalised advantage estimates for one environment's trajectory."""
     advantage, next_value = jnp.float32(0), last_value
@@ -223,9 +223,9 @@ def gae[T](
     return jnp.asarray(out)[::-1]
 
 
-@fn(examples={"cfg": [Config()]})
+@fn
 def ppo_loss[M, H](
-    net: Net[H], batch: Batch[Transition, M], advantage: f32[M], target: f32[M], cfg: Static[Config]
+    net: Net[H], batch: Batch[Transition, M], advantage: f32[M], target: f32[M], cfg: Config
 ) -> tuple[f32, tuple[f32, f32, f32]]:
     logp_all, value = policy.lift(net, batch.obs)
     log_prob: f32[M] = jnp.sum(logp_all * jax.nn.one_hot(batch.action, 2), axis=-1)
@@ -261,7 +261,7 @@ def time_major(x):
 
 
 @fn(examples={"cfg": [Config(num_envs=3, num_steps=8, num_updates=2, num_minibatches=2)]})
-def train[H, T, N](key: Key, cfg: Static[Config], net: Net[H] | None = None):
+def train[H, T, N](key: Key, cfg: Config, net: Net[H] | None = None):
     """Train PPO. Returns the final network and per-step episode statistics."""
     optimizer = make_optimizer(cfg)
     key, init_key = jax.random.split(key)

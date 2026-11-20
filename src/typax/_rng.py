@@ -111,11 +111,6 @@ def key() -> Any:
     return fresh()
 
 
-def keys(shape: int | tuple[int, ...]) -> Any:
-    """``shape`` fresh keys at once."""
-    return jax.random.split(fresh("typax.keys()"), shape)
-
-
 @contextlib.contextmanager
 def rng(k: int | Any) -> Iterator[None]:
     """Use ``k`` (a key or an int seed) as the source of keys inside the block."""

@@ -10,7 +10,7 @@ ROOT = pathlib.Path(__file__).parent.parent
 def test_readme_blocks_run(tmp_path, capsys):
     text = (ROOT / "README.md").read_text()
     blocks = re.findall(r"```python\n(.*?)```", text, flags=re.S)
-    assert len(blocks) >= 10
+    assert len(blocks) >= 8
     # written to a real file so that @fn can read the source it converts
     path = tmp_path / "readme_blocks.py"
     path.write_text("\n\n".join(blocks))
@@ -22,4 +22,4 @@ def test_readme_blocks_run(tmp_path, capsys):
     assert "for -> lax.scan (carries h)" in out
     assert "NaN first appears at" in out
     assert "x: f32[3]  ->  f32[4]" in out
-    assert ns["run"].traces == 1
+    assert ns["dropout"].random and ns["safe_log"].auto_lift

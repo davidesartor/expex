@@ -67,7 +67,7 @@ def pairwise_squared_distance[N1, N2, O, M, D](
     l0: Float[D] | None,
     f1: RBFMixture[N1, O, M, D],
     f2: RBFMixture[N2, O, M, D] | None = None,
-    periodic: Static[Periodic] = None,
+    periodic: Periodic = None,
 ) -> Float[N1, N2, O]:
     """Squared distances between two sets of functions, per output.
     Distances live in the rkhs of ambient lengthscale l0, in L2 on the box if l0 is None.
@@ -87,7 +87,7 @@ def pairwise_squared_distance[N1, N2, O, M, D](
 class GaussianProcess[N, O, M, D](NamedTuple):
     """Fitted GP over functions, compared through their ambient-space or L2 distances."""
 
-    profile: Static[kernels.Profile]  # kernel profile, e.g. RBF or Matern
+    profile: kernels.Profile  # kernel profile, e.g. RBF or Matern
     l0: Float[D] | None  # ambient lengthscale, None for L2
     periodic: Static[Periodic]  # dimensions that wrap; None for none
 
@@ -115,13 +115,13 @@ class GaussianProcess[N, O, M, D](NamedTuple):
         y: Float[N],
         *,
         y_std: Float[N] | None = None,
-        profile: Static[kernels.Profile] = kernels.matern52,
+        profile: kernels.Profile = kernels.matern52,
         l0: Float[D] | None = None,
-        periodic: Static[Periodic] = None,
+        periodic: Periodic = None,
         rho_range: Float[Two] = jnp.array([1e-2, 1e2]),
         nugget_range: Float[Two] = jnp.array([1e-4, 1e0]),
         nu_range: Float[Two] = jnp.array([1e-2, 1e2]),
-        restarts: Static[int] = 1,
+        restarts: int = 1,
     ) -> "GaussianProcess[N, O, M, D]":
         """MAP fit of (rho, g) on the REML likelihood, nu integrated out unless y_std is given."""
         n, o, _, _ = f.l.shape

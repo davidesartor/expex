@@ -33,11 +33,11 @@ from ._spec import (
     is_symbolic,
     parse,
     parse_owner,
+    static_type,
     resolve,
 )
 
 if TYPE_CHECKING:
-    from ._batch import Batched
     from ._check import Report
 
 _BatchTracer: Any = ()
@@ -231,10 +231,14 @@ class Fn(Generic[P, R]):
         self._derive = derive
         self.params: dict[str, Param] = {}
         for name, p in self._sig.parameters.items():
+            ann = anns.get(name, inspect.Parameter.empty)
             try:
-                spec = parse(anns.get(name, inspect.Parameter.empty))
+                spec = parse(ann)
             except TypeError as e:
                 raise TypeError(f"{self.name}: bad annotation for `{name}`: {e}") from None
+            if not spec.leafy and ann is not inspect.Parameter.empty and static_type(ann):
+                # `n: int`, `mode: str`, `cfg: Config`: configuration, not data
+                spec = StaticSpec(ann)
             if self.defs:
                 spec = spec.replace_dims(derive)
             self.params[name] = Param(name, spec, p.kind, p.default)
@@ -819,23 +823,6 @@ class Fn(Generic[P, R]):
             ) from None
         return leaves, batches, bshape
 
-    def batched(self, chunk: int | None = None, *, sizes: tuple[int, ...] | None = None) -> "Batched":
-        """A compiled, vectorised version that does not recompile per batch size.
-
-        ``f.batched(chunk=64)`` compiles the lifted function once, for batches
-        of 64, and runs any batch size by splitting it into chunks of 64 and
-        padding the last one. Because lifted examples are independent, the
-        padding cannot affect the results.
-
-        ``sizes=(8, 64, 512)`` compiles one version per listed size and picks
-        the largest that fits, which wastes less work on small batches.
-        """
-        from ._batch import Batched
-
-        if (chunk is None) == (sizes is None):
-            raise TypeError("pass exactly one of `chunk` or `sizes`")
-        return Batched(self, (chunk,) if chunk is not None else tuple(sizes or ()))
-
     def _walk(self, arguments: Any, visit: Callable[[Spec, Any, str], Any]) -> dict[str, Any]:
         out: dict[str, Any] = {}
         for name, v in arguments.items():
@@ -1139,12 +1126,6 @@ class BoundFn(Generic[P, R]):
     def lift(self, *args: P.args, **kwargs: P.kwargs) -> R:
         __tracebackhide__ = True
         return self.fn.lift(self.obj, *args, **kwargs)
-
-    def batched(self, chunk: int | None = None, *, sizes: tuple[int, ...] | None = None) -> Any:
-        run = self.fn.batched(chunk, sizes=sizes)
-        bound = functools.partial(run, self.obj)
-        bound.batched = run  # type: ignore[attr-defined]
-        return bound
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.fn, name)

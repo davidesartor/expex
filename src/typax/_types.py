@@ -167,6 +167,16 @@ class BatchAnn:
     def __call__(self, *a: Any, **k: Any) -> Any:
         raise TypeError("Batch[...] is an annotation")
 
+    def __or__(self, other: Any) -> Any:
+        from typing import Union
+
+        return Union[self, other]
+
+    def __ror__(self, other: Any) -> Any:
+        from typing import Union
+
+        return Union[other, self]
+
 
 class _BatchRuntime:
     def __getitem__(self, args: Any) -> BatchAnn:
@@ -196,6 +206,16 @@ class KeyAnn:
 
     def __call__(self, *a: Any, **k: Any) -> Any:
         raise TypeError("Key is an annotation; use jax.random.key(seed)")
+
+    def __or__(self, other: Any) -> Any:
+        from typing import Union
+
+        return Union[self, other]
+
+    def __ror__(self, other: Any) -> Any:
+        from typing import Union
+
+        return Union[other, self]
 
 
 _INT = (int,)

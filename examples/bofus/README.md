@@ -20,7 +20,7 @@ python -m typax examples/bofus/bofus/kernels.py             # shape proofs
 | `RBFMixture["*b m d"]` through a `__class_getitem__` that only documents | `class RBFMixture[*B, M, D](NamedTuple)`, checked field by field |
 | Sanitised double `where` for every piecewise function (`rbf`, the log-EI branches, `safe_sqrt`, the periodic series) | A plain `if` on one element, then `lift`; the gradient is NaN-free without sanitising inputs |
 | Functions written for arbitrary leading axes with `[..., None, :]` indexing | Functions written for one pair of mixtures, `@fn(lift=True)` broadcasts the rest |
-| `eqx.filter_jit` to keep functions and tuples out of the trace | `@fn(jit=True)`; `Static[...]` fields and non-array values are static automatically |
+| `eqx.filter_jit` to keep functions and tuples out of the trace | `@fn(jit=True)`: non-array values are static automatically, and parameters annotated `int`, `float`, `tuple[...]`... are static by type |
 | `jax.lax.map(f, xs, batch_size=k)` and `jax.vmap(solve)(starts)` | `for x in tx.rows(xs, chunk=k): out.append(f(x))` |
 | `eqx.error_if(x, cond, msg)` | `assert not cond, msg` |
 | `logits.at[i].set(jnp.inf)` | `logits[i] = jnp.inf` |

@@ -551,6 +551,10 @@ class KeySpec(Spec):
 _LENIENT = {int: (int, np.integer), float: (int, float, np.integer, np.floating)}
 
 
+def _ann_name(ann: Any) -> str:
+    return getattr(ann, "__name__", None) or repr(ann).replace("typing.", "")
+
+
 class StaticSpec(Spec):
     """A value that must be concrete at trace time."""
 
@@ -558,15 +562,16 @@ class StaticSpec(Spec):
         self.inner = inner
 
     def __str__(self) -> str:
-        return f"Static[{getattr(self.inner, '__name__', None) or repr(self.inner)}]"
+        return _ann_name(self.inner)
 
     def match(self, value: Any, path: str, env: Env) -> None:
         if isinstance(value, Tracer):
             m = Mismatch(
                 path, self, value,
-                "it is a traced value, but Static arguments must be concrete Python "
-                "values at trace time. Pass a Python value, or annotate the parameter "
-                "as an array if it is meant to be traced.",
+                f"it is a traced value, but `{_ann_name(self.inner)}` is a plain Python "
+                f"type, so the parameter is static: it must be a concrete Python value "
+                f"at trace time. If it is meant to be traced, annotate it with a dtype "
+                f"instead (f32, i32, Bool, ...).",
             )  # fmt: skip
             m.stage = True  # type: ignore[attr-defined]
             raise m
@@ -574,9 +579,15 @@ class StaticSpec(Spec):
         if type(inner) is type:
             ok = _LENIENT.get(inner, inner)
             if not isinstance(value, ok) or (inner is not bool and type(value) is bool and inner in _LENIENT):
+                hint = ""
+                if hasattr(value, "shape") and inner in _LENIENT:
+                    hint = (
+                        f" A plain `{inner.__name__}` annotation makes the parameter static; "
+                        f"to pass arrays, annotate it with a dtype (f32, i32, ...)."
+                    )
                 raise Mismatch(
                     path, self, value,
-                    f"expected {inner.__name__}, got {type(value).__name__}.",
+                    f"expected {inner.__name__}, got {type(value).__name__}.{hint}",
                 )  # fmt: skip
 
 
@@ -916,6 +927,50 @@ def _prepend(spec: Spec, lead: tuple[Any, ...]) -> Spec:
         label = f"Batch[{spec.label}, {', '.join(map(str, lead))}]"
         return StructSpec(spec.cls, {n: _prepend(s, lead) for n, s in spec.fields.items()}, label)
     return spec
+
+
+_PLAIN = (int, float, bool, str, bytes, complex)
+
+
+def static_type(ann: Any, _seen: tuple[type, ...] = ()) -> bool:
+    """Is ``ann`` a plain Python type, whose values are configuration rather than data?
+
+    ``int``, ``float``, ``bool``, ``str``, ``Literal[...]``, enums, callables,
+    tuples of these, ``X | None``, and NamedTuples / dataclasses made only of
+    these. Function parameters with such annotations are static.
+    """
+    import enum
+
+    if ann in _PLAIN or ann is type(None):
+        return True
+    if isinstance(ann, type) and issubclass(ann, enum.Enum):
+        return True
+    origin = typing.get_origin(ann)
+    args = typing.get_args(ann)
+    if origin is typing.Literal:
+        return True
+    if origin is typing.Annotated:
+        return static_type(args[0], _seen)
+    if ann is typing.Callable or origin in (typing.Callable, __import__("collections.abc").abc.Callable):
+        return True
+    if origin is type or ann is type:
+        return True
+    if origin is typing.Union or origin is types.UnionType:
+        return all(static_type(a, _seen) for a in args)
+    if origin in (tuple, frozenset):
+        return all(a is Ellipsis or static_type(a, _seen) for a in args) if args else True
+    if isinstance(ann, typing.TypeAliasType):
+        return static_type(ann.__value__, _seen)
+    cls = origin if isinstance(origin, type) else ann
+    if isinstance(cls, type) and cls not in _seen and _struct_fields(cls) is not None:
+        if dataclasses.is_dataclass(cls) and not cls.__dataclass_params__.frozen:  # type: ignore[attr-defined]
+            return False  # mutable: cannot be a compile-time constant
+        anns = _class_annotations(cls)
+        names = _struct_fields(cls) or []
+        return bool(names) and all(
+            n in anns and static_type(anns[n], _seen + (cls,)) for n in names
+        )
+    return False
 
 
 def parse_owner(cls: type) -> Spec:

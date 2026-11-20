@@ -7,7 +7,7 @@ import textwrap
 MODULE = textwrap.dedent(
     """
     import jax.numpy as jnp
-    from typax import fn, f32, Static
+    from typax import fn, f32
 
     @fn
     def good[B, T](x: f32[B, T]) -> f32[T, B]:
@@ -18,8 +18,8 @@ MODULE = textwrap.dedent(
         return x[:, 1:]
 
     @fn
-    def needs_example[B](x: f32[B], n: Static[int]) -> f32[B]:
-        return x * n
+    def needs_example[B](x: f32[B], scale: float) -> f32[B]:
+        return x * scale
 
     @fn(prove=False)
     def opted_out[B](x: f32[B]) -> f32[B]:
@@ -36,7 +36,7 @@ def test_plugin(pytester):
     result.stdout.fnmatch_lines(
         [
             "*returned     f32?B, T - 1?*",
-            "*Static parameter `n` has no default*",
+            "*Static parameter `scale` has no default*",
         ]
     )
 

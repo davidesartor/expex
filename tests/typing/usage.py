@@ -37,7 +37,7 @@ def pad[B, T, U](x: f32[B, T]) -> f32[B, U]:
 
 
 @fn(jit=True, random=True, examples={"n": [1, 2]})
-def step[B](x: f32[B], lr: f32, n: Static[int], key: Key, mode: Static[str] = "a") -> f32[B]:
+def step[B](x: f32[B], lr: f32, n: int, key: Key, mode: str = "a") -> f32[B]:
     return x * lr * n + jax.random.normal(tx.key(), x.shape)
 
 
@@ -57,7 +57,7 @@ def misc[*Batch, H, W](
 
 class Model:
     @fn
-    def call[D](self, x: f32[D], scale: Static[float] = 1.0) -> f32[D]:
+    def call[D](self, x: f32[D], scale: float = 1.0) -> f32[D]:
         return x * scale
 
 
@@ -68,7 +68,6 @@ assert_type(pad(x[0]), jax.Array)
 assert_type(step(x[0, 0], jnp.float32(0.1), 2, jax.random.key(0)), jax.Array)
 assert_type(Model().call(x[0, 0]), jax.Array)
 assert_type(Model().call.lift(x[0], scale=2.0), jax.Array)
-assert_type(attend.batched(chunk=8)(x, x), Any)
 
 report = tx.prove(attend)
 assert_type(report.ok, bool)

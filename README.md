@@ -1,120 +1,91 @@
 # typax
 
-Shape-typed functions for JAX. You write the shapes in the signature, and one
-decorator puts them to work:
+Shape-typed JAX functions in plain Python. Write the shapes in the signature
+and decorate with `@fn`:
 
 ```python
 import jax
 import jax.numpy as jnp
 import typax as tx
-from typax import fn, f32, i32, Static, Key
+from typax import fn, f32, i32
 
 @fn
 def attend[B, T, D](q: f32[B, T, D], k: f32[B, T, D]) -> f32[B, T, T]:
     return jnp.einsum("btd,bsd->bts", q, k)
 ```
 
-From that signature, `@fn` gives you:
+That signature then does four jobs:
 
-| | |
-|---|---|
-| **Checked calls** | Arguments and results are matched against the annotations, with errors that name the axis and where its size came from. |
-| **Shape proofs** | `tx.prove(attend)` traces the function with *symbolic* sizes and shows the declared output shape holds for every `B`, `T`, `D`. No test data needed. |
-| **Plain Python** | `if`, `while`, `for` (with `break` / `continue` / `return`) on traced values become `lax.cond`, `lax.while_loop`, `lax.scan` or `vmap`. `x[i] += 1`, `assert`, `print`, `min` / `max` work on traced values too. |
-| **Vectorising** | `attend.lift(...)` maps over any extra leading axes, worked out from the declared ranks; `@fn(lift=True)` makes that the default for a function written for one element. |
-| **Compiling** | `@fn(jit=True)` traces arrays and treats everything else as static, with no `static_argnames`; every retrace is explained. |
-| **Implicit random keys** | `@fn(random=True)` functions get a fresh key from `tx.key()`, safely under `jit`. |
-| **Debugging** | Retrace explanations, a NaN finder that points at the source line, program size and timing breakdowns. |
+- **Checks** every call, with errors that name the axis and where its size came from.
+- **Proves** the shapes for all sizes: `tx.prove(attend)`, with no test data.
+- **Vectorises**: `attend.lift(...)` maps over any extra leading axes.
+- **Compiles** with `@fn(jit=True)`, with no `static_argnames`.
 
-It is a plain Python library (3.12+). The annotations are ordinary names, so
-pyright and mypy accept them without plugins.
+Inside `@fn`, plain Python works on traced values: `if`, `for`, `while` (with
+`break` / `continue` / `return`), `x[i] += 1`, `assert`, `print`, `min` / `max`.
 
 ```
-pip install -e .          # from a checkout (`pip install typax` once it is on PyPI)
+pip install -e .                               # Python 3.12+, recent JAX
 python examples/tour.py                        # see everything run
-python -m typax examples/transformer.py     # prove a small transformer's shapes
+python -m typax examples/transformer.py        # prove a small transformer's shapes
 ```
 
 ## Annotations
 
 ```python
-from typing import Any, Literal, NamedTuple
-from typax import Dim, Etc, Float, Int
+from typing import Literal, NamedTuple
+from typax import Dim, Float, Int, Key
 
-class RGB(Dim, size=3): ...      # a named fixed size
-class Hidden(Dim): ...           # a named axis shared across functions
+class RGB(Dim, size=3): ...          # a named fixed size
 
-class Params[D](NamedTuple):     # dataclasses work too
+class Params[D](NamedTuple):         # dataclasses work too
     w: f32[D, D]
     b: f32[D]
 
 @fn
 def example[*Batch, H, W](
-    img: f32[*Batch, H, W, RGB],     # *Batch: zero or more leading axes
+    img: f32[*Batch, H, W, RGB],     # *Batch: zero or more axes
     idx: Int[*Batch],                # any integer dtype
-    feats: Float[Etc, Hidden],       # Etc: any leading axes, unchecked
-    pair: f32[Literal[2], Any],      # a literal size; Any: one axis of any size
-    temperature: f32,                # a scalar (also accepts a Python number)
-    p: Params[Hidden],               # fields are checked, D is bound to Hidden
-    mask: f32[H, W] | None = None,
-    steps: Static[int] = 1,          # a trace-time constant, not an array
-) -> tuple[f32[*Batch, H, W], i32]:
-    return img.mean(-1), jnp.int32(steps)
+    p: Params[W],                    # fields are checked, D is bound to W
+    pair: f32[Literal[2], W],        # a literal size
+    scale: f32,                      # a traced scalar (also takes a Python number)
+    steps: int = 1,                  # a plain Python type: static, not traced
+    key: Key | None = None,
+) -> f32[*Batch, H]:
+    return img.mean((-1, -2)) * scale * steps
 ```
 
-- **Dimensions** are the function's own type parameters (`def f[B, T](...)`).
-  Within one call each name has one size; different calls are independent.
-- **Dtypes**: `f16 f32 f64 i8 i16 i32 i64 u8 u16 u32 u64 c64 c128 Bool`, and
-  the categories `Float Int UInt Complex Inexact Num Arr` (`Arr` is any dtype).
-- **Containers**: `tuple[...]`, `list[X]`, `dict[str, X]`, `X | None`, unions,
-  NamedTuples and dataclasses with annotated fields.
-- **Generic structures** can have a variable number of leading axes:
-  `class Mix[*B, M, D](NamedTuple)` used as `Mix[N, O, M, D]` or `Mix[M, D]`.
-- **Stacked structures**: `Batch[Transition, T, N]` is a `Transition` whose
-  every array has leading axes `T, N` (what you get from stacking per-step
-  values, or what `.lift` receives).
-- **Derived sizes and constraints** go on the decorator, because type checkers
-  reject arithmetic in annotations:
+| Kind | Annotations |
+|---|---|
+| Arrays | `f16 f32 f64 i8 … i64 u8 … u64 c64 c128`, categories `Float Int UInt Bool Complex Num Arr` |
+| Sizes | the function's type parameters (`def f[B, T]`), `Literal[3]`, `class RGB(Dim, size=3)`, `*Rest`, `Any` |
+| Containers | `tuple[...]`, `list[X]`, `dict[str, X]`, `X \| None`, NamedTuples and dataclasses, generic ones too (`class Mix[*B, M, D]`) |
+| Stacked | `Batch[Transition, T, N]`: a `Transition` whose arrays all have leading axes `T, N` |
+| Static | `int`, `float`, `bool`, `str`, `Literal`, enums, callables, configuration NamedTuples. In a struct field, wrap numbers in `Static[...]` |
+
+Each size name has one value per call. Arithmetic on sizes and constraints go
+on the decorator (type checkers reject them in annotations), and may use
+static parameters by name:
 
 ```python
-@fn(U="T + 1", where="T >= 2")
+@fn(U="T + 1")
 def pad[B, T, U](x: f32[B, T]) -> f32[B, U]:
     return jnp.pad(x, ((0, 0), (0, 1)))
 
-# Static int parameters can be used by name:
-@fn(H="heads", K="D // heads", where="D % heads == 0", examples={"heads": [1, 2]})
-def split_heads[T, D, H, K](x: f32[T, D], heads: Static[int]) -> f32[H, T, K]:
+@fn(H="heads", K="D // heads", where="D % heads == 0")
+def split_heads[T, D, H, K](x: f32[T, D], heads: int) -> f32[H, T, K]:
     t, d = x.shape
     return x.reshape(t, heads, d // heads).transpose(1, 0, 2)
 ```
 
-Methods work too. If the class is a dataclass or NamedTuple with annotated
-fields, `self` is checked and the class's dimensions are shared with the
-method, which also lets the prover check it without an instance. A method can
-name its own class in a string annotation (`-> "Linear[I, O]"`); it is
-resolved at first use.
+To pyright and mypy, `f32[B, T]` is `jax.Array`, so annotated code type-checks
+without plugins.
+
+## Checks and proofs
 
 ```python
-from dataclasses import dataclass
-
-@dataclass
-class Linear[I, O]:
-    w: f32[O, I]
-    b: f32[O]
-
-    @fn
-    def __call__[B](self, x: f32[B, I]) -> f32[B, O]:
-        return x @ self.w.T + self.b
-
-assert tx.prove(Linear.__call__).ok
-```
-
-## Checked calls
-
-```python
-x = jnp.ones((2, 3, 4))
 try:
-    attend(x, jnp.ones((5, 3, 4)))
+    attend(jnp.ones((2, 3, 4)), jnp.ones((5, 3, 4)))
 except tx.ShapeError as e:
     print(e)
 ```
@@ -128,82 +99,26 @@ attend(): argument `k` does not match its annotation.
     B is 2 (from `q: f32[2, 3, 4]`), but axis 0 of `k` is 5.
 ```
 
-Annotated local variables are checked too, and proved along with the rest:
+Checks are shape comparisons, so under `jit` they run once per trace. Annotated
+local variables (`h: f32[B, D] = ...`) are checked too.
 
-```python
-@fn
-def encode[B, T, D](x: f32[B, T], table: f32[T, D]) -> f32[B, D]:
-    h: f32[B, T, D] = x[:, :, None] * table
-    return h.mean(1)
-```
-
-Error messages add a hint for the usual causes (a batch passed where one
-example is expected, permuted axes, a float64 NumPy array), and `f.info()`
-prints everything typax knows about a function. `tx.show(tree)` prints a
-pytree with each array replaced by its dtype and shape, and
-`with tx.config(checked=False): ...` changes a setting for one block. A NumPy
-array is accepted where JAX would convert it to the declared dtype (a
-float64 NumPy array for `f32`, with 64-bit mode off).
-
-Checks are shape and dtype comparisons, so under `jit` they run once per
-trace and cost nothing in the compiled function. Under `vmap` and `grad` they
-see the per-example shapes, which is what the annotations describe. Any
-exception passing through an `@fn` also gets a note with the argument shapes
-of each frame. Switch checks off with `@fn(checked=False)` or
-`tx.config.checked = False`.
-
-## Shape proofs
+`tx.prove` traces a function with symbolic sizes, so a passing proof holds for
+every size:
 
 ```python
 @fn
 def diff[T, D](xs: f32[T, D]) -> f32[T, D]:
     return xs[1:] - xs[:-1]
 
-print(tx.prove(diff))
+print(tx.prove(diff))   # failed: returned f32[T - 1, D]
 ```
 
-```
-diff: failed
-    diff(): the return value does not match its annotation.
+Static parameters without defaults are tried at a few values (`int`: 1 and 2,
+`bool`: both, `Literal` and enums: every value); others need
+`@fn(examples={"name": [...]})`. Run it over a package with
+`python -m typax pkg` or `pytest --typax pkg`.
 
-        declared  -> f32[T, D]
-        returned     f32[T - 1, D]
-
-        axis 0 of `return` should be T, but is T - 1.
-    confirmed at sizes D=2, T=3.
-```
-
-The prover builds abstract inputs from the annotations alone, using JAX's
-symbolic dimensions, and traces the function once. Nothing is compiled and no
-data is needed. Calls to other `@fn` functions are checked at the call site,
-so a proof covers the whole call tree.
-
-Run it over a package:
-
-```
-python -m typax mypackage            # or: typax mypackage
-pytest --typax mypackage             # one test per @fn
-```
-
-or set `typax = ["mypackage"]` under `[tool.pytest.ini_options]`.
-
-Each function gets one verdict:
-
-| Verdict | Meaning |
-|---|---|
-| `proved` | The output matches the declaration for all sizes, and the function also traced at several concrete sizes (including size 1). |
-| `spot-checked` | It holds at the concrete sizes tried, but could not be shown symbolically (for example, Python control flow that depends on a shape). |
-| `failed` | The declared and actual shapes differ. |
-| `error` | The function raised while being traced. If only some sizes fail, say which are supported with `where=`. |
-| `unchecked` | The prover cannot invent an argument: a `Static` or unannotated parameter with no default. Give `@fn(examples={"n": [1, 4]})`. |
-
-What a proof covers: output shapes and dtypes, and shape agreement at every
-operation and `@fn` call inside. It does not cover values, and it is only as
-strict as JAX's own shape rules; where JAX defers a check for symbolic sizes
-(`reshape`), the prover checks it itself. Methods are proved on an instance:
-`tx.prove(model.call)`.
-
-## Plain control flow
+## Plain Python, staged
 
 ```python
 @fn
@@ -232,233 +147,94 @@ jax.jit(rnn)(jnp.ones((100, 3)), jnp.eye(3))
 print(rnn.flow)        # {<line>: 'for -> lax.scan (carries h)'}
 ```
 
-`@fn` re-compiles the function so that each statement decides *when it runs*:
+Each statement decides when it runs. On Python values it behaves exactly as
+written; on traced values `if` becomes `lax.cond`, `while` becomes
+`lax.while_loop`, and a `for` over an array or `range` becomes `vmap` when
+iterations are independent and `lax.scan` otherwise. A 1000-step loop compiles
+in 0.06 s instead of 8 s unrolled.
 
-- condition or iterable is an ordinary Python value → exactly the original
-  Python behaviour (this includes everything in eager mode, `Static`
-  arguments and shapes);
-- it is traced → `lax.cond`, `lax.while_loop`, or for a `for` loop over an
-  array / `range` / `enumerate` / `zip`: `vmap` if no iteration reads what an
-  earlier one wrote, otherwise `lax.scan`. A traced `range(n)` becomes a
-  `while_loop`.
+- `ys.append(v)` collects per-iteration values; `tx.stack(ys)` stacks pytrees.
+  `for row in tx.rows(tree)` iterates a pytree; `tx.rows(tree, chunk=k)` runs
+  `k` independent iterations at a time.
+- `x[i] = v` and `x[i] += v` on a JAX array become `x.at[i]...`;
+  `s.field = v` replaces a NamedTuple. `assert` and `raise` in a traced branch
+  fire when the compiled code reaches them.
+- Gradients through a traced `if` are NaN-free where a branch is not taken, so
+  `jnp.where(x > 0, jnp.sqrt(x), 0.)` with its sanitised inputs becomes a plain `if`.
+- `f.flow` shows how each statement ran; `@fn(convert=False)` opts out.
 
-`ys.append(v)` inside a loop is how you collect per-iteration results; after a
-staged loop `ys` is a read-only sequence backed by one stacked array
-(`jnp.asarray(ys)` is free; `tx.stack(ys)` does the same for lists of
-pytrees). `for row in tx.rows(tree)` iterates over the leading axis of every
-array in a pytree, and `reversed(...)` works on all of these. `and`, `or`, `not` and `a if c else b` are
-converted too. The 100-step loop above traces to a handful of operations
-instead of hundreds, which is what keeps compile times down.
+Left as plain Python (so they need concrete values, and loops unroll): code
+inside `try` / `with`, loops with an `else`, in-place updates of anything but a
+local variable, and variables shared with a nested function. A variable
+assigned on only one traced path reads as zeros on the other.
 
-### In-place updates, `assert`, `print`, `min` / `max`
-
-The same conversion lets you write updates the NumPy way:
-
-```python
-class Particle(NamedTuple):
-    pos: f32
-    vel: f32
-
-@fn
-def histogram[N](idx: i32[N]) -> f32[4]:
-    counts = jnp.zeros(4)
-    for i in idx:
-        counts[i] += 1               # counts = counts.at[i].add(1)
-    assert (counts >= 0).all(), "negative count"
-    print("total", counts.sum())     # jax.debug.print when traced
-    return counts
-
-@fn
-def bounce(p: Particle, dt: f32) -> Particle:
-    p.vel -= 9.8 * dt                # p = p._replace(vel=...)
-    p.pos = max(p.pos + p.vel * dt, 0.0)   # jnp.maximum when traced
-    return p
-```
-
-- `x[i] = v` and `x[i] op= v` on a local variable become `x.at[i].set(...)`
-  when `x` is a JAX array, with NumPy's semantics (duplicate indices are
-  assigned once; a boolean mask of `x`'s shape works under `jit`). Python
-  lists, dicts and NumPy arrays are still updated in place. JAX arrays stay
-  immutable values: another name bound to the same array does not see the
-  update.
-- `s.field = v` replaces a NamedTuple or frozen dataclass; ordinary objects
-  get a normal attribute assignment.
-- A traced `assert` is checked when the compiled code runs, and only where
-  the surrounding branch or loop iteration was really reached. Under `jit` a
-  failure surfaces as JAX's runtime error carrying the assertion message.
-- `raise` in a traced branch is likewise raised when the compiled code
-  reaches it, not while tracing.
-- `max` / `min` with a JAX array among several arguments use `jnp.maximum` /
-  `jnp.minimum` in every mode (so NaN propagates and dtypes promote, unlike
-  the builtins).
-- Real in-place updates of Python objects are refused inside traced control
-  flow (a loop is unrolled instead; a traced `if` raises a `StageError`),
-  because they would run once while tracing.
-- Static type checkers do not know about this: pyright flags item assignment
-  on a `jax.Array` and attribute assignment on a NamedTuple.
-
-### Gradient-safe branches
-
-`jnp.where(x > 0, jnp.sqrt(x), 0.0)` has a NaN gradient at `x <= 0`: both sides
-are evaluated, and the unused side's infinite derivative is multiplied by
-zero. The usual fix is a second, inner `where` to sanitise the input. A plain
-`if` in an `@fn` does not need it:
-
-```python
-@fn
-def safe_sqrt(x: f32) -> f32:
-    if x > 0:
-        return jnp.sqrt(x)
-    return 0.0
-
-jax.vmap(jax.grad(safe_sqrt))(jnp.array([4.0, 0.0, -1.0]))   # [0.25, 0., 0.]
-```
-
-This works because a staged `if` becomes `lax.cond`, not `where`, and each
-branch only receives gradient where it was taken. Recent JAX versions (0.12
-is the one tested) do that masking themselves when a `cond` is vmapped; on
-versions that do not, typax passes every float a branch reads through
-`where(taken, x, stop_gradient(x))` to the same effect. The right-hand side
-of a traced `and` / `or` and both sides of `a if c else b` are evaluated
-inside their branch too.
-
-Rules and limits:
-
-- Under a traced `if`, both branches must give each variable the same shape
-  and dtype. Errors name the variable.
-- Under a traced loop, carried variables must keep their shape and dtype.
-- `break`, `continue` and `return` inside a loop work, including on traced
-  conditions (`while True: ... if done: break` becomes a `while_loop`). A
-  staged `for` with a traced `break` still runs every iteration, with the
-  ones after the break masked out.
-- Some statements are deliberately left as plain Python (so they need
-  concrete conditions, and loops are unrolled): loops with an `else` clause
-  anything inside `try` or `with` (loops there keep their real jumps);
-  statements that update something other than a local variable in place
-  (`self.buf[i] = v`, `d[k][j] = v`, `xs.sort()`); and statements assigning
-  a variable that a nested function or lambda also uses.
-- A variable assigned in only one branch of a traced `if`, or first assigned
-  inside a traced loop, gets a zero placeholder on the other path. Reading it
-  there would be an error in Python; under tracing it is not detected. The
-  same goes for a function that returns an array on one traced path and
-  falls off its end on another: the compiled function returns zeros there.
-- After a staged loop, a collected list is a read-only sequence until the
-  function returns it (it is returned as a real list). Another name bound to
-  the same list before the loop does not see the collected values.
-- If a `for` loop cannot be staged (the index is used as a Python int, a
-  shape changes between iterations, ...) it is unrolled as in plain JAX, and
-  `f.flow` says why.
-- Functions must be free of side effects, as JAX already requires: a staged
-  body is traced once, not run once per iteration.
-- Opt out per function with `@fn(convert=False)`, or keep conversion but
-  unroll loops with `tx.config.lower_loops = False`. `f.converted_source`
-  shows the generated code; `f.convert_note` says why a function was skipped.
-
-## Vectorising
+## Vectorising and compiling
 
 ```python
 @fn
 def score[T, D](x: f32[T, D], w: f32[D]) -> f32[T]:
     return jnp.tanh(x @ w)
 
-xs, w = jnp.ones((32, 5, 3)), jnp.ones(3)
-score.lift(xs, w).shape                              # (32, 5): xs mapped, w shared
-score.lift(jnp.ones((8, 1, 5, 3)), jnp.ones((7, 3))).shape   # (8, 7, 5): batch axes broadcast
-```
+score.lift(jnp.ones((32, 5, 3)), jnp.ones(3)).shape                # (32, 5)
+score.lift(jnp.ones((8, 1, 5, 3)), jnp.ones((7, 3))).shape         # (8, 7, 5)
 
-Under `vmap` (and so under `lift`, at any nesting depth) JAX traces a
-function once with a single example's shapes, not once per element and not
-with the batch. The annotation checks therefore see one example at every
-level, and tracing cost does not depend on the batch size. Compilation is
-different: XLA compiles for the full batched shapes, which is what `batched`
-below works around.
-
-`lift` is explicit by default: a plain call with a rank-3 `xs` is still an
-error. For functions written for one element that should always accept
-batches, `@fn(lift=True)` makes the plain call lift:
-
-```python
-@fn(lift=True)
+@fn(lift=True)                       # written for one element, takes batches
 def safe_log(x: f32) -> f32:
     if x > 0:
         return jnp.log(x)
     return -jnp.inf
 
-safe_log(jnp.ones((4, 5)))      # shape (4, 5), gradient-safe
+safe_log(jnp.ones((4, 5)))
 ```
- Batch axes must lead. A single `Key` argument is split into one key
-per example, so examples never share randomness.
 
-`jit` compiles per exact shape, so every new batch size normally recompiles.
-Because lifted examples are independent, padding a batch cannot change the
-results, which makes compile-once batching safe:
+`lift` aligns batch axes on the left and broadcasts them like NumPy. A plain
+call with extra axes stays an error unless the function says `lift=True`.
+
+`@fn(jit=True)` traces arrays and treats every other value as static, in
+arguments and results, including functions and strings inside a NamedTuple or
+dataclass. Each retrace is recorded with the reason:
 
 ```python
-run = score.batched(chunk=64)      # compiled once, for batches of 64
-for n in (5, 64, 1000):
-    run(jnp.ones((n, 5, 3)), w)    # chunked and padded as needed
-print(run.traces)                  # 1
+@fn(jit=True)
+def scale[N](x: f32[N], by: f32) -> f32[N]:
+    return x * by
+
+scale(jnp.ones(3), 2.0)
+scale(jnp.ones(4), 2.0)
+print(scale.explain_retrace())       # x: f32[3]  ->  f32[4]
 ```
 
-The chunking itself runs in NumPy on the host, so nothing is compiled per
-batch size; the price is a host round-trip for inputs and outputs.
+Compile time does not grow with batch size (measured from 1 to 4096) as long as
+loops are staged. `tx.compile_cache(path)` keeps compiled functions on disk
+across runs.
 
-Inside a function, a loop over independent items normally becomes a `vmap`.
-`for x in tx.rows(xs, chunk=k)` runs them `k` at a time, one chunk after
-another (like `jax.lax.map(..., batch_size=k)`), which bounds memory and
-stops one slow item from holding up the rest.
-
-`batched(sizes=(8, 64, 512))` compiles one version per size and uses the
-largest that fits, wasting less work on small batches.
-
-## Implicit random keys
+## Random keys
 
 ```python
 @fn(random=True)
-def dropout[D](x: f32[D], rate: Static[float] = 0.5) -> f32[D]:
+def dropout[D](x: f32[D], rate: float = 0.5) -> f32[D]:
     keep = jax.random.bernoulli(tx.key(), 1 - rate, x.shape)
     return jnp.where(keep, x / (1 - rate), 0.0)
 
 tx.seed(0)
-dropout(jnp.ones(6))     # different on every call, reproducible after tx.seed
+dropout(jnp.ones(6))         # different on every call, reproducible after tx.seed
 ```
 
-Each `tx.key()` call returns a new key. Random functions calling random
-functions derive their keys from the caller's, and each branch and loop
-iteration gets its own, so eager, `jit`, `scan` and `vmap` runs draw the same
-numbers.
-
-The global key is Python state, so it must not be read while tracing: it
-would be frozen into the compiled function. typax enforces this:
-
-```python
-@fn(jit=True, random=True)          # typax owns the jit and passes a fresh
-def noisy[D](x: f32[D]) -> f32[D]:  # key in as an argument on every call
-    return x + jax.random.normal(tx.key(), x.shape)
-
-@jax.jit
-def step(x, key):                   # or bring your own key
-    with tx.rng(key):
-        return dropout(x)
-```
-
-Calling a random function under a plain `jax.jit` with no key in scope raises
-a `StageError` explaining these two options. So does mapping one with
-`jax.vmap` while a single key is in scope, since every element would draw the
-same numbers; `f.lift` gives each element its own key. Explicit `Key` parameters keep
-working as usual.
+Each `tx.key()` returns a new key. Nested calls, branches and loop iterations
+derive their own keys, so eager, `jit`, `scan` and `vmap` runs draw the same
+numbers. Under a plain `jax.jit`, put a key in scope with `with tx.rng(key):`,
+or use `@fn(jit=True, random=True)`, which passes a fresh key on every call.
+`f.lift` gives each element its own key.
 
 ## Debugging
 
 ```python
-from typax import debug
-
 @fn
 def entropy[N](logits: f32[N]) -> f32:
     p = jax.nn.softmax(logits)
     return -(p * jnp.log(p)).sum()
 
-print(debug.find_nan(entropy, jnp.array([0.0, 200.0, -200.0])))
+print(tx.debug.find_nan(entropy, jnp.array([0.0, 200.0, -200.0])))
 ```
 
 ```
@@ -468,117 +244,33 @@ NaN first appears at model.py:4 (entropy)
   inputs:
     #0: f32[3]  min=0  max=1  (2 zero, of 3)
     #1: f32[3]  min=0  max=0  (2 -inf, 1 zero, of 3)
-  ...
-  infinities appeared earlier at:
-    model.py:4 (entropy)  (log)  > return -(p * jnp.log(p)).sum()
 ```
 
-`find_nan` replays the traced program one operation at a time. Inside loops
-it reports the iteration (`scan iteration 37`), and it works through `jit`,
-`grad` and converted control flow.
+`find_nan` replays the program one operation at a time, reporting the loop
+iteration or branch too. `tx.debug.summary(f, ...)` counts operations by kind
+and source line and flags unrolled loops and large constants;
+`tx.debug.timing(f, ...)` splits trace, compile and run time. `f.info()` shows
+everything typax knows about a function, and `tx.show(tree)` prints a pytree as
+shapes.
 
-```python
-print(debug.summary(entropy, jnp.ones(4)))   # op counts by kind and source line, largest
-                                             # intermediates, lints (unrolled loops, big
-                                             # captured constants, stray 64-bit values)
-print(debug.timing(entropy, jnp.ones(4)))    # trace | compile | run, separately
-```
+## Ported projects
 
-`tx.compile_cache("~/.cache/myproject")` turns on JAX's on-disk compilation
-cache, so that later runs of the same program skip compilation.
+Two existing codebases rewritten in this style, checked against the originals:
 
-With `@fn(jit=True)` the function is compiled with arrays (and Python
-numbers) traced and everything else static: `Static[...]` parameters and
-struct fields, functions, strings and other non-array values, in the
-arguments and in the result. There is no `static_argnames` to maintain, and a
-NamedTuple or dataclass holding both arrays and a callable can be passed and
-returned. Static values are told apart strictly (`1`, `True` and `1.0` each
-get their own compiled version).
-Every trace is recorded:
-
-```python
-@fn(jit=True)
-def scale[N](x: f32[N], by: f32) -> f32[N]:
-    return x * by
-
-scale(jnp.ones(3), 2.0); scale(jnp.ones(4), 2.0)
-print(scale.explain_retrace())
-# scale(): trace #2 differs from trace #1 in:
-#     x: f32[3]  ->  f32[4]
-```
-
-A `RetraceWarning` with that explanation is issued once a function has been
-traced more than `tx.config.retrace_warn` times (default 16).
-
-Common tracer errors raised inside an `@fn` (`TracerBoolConversionError` and
-friends) get a note quoting the offending line and listing the fixes.
-
-## A real port: PPO from PureJaxRL
-
-`examples/ppo.py` is [PureJaxRL](https://github.com/luchris429/purejaxrl)'s
-`ppo.py` (CartPole) rewritten in this style: per-environment functions with
-shapes in their signatures, `.lift` instead of `vmap` with `in_axes`, plain
-`for` loops instead of four nested `lax.scan`s over closures, and
-`if done:` for the environment's auto-reset.
-
-- Starting from the same initial parameters and key, it reproduces the
-  unmodified original: after 3 updates the parameters agree to 3e-8 and every
-  episode return, length and boundary is identical (`tests/test_ppo_port.py`
-  checks this against stored reference output).
-- The two runs stay identical for the first 21 of 976 updates (about 10,000
-  environment steps with sampled actions). After that they drift apart, as
-  two differently compiled float32 programs do once a rounding difference
-  flips one sampled action; the learning curves stay close (final mean
-  return 482 vs 492 on this seed). I could not make them bit-identical.
-- All four loops are staged as `lax.scan` automatically, and trace, compile
-  and run times match the original within noise.
-- `python -m typax examples/ppo.py` proves the shapes of all 11 functions.
-
-`examples/compare_ppo.py` and `examples/run_purejaxrl_original.py` rerun the
-comparison against a PureJaxRL checkout.
-
-## A second port: bofus
-
-`examples/bofus/` is the library part of
-[bofus](https://github.com/davidesartor/bofus) (branch `adapt_rho`:
-functional Bayesian optimization with RBF-mixture RKHS geometry, a Gaussian
-process surrogate and an L-BFGS acquisition optimizer) rewritten in this
-style. It keeps the public API.
-
-- The original project's own 74 tests pass against the port unchanged.
-- On identical inputs and keys, 164 arrays of values and gradients agree with
-  the original: kernels, RKHS geometry and the GP (including four L-BFGS
-  fits) to 1e-13 relative or better in float64, and the acquisition
-  optimizer's results to 4e-7. `tests/test_bofus_port.py` checks a subset
-  against stored reference output; `examples/bofus/parity.py` runs it all.
-- Every hand-sanitised double `where` in the original became a plain `if`
-  (42 `jnp.where` calls down to 13), and compile and run times are on par
-  with the original.
-
-`examples/bofus/README.md` lists what changed construct by construct.
-
-## Static type checking
-
-For pyright and mypy, `f32[B, T]` is `jax.Array` and `Static[int]` is `int`,
-so annotated code checks cleanly, wrong argument types and counts are still
-caught, and `.lift` keeps the function's signature. What checkers cannot see:
-
-- Shapes. They are checked by typax (at call time and by the prover), not
-  statically.
-- Sizes must be names: use `Literal[3]` or a `Dim` subclass for constants,
-  and `@fn(U="T + 1")` for arithmetic.
-- pyright warns that a type parameter "appears only once" for dimensions used
-  in a single position (`reportInvalidTypeVarUse`); that warning can be
-  disabled.
+- **[PureJaxRL](https://github.com/luchris429/purejaxrl) PPO** (`examples/ppo.py`):
+  plain loops instead of four nested `lax.scan`s, `if done:` for the
+  auto-reset. Identical to the original for the first 21 of 976 updates, then
+  drifting as float32 programs do; same speed; all shapes proved.
+- **[bofus](https://github.com/davidesartor/bofus)** (`examples/bofus/`): the
+  original's 74 tests pass against the port, and 164 arrays of values and
+  gradients match it to 1e-13 (2.6e-7 for the L-BFGS acquisition optimizer).
+  42 `jnp.where` calls became 13; speed is on par.
 
 ## Limitations
 
-- Requires Python 3.12+ (for `def f[B, T]`) and a recent JAX.
 - Conversion needs the function's source, so functions defined with `exec` or
-  typed at a bare `python` prompt are not converted (`f.convert_note` says so).
-- `debug.find_nan` and the prover's `reshape` check read JAX's internal
-  program representation; they are tested against JAX 0.12 and may need
-  adjusting for other versions.
-- `lift` and `batched` need batch axes in front, and cannot be used on
-  arguments declared with a variadic shape.
-- A `spot-checked` verdict is evidence, not proof.
+  at a bare `python` prompt run unconverted (`f.convert_note` says why).
+- `debug.find_nan` and parts of the prover read JAX internals; they are tested
+  on JAX 0.12.
+- `lift` needs batch axes in front, and not on arguments with a `*Rest` shape.
+- A `spot-checked` proof verdict is evidence, not proof.

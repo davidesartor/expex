@@ -21,6 +21,8 @@ import pkgutil
 import random
 import sys
 import types
+import typing
+import dataclasses
 from dataclasses import dataclass, field
 from typing import Any, Iterable, overload
 
@@ -194,6 +196,32 @@ class _Template:
         return f"<{type(self.obj).__name__} instance>"
 
 
+def _auto_examples(ann: Any) -> list[Any]:
+    """Values the prover tries for a static parameter that has no default."""
+    import enum
+
+    if ann is bool:
+        return [False, True]
+    if ann is int:
+        return [1, 2]
+    if isinstance(ann, type) and issubclass(ann, enum.Enum):
+        return list(ann)
+    origin = typing.get_origin(ann)
+    if origin is typing.Literal:
+        return list(typing.get_args(ann))
+    if origin in (typing.Union, types.UnionType):
+        out: list[Any] = []
+        for a in typing.get_args(ann):
+            out += [None] if a is type(None) else _auto_examples(a)
+        return out
+    if isinstance(ann, type) and (dataclasses.is_dataclass(ann) or hasattr(ann, "_fields")):
+        try:
+            return [ann()]  # a configuration class whose fields all have defaults
+        except TypeError:
+            return []
+    return []
+
+
 def _choices(f: Fn[Any, Any], examples: dict[str, Any]) -> dict[str, list[Any]]:
     """For each parameter: ``[_ABSTRACT]`` or the list of concrete values to try."""
     for k in examples:
@@ -208,6 +236,10 @@ def _choices(f: Fn[Any, Any], examples: dict[str, Any]) -> dict[str, list[Any]]:
             out[name] = list(ex) if isinstance(ex, (list, tuple)) else [ex]
             if not out[name]:
                 raise _Unchecked(f"`examples` for `{name}` is empty.")
+        elif isinstance(p.spec, StaticSpec) and p.default is inspect.Parameter.empty and (
+            auto := _auto_examples(p.spec.inner)
+        ):
+            out[name] = auto
         elif isinstance(p.spec, StaticSpec) or not p.spec.leafy:
             if p.default is inspect.Parameter.empty:
                 if name in ("self", "cls") and name == next(iter(f.params)):
@@ -376,7 +408,7 @@ def _full(e: BaseException) -> str:
 @overload
 def prove(target: "Fn[Any, Any] | BoundFn[Any, Any]", examples: dict[str, Any] | None = None) -> Report: ...
 @overload
-def prove(target: "str | types.ModuleType", examples: None = None) -> list[Report]: ...
+def prove(target: "str | types.ModuleType", examples: None = None) -> "Reports": ...
 def prove(target: Any, examples: dict[str, Any] | None = None) -> Any:
     """Prove the shape annotations of an ``@fn`` function for all sizes.
 
@@ -393,7 +425,7 @@ def prove(target: Any, examples: dict[str, Any] | None = None) -> Any:
         return _prove_fn(f, {first: [obj], **(examples or {})})
     if isinstance(target, Fn):
         return _prove_fn(target, examples)
-    return [_prove_fn(f, None) for f in collect(target)]
+    return Reports(_prove_fn(f, None) for f in collect(target))
 
 
 def collect(target: Any) -> list[Fn[Any, Any]]:
@@ -601,6 +633,20 @@ def _mentions_key(f: Fn[Any, Any]) -> bool:
     except Exception:
         pass
     return found
+
+
+class Reports(list):  # type: ignore[type-arg]
+    """The reports for a whole module or package; prints as a summary."""
+
+    @property
+    def ok(self) -> bool:
+        return all(r.ok or r.status == UNCHECKED for r in self)
+
+    def __str__(self) -> str:
+        return format_reports(self)
+
+    def __repr__(self) -> str:
+        return format_reports(self)
 
 
 def format_reports(reports: list[Report], verbose: bool = False) -> str:

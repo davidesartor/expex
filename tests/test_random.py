@@ -1,4 +1,4 @@
-"""Implicit PRNG keys (``random=True``) and compile-once batching (``.batched``)."""
+"""Implicit PRNG keys (``random=True``)."""
 
 import pytest
 
@@ -30,8 +30,6 @@ def test_several_draws_inside_one_call_differ():
 
     a, b = two()
     assert a != b
-    ks = tx.keys(4)
-    assert ks.shape == (4,)
 
 
 def test_explicit_key_scope():
@@ -147,120 +145,3 @@ def test_independent_random_loop_uses_vmap_with_distinct_keys():
 def _scoped(f, key, *args):
     with tx.rng(key):
         return f(*args)
-
-
-# ------------------------------------------------------------------- batched
-
-
-@fn
-def score[T, D](x: f32[T, D], w: f32[D]) -> f32[T]:
-    return jnp.tanh(x @ w)
-
-
-def test_batched_matches_lift_for_any_batch_size_with_one_compile():
-    run = score.batched(chunk=8)
-    w = jnp.arange(3.0)
-    for n in (1, 3, 8, 9, 16, 21):
-        xs = jax.random.normal(jax.random.key(n), (n, 5, 3))
-        assert jnp.allclose(run(xs, w), score.lift(xs, w), atol=1e-6), n
-    assert run.traces == 1
-
-
-def test_batched_sizes_bound_the_number_of_compiles():
-    run = score.batched(sizes=(1, 4, 16))
-    w = jnp.ones(3)
-    for n in range(1, 40):
-        xs = jnp.ones((n, 5, 3)) * n
-        assert run(xs, w).shape == (n, 5)
-    assert run.traces <= 3
-
-
-def test_batched_layouts_and_broadcasting():
-    run = score.batched(chunk=4)
-    xs = jax.random.normal(jax.random.key(0), (6, 5, 3))
-    ws = jax.random.normal(jax.random.key(1), (6, 3))
-    assert jnp.allclose(run(xs, ws), score.lift(xs, ws), atol=1e-6)
-    assert jnp.allclose(run(xs[0], ws), score.lift(xs[0], ws), atol=1e-6)
-    # several batch axes
-    x2 = jax.random.normal(jax.random.key(2), (2, 1, 5, 3))
-    w2 = jax.random.normal(jax.random.key(3), (3, 3))
-    out = run(x2, w2)
-    assert out.shape == (2, 3, 5)
-    assert jnp.allclose(out, score.lift(x2, w2), atol=1e-6)
-    # no batch at all: a plain call
-    assert run(xs[0], ws[0]).shape == (5,)
-
-
-def test_batched_static_and_struct_arguments():
-    @fn
-    def f[D](x: f32[D], n: Static[int], opts: tuple[f32[D], f32] | None = None) -> f32[D]:
-        y = x * n
-        if opts is not None:
-            y = y * opts[0] + opts[1]
-        return y
-
-    run = f.batched(chunk=4)
-    xs = jnp.ones((6, 3))
-    assert jnp.allclose(run(xs, 2), 2.0)
-    assert jnp.allclose(run(xs, 3), 3.0)
-    assert jnp.allclose(run(xs, 2, (jnp.ones(3) * 5, jnp.float32(1.0))), 11.0)
-    assert run.traces == 3  # one per distinct static configuration
-    run(jnp.ones((9, 3)), 2)
-    assert run.traces == 3
-
-
-def test_batched_random_and_keys():
-    run = noise.batched(chunk=4)
-    out = run(jnp.zeros((10, 3)))
-    assert out.shape == (10, 3) and len({tuple(r.tolist()) for r in out}) == 10
-    assert run.traces == 1
-
-    @fn
-    def explicit[D](x: f32[D], key: Key) -> f32[D]:
-        return x + jax.random.normal(key, x.shape)
-
-    run2 = explicit.batched(chunk=4)
-    out2 = run2(jnp.zeros((6, 3)), jax.random.key(0))
-    assert len({tuple(r.tolist()) for r in out2}) == 6
-
-
-def test_batched_errors():
-    with pytest.raises(TypeError, match="exactly one of"):
-        score.batched()
-    with pytest.raises(ValueError, match="positive ints"):
-        score.batched(chunk=0)
-
-    @fn
-    def f[D](x: f32[D], cfg) -> f32[D]:
-        return x
-
-    with pytest.raises(TypeError, match="must be hashable"):
-        f.batched(chunk=2)(jnp.ones((3, 2)), {1, 2})
-
-
-def test_batched_passes_unannotated_arrays_as_data():
-    @fn
-    def apply[D](params, x: f32[D]) -> f32[D]:
-        return x * params["scale"] + params["bias"][0]
-
-    run = apply.batched(chunk=4)
-    xs = jnp.ones((6, 3))
-    assert jnp.allclose(run({"scale": jnp.float32(2.0), "bias": [jnp.float32(1.0)]}, xs), 3.0)
-    # new parameter values are used, without recompiling
-    assert jnp.allclose(run({"scale": jnp.float32(5.0), "bias": [jnp.float32(0.0)]}, xs), 5.0)
-    assert run.traces == 1
-
-
-def test_batched_method():
-    class Model:
-        def __init__(self, k):
-            self.k = k
-
-        @fn
-        def call[D](self, x: f32[D]) -> f32[D]:
-            return x * self.k
-
-    m = Model(3.0)
-    run = m.call.batched(chunk=4)
-    assert jnp.allclose(run(jnp.ones((6, 2))), 3.0)
-    assert run.batched.traces == 1

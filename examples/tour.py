@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 
 import typax as tx
-from typax import Static, debug, f32, fn, i32
+from typax import debug, f32, fn, i32
 
 
 def section(title: str) -> None:
@@ -97,15 +97,11 @@ if __name__ == "__main__":
     section("4. Vectorising from the signature")
     batch = jax.random.normal(jax.random.key(2), (32, 20, 3))
     print("rnn.lift on a batch:", rnn.lift(p, batch).shape)
-    run = rnn.batched(chunk=16)
-    for n in (5, 16, 40):
-        run(p, batch[:1].repeat(n, 0))
-    print(f"rnn.batched(chunk=16) served batches of 5, 16 and 40 with {run.traces} compile")
 
     section("5. Implicit random keys")
 
     @fn(random=True)
-    def dropout[D](x: f32[D], rate: Static[float] = 0.5) -> f32[D]:
+    def dropout[D](x: f32[D], rate: float = 0.5) -> f32[D]:
         keep = jax.random.bernoulli(tx.key(), 1 - rate, x.shape)
         return jnp.where(keep, x / (1 - rate), 0.0)
 

@@ -77,4 +77,4 @@ def test_environment_step_matches_a_reference_rollout():
 def test_all_shapes_are_proved():
     reports = tx.prove(ppo)
     assert len(reports) == 11
-    assert all(r.status == "proved" for r in reports), tx.format_reports(reports)
+    assert all(r.status == "proved" for r in reports), reports

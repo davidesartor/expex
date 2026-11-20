@@ -338,7 +338,7 @@ def test_varargs():
 
 def test_static():
     @fn
-    def f[N](x: f32[N], n: Static[int], mode: Static[str] = "a") -> f32[N]:
+    def f[N](x: f32[N], n: int, mode: str = "a") -> f32[N]:
         return x * n
 
     f(jnp.ones(3), 2)
@@ -347,8 +347,16 @@ def test_static():
         f(jnp.ones(3), 2.0)  # type: ignore[arg-type]
     with pytest.raises(ShapeError, match="expected str, got int"):
         f(jnp.ones(3), 2, 3)  # type: ignore[arg-type]
-    with pytest.raises(StageError, match="Static arguments must be concrete"):
+    with pytest.raises(StageError, match="annotate it with a dtype instead"):
         jax.jit(lambda x, n: f(x, n))(jnp.ones(3), 2)
+    with pytest.raises(ShapeError, match="to pass arrays, annotate it with a dtype"):
+        f(jnp.ones(3), jnp.int32(2))
+
+    @fn
+    def g[N](x: f32[N], n: Static[int]) -> f32[N]:  # the explicit form still works
+        return x * n
+
+    assert g(jnp.ones(3), 2).tolist() == [2.0, 2.0, 2.0]
 
 
 def test_key():
