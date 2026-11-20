@@ -45,9 +45,10 @@ def struct(cls: Any = None, /, *, jit: bool = False, **options: Any) -> Any:
     ``@fn``. A method already decorated with ``@fn(...)`` keeps its own.
     """
 
-    def build(cls: Any) -> Any:
+    def build(original: Any) -> Any:
+        cls: Any = original
         params = getattr(cls, "__dataclass_params__", None)
-        if not (dataclasses.is_dataclass(cls) and params is not None and params.frozen):
+        if not (isinstance(cls, type) and params is not None and params.frozen):
             cls = dataclasses.dataclass(frozen=True)(cls)
         anns = _class_annotations(cls)
         data: list[str] = []
