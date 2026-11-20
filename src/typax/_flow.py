@@ -379,6 +379,39 @@ def _guard_lists(state: tuple[Any, ...], names: tuple[str, ...], what: str, site
     return check
 
 
+def _guard(values: tuple[Any, ...], taken: Any) -> tuple[Any, ...]:
+    """Cut the gradient of every float array in ``values`` where ``taken`` is false.
+
+    Under ``vmap`` a traced ``if`` evaluates both branches for every element and
+    selects. The branch that is not taken may hit a singularity (``sqrt`` of a
+    negative, ``log(0)``), and although its *value* is discarded, reverse-mode
+    differentiation would still multiply its infinite derivative by zero and
+    produce NaN. ``where(taken, x, stop_gradient(x))`` has the value ``x``
+    either way, but lets no gradient flow back through a branch that was not
+    taken, which is exactly the zero it should contribute.
+    """
+
+    def leaf(a: Any) -> Any:
+        if isinstance(a, jax.Array) and jnp.issubdtype(a.dtype, jnp.inexact):
+            return jnp.where(taken, a, lax.stop_gradient(a))
+        return a
+
+    out = []
+    for v in values:
+        if v is UNDEF or v is None or isinstance(v, (list, _Collector, Stacked)) or callable(v):
+            out.append(v)
+        else:
+            try:
+                out.append(jax.tree.map(leaf, v))
+            except Exception:
+                out.append(v)
+    return tuple(out)
+
+
+def _truth(pred: Any) -> Any:
+    return pred if _boolean(pred) else pred != 0
+
+
 def if_(
     pred: Any,
     true_fn: Callable[..., tuple[Any, ...]],
@@ -386,32 +419,44 @@ def if_(
     state: tuple[Any, ...],
     names: tuple[str, ...],
     site: str,
+    reads: tuple[Any, ...] = (),
 ) -> tuple[Any, ...]:
     k = _rng.sub()
     if not isinstance(pred, Tracer):
         with _rng.child(k):
-            return (true_fn if pred else false_fn)(*state)
+            return (true_fn if pred else false_fn)(*state, *reads)
     _check_pred(pred, "if", site)
     check = _guard_lists(state, names, "if", site)
+    taken = _truth(pred)
 
-    def run(fn: Callable[..., tuple[Any, ...]]) -> Callable[[], tuple[Any, ...]]:
+    def run(fn: Callable[..., tuple[Any, ...]], on: Any) -> Callable[[], tuple[Any, ...]]:
+        args = _guard(state + reads, on)
+
         def r() -> tuple[Any, ...]:
             with _rng.child(k):
-                out = fn(*state)
+                out = fn(*args)
             check(out)
             return out
 
         return r
 
     LOG[site] = "if -> lax.cond"
-    return _cond(pred, (run(true_fn), run(false_fn)), names, site)
+    return _cond(pred, (run(true_fn, taken), run(false_fn, ~taken)), names, site)
 
 
-def ifexp(pred: Any, a: Callable[[], Any], b: Callable[[], Any], site: str) -> Any:
+def ifexp(
+    pred: Any,
+    a: Callable[..., Any],
+    b: Callable[..., Any],
+    site: str,
+    reads: tuple[Any, ...] = (),
+) -> Any:
     if not isinstance(pred, Tracer):
-        return a() if pred else b()
+        return a(*reads) if pred else b(*reads)
     _check_pred(pred, "... if ... else ...", site)
-    return _cond(pred, (lambda: (a(),), lambda: (b(),)), ("<the expression>",), site)[0]
+    taken = _truth(pred)
+    ra, rb = _guard(reads, taken), _guard(reads, ~taken)
+    return _cond(pred, (lambda: (a(*ra),), lambda: (b(*rb),)), ("<the expression>",), site)[0]
 
 
 # -------------------------------------------------------------------- while

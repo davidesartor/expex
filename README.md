@@ -67,6 +67,8 @@ def example[*Batch, H, W](
   the categories `Float Int UInt Complex Inexact Num Arr` (`Arr` is any dtype).
 - **Containers**: `tuple[...]`, `list[X]`, `dict[str, X]`, `X | None`, unions,
   NamedTuples and dataclasses with annotated fields.
+- **Generic structures** can have a variable number of leading axes:
+  `class Mix[*B, M, D](NamedTuple)` used as `Mix[N, O, M, D]` or `Mix[M, D]`.
 - **Stacked structures**: `Batch[Transition, T, N]` is a `Transition` whose
   every array has leading axes `T, N` (what you get from stacking per-step
   values, or what `.lift` receives).
@@ -282,6 +284,28 @@ def bounce(p: Particle, dt: f32) -> Particle:
   because they would run once while tracing.
 - Static type checkers do not know about this: pyright flags item assignment
   on a `jax.Array` and attribute assignment on a NamedTuple.
+
+### Gradient-safe branches
+
+`jnp.where(x > 0, jnp.sqrt(x), 0.0)` has a NaN gradient at `x <= 0`: both sides
+are evaluated, and the unused side's infinite derivative is multiplied by
+zero. The usual fix is a second, inner `where` to sanitise the input. A plain
+`if` in an `@fn` does not need it:
+
+```python
+@fn
+def safe_sqrt(x: f32) -> f32:
+    if x > 0:
+        return jnp.sqrt(x)
+    return 0.0
+
+jax.vmap(jax.grad(safe_sqrt))(jnp.array([4.0, 0.0, -1.0]))   # [0.25, 0., 0.]
+```
+
+When a traced `if` (or `a if c else b`) is staged, every float value a branch
+reads is passed through `where(taken, x, stop_gradient(x))`. That leaves the
+value unchanged and lets no gradient flow back through a branch that was not
+taken, which is the zero it should contribute.
 
 Rules and limits:
 

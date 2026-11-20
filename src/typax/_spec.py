@@ -850,6 +850,29 @@ def _class_annotations(cls: type) -> dict[str, Any]:
     return out
 
 
+def _bind_params(cls: type, params: Any, dims: tuple[Any, ...]) -> dict[Any, Any]:
+    """Match a generic class's type parameters to the dimensions it was given.
+
+    ``class Mix[*B, M, D]`` used as ``Mix[N, O, M, D]`` binds ``B`` to ``(N, O)``.
+    """
+    var = [i for i, p in enumerate(params) if isinstance(p, typing.TypeVarTuple)]
+    if len(var) > 1:
+        raise TypeError(f"{cls.__name__} has more than one variadic type parameter")
+    fixed = len(params) - len(var)
+    if (not var and len(dims) != fixed) or len(dims) < fixed:
+        raise TypeError(
+            f"{cls.__name__} takes {'at least ' if var else ''}{fixed} dimension(s), got {len(dims)}"
+        )
+    if not var:
+        return dict(zip(params, dims))
+    t = var[0]
+    after = len(params) - t - 1
+    inner = dict(zip(params[:t], dims[:t]))
+    inner[params[t]] = tuple(dims[t : len(dims) - after])
+    inner.update(zip(params[t + 1 :], dims[len(dims) - after :]))
+    return inner
+
+
 def _prepend(spec: Spec, lead: tuple[Any, ...]) -> Spec:
     """``spec`` with the axes ``lead`` in front of every array (for ``Batch[...]``)."""
     if isinstance(spec, (ArraySpec, KeySpec)):
@@ -883,7 +906,8 @@ def parse_owner(cls: type) -> Spec:
     if names is None:
         return OpaqueSpec()
     params = getattr(cls, "__type_params__", ()) or getattr(cls, "__parameters__", ())
-    inner = {p: DName(p.__name__) for p in params if isinstance(p, typing.TypeVar)}
+    inner: dict[Any, Any] = {p: DName(p.__name__) for p in params if isinstance(p, typing.TypeVar)}
+    inner.update({p: (DVar(p.__name__),) for p in params if isinstance(p, typing.TypeVarTuple)})
     anns = _class_annotations(cls)
     fields: dict[str, Spec] = {}
     for n in names:
@@ -950,18 +974,16 @@ def parse(ann: Any, subst: dict[Any, Any] | None = None, _stack: tuple[type, ...
             params = getattr(cls, "__type_params__", ()) or getattr(cls, "__parameters__", ())
             inner: dict[Any, Any] = {}
             if origin is not None and args:
-                shown = []
-                for p, a in zip(params, args):
-                    d = parse_dim(a, subst) if not isinstance(p, typing.TypeVarTuple) else None
-                    if d is not None:
-                        inner[p] = d
-                        shown.append(str(d))
-                label = f"{cls.__name__}[{', '.join(shown)}]"
+                flat, _ = _parse_dims(tuple(args), subst)
+                inner = _bind_params(cls, params, flat)
+                label = f"{cls.__name__}[{', '.join(map(str, flat))}]"
             else:
                 # Unparametrised generic: its dims are private to this value.
                 for p in params:
                     if isinstance(p, typing.TypeVar):
                         inner[p] = DName(f"{cls.__name__}.{p.__name__}")
+                    elif isinstance(p, typing.TypeVarTuple):
+                        inner[p] = (DVar(f"{cls.__name__}.{p.__name__}"),)
                 label = cls.__name__
             anns = _class_annotations(cls)
             fields: dict[str, Spec] = {}

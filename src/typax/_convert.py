@@ -283,9 +283,15 @@ def _call(attr: str, *args: ast.expr) -> ast.Call:
     return ast.Call(func=_flow_attr(attr), args=list(args), keywords=[])
 
 
-def _thunk(e: ast.expr) -> ast.Lambda:
+def _thunk(e: ast.expr, params: Iterable[str] = ()) -> ast.Lambda:
     return ast.Lambda(
-        args=ast.arguments(posonlyargs=[], args=[], kwonlyargs=[], kw_defaults=[], defaults=[]),
+        args=ast.arguments(
+            posonlyargs=[],
+            args=[ast.arg(arg=p) for p in params],
+            kwonlyargs=[],
+            kw_defaults=[],
+            defaults=[],
+        ),
         body=e,
     )
 
@@ -361,10 +367,12 @@ class _Exprs(ast.NodeTransformer):
         site: Callable[[ast.AST], ast.expr],
         first_param: str | None = None,
         builtins_ok: set[str] | frozenset[str] = frozenset(),
+        readable: set[str] | frozenset[str] = frozenset(),
     ):
         self.site = site
         self.first_param = first_param
         self.builtins_ok = builtins_ok
+        self.readable = readable
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
         return node  # nested functions are left alone
@@ -422,13 +430,25 @@ class _Exprs(ast.NodeTransformer):
         self.generic_visit(node)
         if _has_walrus(node):
             return node
+        reads = sorted((_reads([node.body]) | _reads([node.orelse])) & self.readable)
         return ast.copy_location(
-            _call("ifexp", node.test, _thunk(node.body), _thunk(node.orelse), self.site(node)), node
-        )
+            _call(
+                "ifexp", node.test, _thunk(node.body, reads), _thunk(node.orelse, reads),
+                self.site(node), _state(reads),
+            ),
+            node,
+        )  # fmt: skip
 
 
 class _Converter:
-    def __init__(self, fdef: ast.FunctionDef, filename: str, shadowed: set[str]):
+    def __init__(
+        self,
+        fdef: ast.FunctionDef,
+        filename: str,
+        shadowed: set[str],
+        freevars: Iterable[str] = (),
+    ):
+        self.freevars = set(freevars)
         self.fdef = fdef
         self.filename = filename
         self.n = 0
@@ -458,6 +478,8 @@ class _Converter:
                         self.captured.add(sub.id)
                     elif isinstance(sub, ast.Nonlocal):
                         self.captured |= set(sub.names)
+        #: names whose values may be traced: locals and enclosing-function variables
+        self.readable = (self.locals | self.freevars) - declared
         self.builtins_ok = {
             b for b in ("range", "enumerate", "zip", "reversed", "print", "max", "min") if b not in self.locals and b not in shadowed
         }
@@ -656,6 +678,7 @@ class _Converter:
 
     def if_(self, s: ast.If, live: set[str]) -> list[ast.stmt]:
         names = sorted((_assigned(s.body) | _assigned(s.orelse)) & self.locals)
+        reads_body, reads_else = _reads(s.body), _reads(s.orelse)
         ok = not self._blocked(s) and not _has_jump(s.body + s.orelse)
         body = self.block(s.body, live)
         orelse = self.block(s.orelse, live)
@@ -665,8 +688,19 @@ class _Converter:
         self.count += 1
         t, f = self.fresh("true"), self.fresh("false")
         ret = _state(names)
-        call = _call("if_", s.test, _name(t), _name(f), _state(names), _strs(names), self.site(s))
-        new = [_def(t, names, body, ret), _def(f, names, orelse, copy.deepcopy(ret)), *_bind(names, call)]
+        # Variables the branches only read are passed in too, so that the helper
+        # can cut their gradients where a branch is not taken (see `_guard`).
+        reads = sorted(((reads_body | reads_else) & self.readable) - set(names))
+        call = _call(
+            "if_", s.test, _name(t), _name(f), _state(names), _strs(names), self.site(s),
+            _state(reads),
+        )  # fmt: skip
+        both = names + reads
+        new = [
+            _def(t, both, body, ret),
+            _def(f, both, orelse, copy.deepcopy(ret)),
+            *_bind(names, call),
+        ]
         return [_locate(n, s) for n in new]
 
     def while_(self, s: ast.While, live: set[str]) -> list[ast.stmt]:
@@ -753,11 +787,13 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
         raise NotConverted("uses private (name-mangled) attributes")
 
     ast.increment_lineno(tree, code.co_firstlineno - 1)
-    conv = _Converter(fdef, code.co_filename, set(raw.__globals__) | set(code.co_freevars))
+    conv = _Converter(
+        fdef, code.co_filename, set(raw.__globals__) | set(code.co_freevars), code.co_freevars
+    )
     conv.rewrite_appends(fdef.body)
     conv.rewrite_inplace(fdef.body)
     n_locals = conv.rewrite_annotations(fdef.body)
-    exprs = _Exprs(conv.site, conv.first_param, conv.builtins_ok)
+    exprs = _Exprs(conv.site, conv.first_param, conv.builtins_ok, conv.readable)
     fdef.body = [exprs.visit(s) for s in fdef.body]
     if any(
         isinstance(s, ast.If) and (_returns_via_ifs(s.body) or _returns_via_ifs(s.orelse))
@@ -830,11 +866,13 @@ def source(raw: Callable[..., Any]) -> str:
     fdef = tree.body[0]
     assert isinstance(fdef, ast.FunctionDef)
     ast.increment_lineno(tree, raw.__code__.co_firstlineno - 1)
-    conv = _Converter(fdef, raw.__code__.co_filename, set(getattr(raw, "__globals__", {})))
+    conv = _Converter(
+        fdef, raw.__code__.co_filename, set(getattr(raw, "__globals__", {})), raw.__code__.co_freevars
+    )
     conv.rewrite_appends(fdef.body)
     conv.rewrite_inplace(fdef.body)
     conv.rewrite_annotations(fdef.body)
-    fdef.body = [_Exprs(conv.site, conv.first_param, conv.builtins_ok).visit(s) for s in fdef.body]
+    fdef.body = [_Exprs(conv.site, conv.first_param, conv.builtins_ok, conv.readable).visit(s) for s in fdef.body]
     if any(
         isinstance(s, ast.If) and (_returns_via_ifs(s.body) or _returns_via_ifs(s.orelse))
         for s in fdef.body
