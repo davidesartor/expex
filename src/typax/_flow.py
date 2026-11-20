@@ -785,11 +785,19 @@ def append_(lst: Any, item: Any) -> Any:
 class _Iter:
     """An iterable the loop lowering understands: ``n`` items built by ``make(x, i)``."""
 
-    def __init__(self, n: Any, xs: Any, make: Callable[[Any, Any], Any], py: Callable[[], Any]):
+    def __init__(
+        self,
+        n: Any,
+        xs: Any,
+        make: Callable[[Any, Any], Any],
+        py: Callable[[], Any],
+        chunk: int | None = None,
+    ):
         self.n = n
         self.xs = xs
         self.make = make
         self.py = py
+        self.chunk = chunk  # run independent iterations `chunk` at a time, in sequence
 
     def __iter__(self) -> Any:
         return iter(self.py())
@@ -806,7 +814,7 @@ def _as_iter(it: Any) -> _Iter | None:
     if isinstance(it, Stacked):
         return _Iter(len(it), it.array, lambda x, i: x, lambda: it)
     if isinstance(it, rows):
-        return _Iter(len(it), it.tree, lambda x, i: x, lambda: it)
+        return _Iter(len(it), it.tree, lambda x, i: x, lambda: it, it.chunk)
     return None
 
 
@@ -818,7 +826,12 @@ class rows:
     a single array.
     """
 
-    def __init__(self, tree: Any):
+    def __init__(self, tree: Any, chunk: int | None = None):
+        # Independent iterations normally run all at once (vmap). With chunk=k
+        # they run k at a time, one chunk after another, like
+        # jax.lax.map(..., batch_size=k): bounded memory, and one slow
+        # iteration does not hold up the rest. chunk=1 is fully sequential.
+        self.chunk = chunk
         leaves = jax.tree.leaves(tree)
         if not leaves:
             raise ValueError("rows() needs a pytree with at least one array")
@@ -1013,10 +1026,15 @@ def _lower_for(
 
     idx = jnp.arange(n)
     init = tuple(state[j] for j in carry_idx)
-    if not carry_idx:
+    final: tuple[Any, ...] = ()
+    if not carry_idx and it.chunk:
+        LOG[site] = f"for -> lax.map in chunks of {it.chunk} (iterations are independent)"
+        ys, lasts = lax.map(
+            lambda xi: step((), xi)[1], (it.xs, idx), batch_size=None if it.chunk == 1 else it.chunk
+        )
+    elif not carry_idx:
         LOG[site] = "for -> vmap (iterations are independent)"
         _, (ys, lasts) = jax.vmap(lambda x, i: step((), (x, i)))(it.xs, idx)
-        final: tuple[Any, ...] = ()
     else:
         LOG[site] = f"for -> lax.scan (carries {', '.join(names[j] for j in carry_idx)})"
         final, (ys, lasts) = lax.scan(step, init, (it.xs, idx))

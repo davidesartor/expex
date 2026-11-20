@@ -227,12 +227,14 @@ class Fn(Generic[P, R]):
         self._jitted: Callable[..., Any] | None = None
         if jit:
 
-            @functools.wraps(raw)
-            def traced(*args: Any, __bn_key__: Any = None, **kwargs: Any) -> Any:
+            def core(frozen: "_Frozen", dyn: tuple[Any, ...], key: Any) -> Any:
+                args, kwargs = frozen.rebuild(self, dyn)
                 self._record_trace(args, kwargs)
-                return self._run(args, kwargs, key=__bn_key__)
+                return self._run(args, kwargs, key=key)
 
-            self._jitted = jax.jit(traced, static_argnames=tuple(self.static_names) or None)
+            core.__name__ = getattr(raw, "__name__", "fn")
+            core.__qualname__ = self.name
+            self._jitted = jax.jit(core, static_argnums=(0,))
 
         REGISTRY.add(self)
 
@@ -294,23 +296,37 @@ class Fn(Generic[P, R]):
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
         __tracebackhide__ = True
         if self._jitted is not None:
-            try:
-                if self.random:
-                    # The key is drawn out here and passed in as a real argument, so
-                    # the compiled function gets fresh randomness on every call.
-                    k = _rng.fresh(f"{self.name}()")
-                    return self._jitted(*args, __bn_key__=k, **kwargs)
-                return self._jitted(*args, **kwargs)
-            except ValueError as e:
-                if "Non-hashable static arguments" in str(e):
-                    e.add_note(
-                        f"typax: {self.name}() is jit=True and its Static parameters "
-                        f"({', '.join(self.static_names)}) are passed to jax.jit as static "
-                        f"arguments, so their values must be hashable (use tuples, not lists "
-                        f"or arrays)."
-                    )
-                raise
+            # The key is drawn out here and passed in as a real argument, so the
+            # compiled function gets fresh randomness on every call.
+            k = _rng.fresh(f"{self.name}()") if self.random else None
+            return self._call_jit(args, kwargs, k)
         return self._run(args, kwargs)
+
+    def _call_jit(self, args: tuple[Any, ...], kwargs: dict[str, Any], key: Any) -> Any:
+        """Call the compiled function: arrays are traced, everything else is static.
+
+        ``Static[...]`` parameters and fields, and any non-array value inside an
+        argument (a function, a string, an arbitrary object), become part of the
+        compilation key, so no manual ``static_argnames`` is needed.
+        """
+        __tracebackhide__ = True
+        assert self._jitted is not None
+        if self._owner is not None:
+            self._resolve_owner()
+        try:
+            bound = self._sig.bind(*args, **kwargs)
+        except TypeError:
+            return self.raw(*args, **kwargs)  # let Python raise its own error
+        frozen, dyn = _Frozen.split(self, bound.arguments)
+        try:
+            hash(frozen)
+        except TypeError as e:
+            raise TypeError(
+                f"{self.name}() is jit=True, so its non-array arguments are part of the "
+                f"compilation key and must be hashable ({e}). Use tuples instead of lists "
+                f"for Static values."
+            ) from None
+        return self._jitted(frozen, dyn, key)
 
     def _run(
         self,
@@ -638,10 +654,8 @@ class Fn(Generic[P, R]):
             k = next(it) if self.random else None
             new = self._walk(ba.arguments, lambda s, x, p: next(it))
             b2 = inspect.BoundArguments(self._sig, new)  # type: ignore[arg-type]
-            if self._jitted is not None and self.random:
-                return self._jitted(*b2.args, __bn_key__=k, **b2.kwargs)
             if self._jitted is not None:
-                return self._jitted(*b2.args, **b2.kwargs)
+                return self._call_jit(b2.args, b2.kwargs, k)
             return self._run(b2.args, b2.kwargs, key=k)
 
         g: Callable[..., Any] = core_fn
@@ -804,6 +818,136 @@ class Fn(Generic[P, R]):
 
     def __repr__(self) -> str:
         return f"<fn {self.signature}>"
+
+
+class _StaticValue:
+    """Wraps a value that must stay a compile-time constant under jit."""
+
+    __slots__ = ("value",)
+
+    def __init__(self, value: Any):
+        self.value = value
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, _StaticValue):
+            return False
+        a, b = self.value, other.value
+        return a is b or (type(a) is type(b) and bool(a == b))
+
+    def __hash__(self) -> int:
+        return hash(self.value)
+
+    def __repr__(self) -> str:
+        return f"static {self.value!r}"
+
+
+def _is_traced_leaf(x: Any) -> bool:
+    return isinstance(x, (jax.Array, np.ndarray, np.generic)) or type(x) in (bool, int, float, complex)
+
+
+def _has_static(spec: Spec) -> bool:
+    cached = getattr(spec, "_has_static", None)
+    if cached is None:
+        if isinstance(spec, StaticSpec):
+            cached = True
+        else:
+            subs: list[Spec] = []
+            for attr in ("elems", "options"):
+                subs += list(getattr(spec, attr, ()))
+            for attr in ("elem", "value"):
+                if isinstance(getattr(spec, attr, None), Spec):
+                    subs.append(getattr(spec, attr))
+            subs += list(getattr(spec, "fields", {}).values())
+            cached = any(_has_static(s) for s in subs)
+        try:
+            spec._has_static = cached  # type: ignore[attr-defined]
+        except AttributeError:
+            pass
+    return bool(cached)
+
+
+def _mark(spec: Spec, v: Any, wrap: bool) -> Any:
+    """Wrap (or unwrap) the values that ``spec`` declares Static, inside ``v``."""
+    if not _has_static(spec):
+        return v
+    if isinstance(spec, StaticSpec):
+        if wrap:
+            return _StaticValue(v)
+        return v.value if isinstance(v, _StaticValue) else v
+    fields = getattr(spec, "fields", None)
+    if fields is not None and isinstance(v, getattr(spec, "cls", ())):
+        new = {n: _mark(s, getattr(v, n), wrap) for n, s in fields.items() if _has_static(s)}
+        if isinstance(v, tuple):
+            record: Any = v
+            return record._replace(**new)
+        import dataclasses
+
+        obj: Any = v
+        return dataclasses.replace(obj, **new)
+    elems = getattr(spec, "elems", None)
+    if elems is not None and isinstance(v, tuple) and len(v) == len(elems):
+        return tuple(_mark(s, x, wrap) for s, x in zip(elems, v))
+    elem = getattr(spec, "elem", None)
+    if isinstance(elem, Spec) and isinstance(v, (list, tuple)):
+        return type(v)(_mark(elem, x, wrap) for x in v)
+    value = getattr(spec, "value", None)
+    if isinstance(value, Spec) and isinstance(v, dict):
+        return {k: _mark(value, x, wrap) for k, x in v.items()}
+    for opt in getattr(spec, "options", ()):
+        cls = getattr(opt, "cls", None)
+        if cls is not None and isinstance(v, cls):
+            return _mark(opt, v, wrap)
+    return v
+
+
+class _Frozen:
+    """The static part of a jit call: the argument structure and its non-array leaves."""
+
+    __slots__ = ("names", "tree", "static", "_hash")
+
+    def __init__(self, names: tuple[str, ...], tree: Any, static: tuple[Any, ...]):
+        self.names = names
+        self.tree = tree
+        self.static = static
+        self._hash: int | None = None
+
+    @staticmethod
+    def split(f: "Fn[Any, Any]", arguments: Any) -> tuple["_Frozen", tuple[Any, ...]]:
+        marked = {n: _mark(f.params[n].spec, v, True) for n, v in arguments.items()}
+        leaves, tree = jax.tree.flatten(tuple(marked.values()))
+        dyn = tuple(x for x in leaves if _is_traced_leaf(x))
+        hole = _Frozen  # any unique marker
+        static = tuple(hole if _is_traced_leaf(x) else x for x in leaves)
+        return _Frozen(tuple(marked), tree, static), dyn
+
+    def rebuild(self, f: "Fn[Any, Any]", dyn: tuple[Any, ...]) -> tuple[tuple[Any, ...], dict[str, Any]]:
+        it = iter(dyn)
+        leaves = [next(it) if x is _Frozen else x for x in self.static]
+        values = self.tree.unflatten(leaves)
+        arguments = {n: _mark(f.params[n].spec, v, False) for n, v in zip(self.names, values)}
+        ba = inspect.BoundArguments(f._sig, arguments)  # type: ignore[arg-type]
+        return ba.args, ba.kwargs
+
+    def __eq__(self, other: object) -> bool:
+        return (
+            isinstance(other, _Frozen)
+            and self.names == other.names
+            and self.tree == other.tree
+            and len(self.static) == len(other.static)
+            and all(a is b or (type(a) is type(b) and _eq(a, b)) for a, b in zip(self.static, other.static))
+        )
+
+    def __hash__(self) -> int:
+        if self._hash is None:
+            self._hash = hash((self.names, self.tree, self.static))
+        return self._hash
+
+
+def _eq(a: Any, b: Any) -> bool:
+    try:
+        return bool(a == b)
+    except Exception:
+        return False
 
 
 class BoundFn(Generic[P, R]):

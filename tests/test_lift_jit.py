@@ -8,6 +8,7 @@ import pytest
 import jax
 import jax.numpy as jnp
 
+import typax as tx
 from typax import Key, RetraceWarning, ShapeError, Static, config, f32, fn
 
 
@@ -159,9 +160,8 @@ def test_unhashable_static_gets_a_note():
     def f[B](x: f32[B], n: Static[list]) -> f32[B]:
         return x
 
-    with pytest.raises(ValueError) as e:
+    with pytest.raises(TypeError, match="must be hashable"):
         f(jnp.ones(2), [1])
-    assert any("must be hashable" in n for n in e.value.__notes__)
 
 
 def test_nested_lift_traces_each_function_once_per_example_shape():
@@ -181,3 +181,52 @@ def test_nested_lift_traces_each_function_once_per_example_shape():
     assert out.shape == (32,)
     # tracing and checking see one example at each level, never the batch
     assert calls == {"inner": 1, "outer": 1}
+
+
+def test_jit_treats_non_array_values_as_static():
+    from typing import Callable, NamedTuple
+
+    class Model(NamedTuple):
+        act: Static[Callable]
+        mode: Static[str]
+        w: f32[3]  # type: ignore[valid-type]
+        scale: f32 | None
+
+    @fn(jit=True)
+    def apply(m: Model, x: f32[3], post=None, opts: dict | None = None) -> f32[3]:  # type: ignore[valid-type]
+        y = m.act(x * m.w)
+        if m.mode == "neg":
+            y = -y
+        if m.scale is not None:
+            y = y * m.scale
+        if post is not None:
+            y = post(y)
+        return y + (opts or {}).get("bias", 0.0)
+
+    x = jnp.arange(3.0)
+    m = Model(jnp.tanh, "pos", jnp.ones(3), None)
+    assert jnp.allclose(apply(m, x), jnp.tanh(x))
+    assert jnp.allclose(apply(m._replace(w=jnp.ones(3) * 2), x), jnp.tanh(2 * x))
+    assert len(apply.traces) == 1  # new array values: no retrace
+    assert jnp.allclose(apply(m._replace(mode="neg"), x), -jnp.tanh(x))
+    assert jnp.allclose(apply(m._replace(scale=jnp.float32(3.0)), x), 3 * jnp.tanh(x))
+    assert jnp.allclose(apply(m, x, jnp.abs, {"bias": 1.0}), jnp.abs(jnp.tanh(x)) + 1)
+    assert jnp.allclose(apply(m, x, jnp.abs, {"bias": 2.0}), jnp.abs(jnp.tanh(x)) + 2)
+    assert len(apply.traces) == 4  # mode, scale present, post given; bias is a traced number
+
+
+def test_rows_chunk_runs_like_lax_map():
+    @fn
+    def f[N, D](xs: f32[N, D], chunk: Static[int]) -> f32[N]:
+        out = []
+        for x in tx.rows(xs, chunk=chunk):
+            out.append(jnp.tanh(x).sum())
+        return jnp.asarray(out)
+
+    xs = jax.random.normal(jax.random.key(0), (7, 3))
+    ref = jnp.tanh(xs).sum(-1)
+    assert jnp.allclose(f(xs, 1), ref)
+    assert jnp.allclose(jax.jit(lambda v: f(v, 1))(xs), ref)
+    assert "lax.map in chunks of 1" in "".join(f.flow.values())
+    assert jnp.allclose(jax.jit(lambda v: f(v, 3))(xs), ref, atol=1e-6)
+    assert "lax.map in chunks of 3" in "".join(f.flow.values())
