@@ -12,6 +12,10 @@
 
 ``timing(f, *args)``
     How long tracing, compiling and running take, separately.
+
+``shapes(f, *args)``
+    The function's source annotated with the shape of every variable assigned
+    on each line (symbolic sizes when called without arguments).
 """
 
 from __future__ import annotations
@@ -36,7 +40,7 @@ from ._fn import BoundFn, Fn
 from ._jaxpr import iter_eqns, source_key, source_of, sub_jaxprs
 from ._spec import describe
 
-__all__ = ["find_nan", "summary", "timing", "NanReport", "Summary", "Timing"]
+__all__ = ["find_nan", "shapes", "summary", "timing", "NanReport", "ShapeTrace", "Summary", "Timing"]
 
 
 def _plain(
@@ -489,3 +493,155 @@ def timing(f: Callable[..., Any], *args: Any, repeat: int = 5, **kwargs: Any) ->
         runs.append(time.perf_counter() - s)
     ops = sum(1 for _ in iter_eqns(traced.jaxpr))
     return Timing(t1 - t0, t2 - t1, t3 - t2, statistics.median(runs), ops)
+
+
+# -------------------------------------------------------------------- shapes
+
+
+@dataclass
+class ShapeTrace:
+    """The source of a function annotated with the shapes assigned on each line."""
+
+    title: str
+    lines: list[tuple[int, str, list[str]]]  # (line number, source, annotations)
+
+    def __str__(self) -> str:
+        width = max((len(src.rstrip()) for _, src, notes in self.lines if notes), default=0)
+        width = min(max(width, 20), 72)
+        out = [self.title]
+        for n, src, notes in self.lines:
+            text = src.rstrip()
+            if notes:
+                out.append(f"{n:5d} | {text:<{width}}   # {', '.join(notes)}")
+            else:
+                out.append(f"{n:5d} | {text}")
+        return "\n".join(out)
+
+    __repr__ = __str__
+
+
+def _shape_of(v: Any) -> str | None:
+    """A short description of an array-carrying value, or None for anything else."""
+    from ._spec import show
+
+    if isinstance(v, (jax.Array, np.ndarray, jax.ShapeDtypeStruct)) or hasattr(v, "aval"):
+        try:
+            return describe(v)
+        except Exception:
+            return None
+    if callable(v) or isinstance(v, (type, str, bytes)) or v is None:
+        return None
+    try:
+        leaves = jax.tree.leaves(v)
+    except Exception:
+        return None
+    if leaves and any(hasattr(x, "shape") and hasattr(x, "dtype") for x in leaves):
+        text = show(v)
+        return text if len(text) <= 80 else text[:77] + "..."
+    return None
+
+
+def shapes(f: Callable[..., Any], *args: Any, **kwargs: Any) -> ShapeTrace:
+    """Show the shape and dtype of every variable assigned on each line of ``f``.
+
+    With arguments, ``f`` is traced abstractly on them (nothing is computed).
+    Without arguments, an ``@fn`` is traced with symbolic sizes from its
+    annotations, so the shapes read ``f32[B, T - 1]`` and hold for all sizes.
+    Loop bodies show the shapes of one iteration.
+    """
+    import sys
+
+    from . import _check
+
+    target = f.fn if isinstance(f, BoundFn) else f
+    raw: Any = getattr(target, "raw", target)
+    raw = getattr(raw, "__func__", raw)
+    try:
+        src_lines, start = inspect.getsourcelines(raw)
+        code = raw.__code__
+    except (OSError, TypeError, AttributeError):
+        raise TypeError("shapes() needs a Python function whose source is available") from None
+    fname, end = code.co_filename, start + len(src_lines)
+    seen: dict[int, dict[str, list[str]]] = {}
+    frames: dict[int, tuple[int, dict[str, int]]] = {}
+
+    def note(line: int, name: str, desc: str) -> None:
+        bucket = seen.setdefault(line, {}).setdefault(name, [])
+        if desc not in bucket:
+            bucket.append(desc)
+
+    def watched(frame: Any) -> bool:
+        c = frame.f_code
+        return c.co_filename == fname and start <= c.co_firstlineno < end
+
+    def visible(name: str) -> bool:
+        return not name.startswith("__") and name != "self"
+
+    def changes(frame: Any, line: int, snap: dict[str, int]) -> dict[str, int]:
+        now = {k: id(v) for k, v in frame.f_locals.items() if visible(k)}
+        for k, ident in now.items():
+            if snap.get(k) != ident:
+                desc = _shape_of(frame.f_locals[k])
+                if desc is not None:
+                    note(line, k, desc)
+        return now
+
+    def tracer(frame: Any, event: str, arg: Any) -> Any:
+        if not watched(frame):
+            return None
+        key = id(frame)
+        if event == "call":
+            frames[key] = (frame.f_lineno, {k: id(v) for k, v in frame.f_locals.items() if visible(k)})
+        elif event == "line":
+            last, snap = frames.get(key, (frame.f_lineno, {}))
+            frames[key] = (frame.f_lineno, changes(frame, last, snap))
+        elif event == "return":
+            last, snap = frames.pop(key, (frame.f_lineno, {}))
+            changes(frame, last, snap)
+            if frame.f_code is code or frame.f_code.co_name == raw.__name__:
+                desc = _shape_of(arg)
+                if desc is not None:
+                    note(last, "->", desc)
+        return tracer
+
+    old = sys.gettrace()
+    sys.settrace(tracer)
+    try:
+        if args or kwargs or not isinstance(target, Fn):
+            g, a, k = _plain(f, args, kwargs)
+            with _rng.rng(jax.random.key(0)):
+                jax.eval_shape(lambda *x, **y: g(*x, **y), *a, **k)
+            title = f"{getattr(raw, '__qualname__', raw.__name__)} at {fname}:{start}"
+        else:
+            title = _symbolic_run(target, _check)
+    finally:
+        sys.settrace(old)
+
+    rows = []
+    for i, text in enumerate(src_lines):
+        n = start + i
+        notes = [
+            (f"-> {' | '.join(d)}" if name == "->" else f"{name}: {' | '.join(d)}")
+            for name, d in seen.get(n, {}).items()
+        ]
+        rows.append((n, text, notes))
+    return ShapeTrace(title, rows)
+
+
+def _symbolic_run(f: Fn[Any, Any], check: Any) -> str:
+    """Trace ``f`` once on symbolic inputs (the prover's first case)."""
+    from jax import export
+
+    if f._lazy:
+        f._resolve_owner()
+    choices = check._choices(f, f.examples)
+    abstract = [n for n, c in choices.items() if c == [check._ABSTRACT]]
+    fixed = {n: c[0] for n, c in choices.items() if n not in abstract}
+    statics = check._statics(f, fixed)
+    constraints, _ = check._jax_constraints(f, statics)
+    var_rank = {n[1:]: 1 for n in f.input_names if n.startswith("*")}
+    ctx = check._Ctx(export.SymbolicScope(constraints), None, var_rank, statics)
+    check._trace(f, fixed, abstract, ctx)
+    sizes = ", ".join(sorted(n for n in f.input_names if not n.startswith("*")))
+    label = ", ".join(f"{k}={v!r}" for k, v in fixed.items())
+    return f"{f.signature}   [symbolic {sizes}{'; ' + label if label else ''}]"

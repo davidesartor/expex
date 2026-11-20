@@ -158,3 +158,35 @@ def test_debug_tools_keep_static_arguments_static():
 
     assert debug.find_nan(M().call, jnp.ones(3), 5) is not None
     assert debug.find_nan(M().call, jnp.ones(3), 0) is None
+
+
+def test_shapes_concrete_and_symbolic():
+    @fn
+    def attend[B, T, D](q: f32[B, T, D], k: f32[B, T, D]) -> f32[B, T, T]:
+        scores = q @ k.swapaxes(-1, -2)
+        diffs = scores[:, 1:] - scores[:, :-1]
+        return jax.nn.softmax(scores, axis=-1)
+
+    text = str(debug.shapes(attend))
+    assert "# scores: f32[B, T, T]" in text and "# diffs: f32[B, T - 1, T]" in text
+    assert "-> f32[B, T, T]" in text and "[symbolic B, D, T]" in text
+
+    concrete = str(debug.shapes(attend, jnp.ones((2, 3, 4)), jnp.ones((2, 3, 4))))
+    assert "# scores: f32[2, 3, 3]" in concrete
+
+    @fn
+    def rnn[T, D](xs: f32[T, D], w: f32[D, D]) -> f32[D]:
+        h = jnp.zeros(xs.shape[1])
+        for x in xs:
+            pre = w @ h + x
+            h = jnp.tanh(pre)
+        return h
+
+    text = str(debug.shapes(rnn))
+    assert "# pre: f32[D]" in text and "# h: f32[D]" in text  # one iteration's shapes
+
+    def plain(x):  # works on any Python function, given arguments
+        y = x.sum(0)
+        return y
+
+    assert "# y: f32[5]" in str(debug.shapes(plain, jnp.ones((4, 5))))
