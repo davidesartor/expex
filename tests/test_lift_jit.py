@@ -142,7 +142,9 @@ def test_retrace_explanation(monkeypatch):
     assert "first call" in step.explain_retrace(0)
 
 
-def test_no_warning_below_threshold():
+def test_no_warning_below_threshold(monkeypatch):
+    monkeypatch.setattr(config, "retrace_warn", 4)
+
     @fn(jit=True)
     def f[B](x: f32[B]) -> f32[B]:
         return x

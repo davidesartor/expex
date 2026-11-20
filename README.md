@@ -89,7 +89,9 @@ def split_heads[T, D, H, K](x: f32[T, D], heads: Static[int]) -> f32[H, T, K]:
 
 Methods work too. If the class is a dataclass or NamedTuple with annotated
 fields, `self` is checked and the class's dimensions are shared with the
-method, which also lets the prover check it without an instance:
+method, which also lets the prover check it without an instance. A method can
+name its own class in a string annotation (`-> "Linear[I, O]"`); it is
+resolved at first use.
 
 ```python
 from dataclasses import dataclass
@@ -349,8 +351,20 @@ level, and tracing cost does not depend on the batch size. Compilation is
 different: XLA compiles for the full batched shapes, which is what `batched`
 below works around.
 
-`lift` is explicit on purpose: a plain call with a rank-3 `xs` is still an
-error. Batch axes must lead. A single `Key` argument is split into one key
+`lift` is explicit by default: a plain call with a rank-3 `xs` is still an
+error. For functions written for one element that should always accept
+batches, `@fn(lift=True)` makes the plain call lift:
+
+```python
+@fn(lift=True)
+def safe_log(x: f32) -> f32:
+    if x > 0:
+        return jnp.log(x)
+    return -jnp.inf
+
+safe_log(jnp.ones((4, 5)))      # shape (4, 5), gradient-safe
+```
+ Batch axes must lead. A single `Key` argument is split into one key
 per example, so examples never share randomness.
 
 `jit` compiles per exact shape, so every new batch size normally recompiles.
@@ -366,6 +380,11 @@ print(run.traces)                  # 1
 
 The chunking itself runs in NumPy on the host, so nothing is compiled per
 batch size; the price is a host round-trip for inputs and outputs.
+
+Inside a function, a loop over independent items normally becomes a `vmap`.
+`for x in tx.rows(xs, chunk=k)` runs them `k` at a time, one chunk after
+another (like `jax.lax.map(..., batch_size=k)`), which bounds memory and
+stops one slow item from holding up the rest.
 
 `batched(sizes=(8, 64, 512))` compiles one version per size and uses the
 largest that fits, wasting less work on small batches.
@@ -444,8 +463,12 @@ print(debug.timing(entropy, jnp.ones(4)))    # trace | compile | run, separately
 `tx.compile_cache("~/.cache/myproject")` turns on JAX's on-disk compilation
 cache, so that later runs of the same program skip compilation.
 
-With `@fn(jit=True)`, `Static` parameters become static jit arguments and
-every trace is recorded:
+With `@fn(jit=True)` the function is compiled with arrays (and Python
+numbers) traced and everything else static: `Static[...]` parameters and
+struct fields, functions, strings and other non-array values, in the
+arguments and in the result. There is no `static_argnames` to maintain, and a
+NamedTuple holding both arrays and a callable can be passed and returned.
+Every trace is recorded:
 
 ```python
 @fn(jit=True)
@@ -459,7 +482,7 @@ print(scale.explain_retrace())
 ```
 
 A `RetraceWarning` with that explanation is issued once a function has been
-traced more than `tx.config.retrace_warn` times (default 4).
+traced more than `tx.config.retrace_warn` times (default 16).
 
 Common tracer errors raised inside an `@fn` (`TracerBoolConversionError` and
 friends) get a note quoting the offending line and listing the fixes.
@@ -487,6 +510,24 @@ shapes in their signatures, `.lift` instead of `vmap` with `in_axes`, plain
 
 `examples/compare_ppo.py` and `examples/run_purejaxrl_original.py` rerun the
 comparison against a PureJaxRL checkout.
+
+## A second port: bofus
+
+`examples/bofus/` is the library part of
+[bofus](https://github.com/davidesartor/bofus) (branch `adapt_rho`:
+functional Bayesian optimization with RBF-mixture RKHS geometry, a Gaussian
+process surrogate and an L-BFGS acquisition optimizer) rewritten in this
+style. It keeps the public API.
+
+- The original project's own 74 tests pass against the port unchanged.
+- On identical inputs and keys, 164 arrays of values and gradients agree with
+  the original: kernels, RKHS geometry and the GP (including four L-BFGS
+  fits) to 1e-13 relative or better in float64, and the acquisition
+  optimizer's results to 4e-7. `tests/test_bofus_port.py` checks a subset
+  against stored reference output; `examples/bofus/parity.py` runs it all.
+- Every hand-sanitised double `where` in the original became a plain `if`.
+
+`examples/bofus/README.md` lists what changed construct by construct.
 
 ## Static type checking
 

@@ -629,17 +629,29 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="typax", description="Prove the shape annotations of every @fn in a package."
     )
-    ap.add_argument("targets", nargs="+", help="module/package names, or paths to .py files")
+    ap.add_argument(
+        "targets", nargs="+", help="module/package names, or paths to .py files or package folders"
+    )
     ap.add_argument("-v", "--verbose", action="store_true")
+    ap.add_argument("--x64", action="store_true", help="enable 64-bit floats before importing")
     args = ap.parse_args(argv)
+    if args.x64:
+        jax.config.update("jax_enable_x64", True)
     reports: list[Report] = []
     sys.path.insert(0, os.getcwd())
     for t in args.targets:
-        if t.endswith(".py") or os.sep in t:
+        if t.endswith(".py") or os.sep in t or os.path.isdir(t):
+            # a file or folder: find the top of its package, so relative imports work
             path = os.path.abspath(t)
-            name = os.path.splitext(os.path.basename(path))[0]
-            sys.path.insert(0, os.path.dirname(path))
-            mod = importlib.import_module(name)
+            parts = [] if os.path.isdir(path) else [os.path.splitext(os.path.basename(path))[0]]
+            folder = path if os.path.isdir(path) else os.path.dirname(path)
+            while os.path.exists(os.path.join(folder, "__init__.py")):
+                parts.insert(0, os.path.basename(folder))
+                folder = os.path.dirname(folder)
+            if parts and parts[-1] == "__init__":
+                parts.pop()
+            sys.path.insert(0, folder)
+            mod = importlib.import_module(".".join(parts))
         else:
             mod = importlib.import_module(t)
         reports += prove(mod)

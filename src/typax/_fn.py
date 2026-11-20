@@ -57,7 +57,7 @@ class Config:
         #: loops over arrays and ranges are unrolled, as in plain JAX.
         self.lower_loops: bool = os.environ.get("TYPAX_LOWER_LOOPS", "1") not in ("0", "false", "")
         #: Warn when a ``jit=True`` function has been traced more than this many times.
-        self.retrace_warn: int = int(os.environ.get("TYPAX_RETRACE_WARN", "4"))
+        self.retrace_warn: int = int(os.environ.get("TYPAX_RETRACE_WARN", "16"))
 
 
     def __call__(self, **changes: Any) -> "_Scoped":
@@ -254,12 +254,20 @@ class Fn(Generic[P, R]):
         #: One entry per trace of the jitted function (``jit=True`` only).
         self.traces: list[dict[str, str]] = []
         self._jitted: Callable[..., Any] | None = None
+        self._out_struct: dict[Any, tuple[Any, tuple[Any, ...]]] = {}
         if jit:
 
             def core(frozen: "_Frozen", dyn: tuple[Any, ...], key: Any) -> Any:
                 args, kwargs = frozen.rebuild(self, dyn)
                 self._record_trace(args, kwargs)
-                return self._run(args, kwargs, key=key)
+                out = _mark(self.ret, self._run(args, kwargs, key=key), True)
+                # Only arrays can leave a compiled function. Anything else in the
+                # result (a function, a string, a Static field) depends only on
+                # the static inputs, so it is remembered here and put back after.
+                leaves, tree = jax.tree.flatten(out)
+                static = tuple(_Frozen if _is_traced_leaf(x) else x for x in leaves)
+                self._out_struct[(frozen, _avals(dyn), key is None)] = (tree, static)
+                return tuple(x for x in leaves if _is_traced_leaf(x))
 
             core.__name__ = getattr(raw, "__name__", "fn")
             core.__qualname__ = self.name
@@ -390,7 +398,11 @@ class Fn(Generic[P, R]):
                 f"compilation key and must be hashable ({e}). Use tuples instead of lists "
                 f"for Static values."
             ) from None
-        return self._jitted(frozen, dyn, key)
+        dyn_out = self._jitted(frozen, dyn, key)
+        tree, static = self._out_struct[(frozen, _avals(dyn), key is None)]
+        it = iter(dyn_out)
+        out = tree.unflatten([next(it) if x is _Frozen else x for x in static])
+        return _mark(self.ret, out, False)
 
     def _run(
         self,
@@ -641,7 +653,8 @@ class Fn(Generic[P, R]):
                 rec[name] = ", ".join(map(_trace_desc, leaves)) if leaves else repr(v)
         self.traces.append(rec)
         n = len(self.traces)
-        if n > max(config.retrace_warn, 1):
+        # warn at the threshold, then only each time the count doubles
+        if n > max(config.retrace_warn, 1) and (n - 1) & (n - 2) == 0 or n == config.retrace_warn + 1 > 1:
             warnings.warn(
                 f"{self.name}() has been traced {n} times; each trace recompiles.\n"
                 + self.explain_retrace()
@@ -974,6 +987,11 @@ def _mark(spec: Spec, v: Any, wrap: bool) -> Any:
     return v
 
 
+def _avals(dyn: tuple[Any, ...]) -> tuple[Any, ...]:
+    """Shape, dtype and weak-typedness of each traced leaf: what jit specialises on."""
+    return tuple(jax.typeof(x) for x in dyn)
+
+
 class _Frozen:
     """The static part of a jit call: the argument structure and its non-array leaves."""
 
@@ -1080,7 +1098,7 @@ def _trace_desc(leaf: Any) -> str:
     d = describe(leaf)
     aval = getattr(leaf, "aval", None)
     if getattr(aval, "weak_type", False):
-        d = f"weak {d} (a Python scalar)"
+        d = f"weak {d}" + (" (a Python scalar)" if d.endswith("[()]") else "")
     return d
 
 
