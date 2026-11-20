@@ -236,8 +236,15 @@ def _cond(
                 dyn: list[Any] = []
                 for i, v in enumerate(out):
                     p = plan.get(i)
-                    if p == "drop":
-                        metas.append(("static", UNDEF))
+                    if isinstance(p, dict):
+                        # assigned in the other branch only: a placeholder here, so
+                        # that the variable exists whichever branch ran
+                        if _dyn(v):  # same (strongly typed) dtypes as the placeholder
+                            v = jax.tree.map(lambda a, s: _cast(a, s.dtype, False), v, p["fill"])
+                        else:
+                            v = jax.tree.map(lambda s: jnp.zeros(s.shape, s.dtype), p["fill"])
+                        metas.append(("dyn", v))
+                        dyn.append(v)
                     elif _dyn(v):
                         if p is not None:
                             leaves, tree = jax.tree.flatten(v)
@@ -260,7 +267,8 @@ def _cond(
                 raise
             err = e
         new_plan = _plan(recs, names, site)
-        if new_plan and new_plan != plan and attempt < 2:
+        new_plan = {i: p for i, p in new_plan.items() if not isinstance(plan.get(i), dict)}
+        if new_plan and attempt < 2:
             plan = {**plan, **new_plan}
             continue
         if err is not None:
@@ -294,7 +302,8 @@ def _plan(recs: list[list[tuple[str, Any]]], names: tuple[str, ...], site: str) 
         if m0[0] != m1[0]:
             other = m1[1] if m0[0] == "dyn" else m0[1]
             if other is UNDEF:
-                plan[i] = "drop"  # defined in one branch only: undefined afterwards
+                given = m0[1] if m0[0] == "dyn" else m1[1]
+                plan[i] = {"fill": _shapes(given)}
                 continue
             a, b = _desc(m0[1]), _desc(m1[1])
             raise StageError(
@@ -327,6 +336,28 @@ def _plan(recs: list[list[tuple[str, Any]]], names: tuple[str, ...], site: str) 
             if change:
                 plan[i] = casts
     return plan
+
+
+def _shapes(tree: Any) -> Any:
+    return jax.tree.map(lambda a: jax.ShapeDtypeStruct(jnp.shape(a), jnp.result_type(a)), tree)
+
+
+def _probe(run: Callable[[], tuple[Any, ...]], idxs: list[int]) -> dict[int, Any]:
+    """Zero placeholders for the variables ``idxs`` that ``run`` (a loop body) assigns.
+
+    A variable first assigned inside a traced loop needs a value of the right
+    shape before the loop starts; the body is traced once, abstractly, to learn it.
+    """
+
+    def f() -> dict[int, Any]:
+        out = run()
+        return {i: out[i] for i in idxs if _dyn(out[i])}
+
+    try:
+        shapes = jax.eval_shape(f)
+    except Exception:
+        return {}
+    return {i: jax.tree.map(lambda s: jnp.zeros(s.shape, s.dtype), sh) for i, sh in shapes.items()}
 
 
 def _cast(x: Any, dtype: Any, weak: bool) -> Any:
@@ -641,6 +672,10 @@ def while_(
         check = _guard_lists(state, names, "while", site)
     except _CannotLower as e:
         raise StageError(f"{e} at {site}: the number of iterations depends on data.") from None
+    need = [i for i, v in enumerate(state) if v is UNDEF and names[i] in live]
+    if need:
+        zeros = _probe(lambda: body_fn(*state), need)
+        state = tuple(zeros.get(i, v) for i, v in enumerate(state))
     dyn = [i for i, v in enumerate(state) if _dyn(v)]
     init = tuple(state[i] for i in dyn)
     count0 = jnp.asarray(it, jnp.int32)
@@ -930,13 +965,16 @@ def for_(
     carried: tuple[str, ...],
     live: tuple[str, ...],
     site: str,
+    brk: str | None = None,
 ) -> tuple[Any, ...]:
     """Run a ``for`` loop: in Python, or as ``vmap`` / ``scan`` when tracing.
 
     ``carried`` are the variables whose value flows from one iteration to the
-    next; ``live`` are those used after the loop.
+    next; ``live`` are those used after the loop. ``brk`` names the flag a
+    ``break`` sets: the Python loop stops when it is set to a concrete True.
     """
     k = _rng.sub()
+    brk_i = names.index(brk) if brk is not None else None
     it = _as_iter(iterable) if _rng.tracing() else None
     if it is not None and not isinstance(it.n, Tracer) and it.n == 0:
         return state
@@ -966,6 +1004,8 @@ def for_(
         else:
             with _rng.child(k, i):
                 state = body_fn(item, *state)
+        if brk_i is not None and state[brk_i] is True:
+            break  # a real `break`; a traced flag masks the remaining iterations instead
     return state
 
 
@@ -984,15 +1024,29 @@ def _lower_for(
     for i in coll:
         if len(state[i]) != 0:
             raise _CannotLower(f"the list `{names[i]}` is not empty when the loop starts")
-    carry_idx = [
-        i for i, v in enumerate(state) if i not in coll and names[i] in carried and _dyn(v)
-    ]
     last_idx = [
         i for i in range(len(state)) if i not in coll and names[i] not in carried and names[i] in live
     ]
-    for i, v in enumerate(state):
-        if i not in coll and names[i] in carried and v is UNDEF and names[i] in live:
-            raise _CannotLower(f"`{names[i]}` may be undefined after the loop")
+    need = [
+        i for i, v in enumerate(state)
+        if i not in coll and names[i] in carried and v is UNDEF and names[i] in live
+    ]  # fmt: skip
+    if need:
+
+        def first_iteration() -> tuple[Any, ...]:
+            args = [_Collector() if j in coll else v for j, v in enumerate(state)]
+            x0 = jax.tree.map(lambda a: a[0], it.xs)
+            with _staged():
+                return body_fn(it.make(x0, jnp.zeros((), jnp.int32)), *args)
+
+        zeros = _probe(first_iteration, need)
+        if set(zeros) != set(need):
+            missing = next(i for i in need if i not in zeros)
+            raise _CannotLower(f"`{names[missing]}` may be undefined after the loop")
+        state = tuple(zeros.get(i, v) for i, v in enumerate(state))
+    carry_idx = [
+        i for i, v in enumerate(state) if i not in coll and names[i] in carried and _dyn(v)
+    ]
 
     info: dict[str, Any] = {}
 

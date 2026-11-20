@@ -36,6 +36,7 @@ from . import _flow
 
 FLOW = "__typax_flow__"
 RET = "__bn_ret__"
+RETF = "__bn_returned__"
 
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
 _COMPS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
@@ -125,6 +126,17 @@ def _has_jump(nodes: Iterable[ast.AST]) -> bool:
 
 
 _DECL = (ast.Global, ast.Nonlocal, ast.Delete, ast.Yield, ast.YieldFrom, ast.Await)
+
+
+def _count_via_ifs(stmts: list[ast.stmt]) -> int:
+    """How many ``break`` / ``continue`` / ``return`` are reachable through ``if`` only."""
+    n = 0
+    for s in stmts:
+        if isinstance(s, (ast.Break, ast.Continue, ast.Return)):
+            n += 1
+        elif isinstance(s, ast.If):
+            n += _count_via_ifs(s.body) + _count_via_ifs(s.orelse)
+    return n
 
 
 def _returns_via_ifs(stmts: list[ast.stmt]) -> bool:
@@ -491,6 +503,7 @@ class _Converter:
         self.filename = filename
         self.n = 0
         self.count = 0
+        self.uses_return_flag = False
         args = fdef.args
         params = [a.arg for a in args.posonlyargs + args.args + args.kwonlyargs]
         if args.vararg:
@@ -519,7 +532,8 @@ class _Converter:
         }
 
     def site(self, node: ast.AST) -> ast.expr:
-        return ast.Constant(f"{self.filename}:{getattr(node, 'lineno', 0)}")
+        extra = getattr(node, "_bn_site", "")
+        return ast.Constant(f"{self.filename}:{getattr(node, 'lineno', 0)}{extra}")
 
     def fresh(self, kind: str) -> str:
         self.n += 1
@@ -627,6 +641,110 @@ class _Converter:
                         )
                         count += 1
         return count
+
+    # -- break / continue / return inside loops
+
+    def lower_jumps(self, stmts: list[ast.stmt]) -> list[ast.stmt]:
+        """Rewrite loops so that they contain no ``break`` / ``continue`` / ``return``.
+
+        ``break`` sets a flag that guards the rest of the loop; ``continue``
+        moves the rest of the body into the branches that do not skip it;
+        ``return v`` stores the value, sets a flag and breaks, and the loop is
+        followed by ``if returned: return value``. Innermost loops first.
+        """
+        out: list[ast.stmt] = []
+        for s in stmts:
+            if not isinstance(s, _SCOPES):
+                for fld in ("body", "orelse", "finalbody"):
+                    seq = getattr(s, fld, None)
+                    if isinstance(seq, list) and seq and isinstance(seq[0], ast.stmt):
+                        setattr(s, fld, self.lower_jumps(seq))
+                for h in getattr(s, "handlers", []) or []:
+                    h.body = self.lower_jumps(h.body)
+                for c in getattr(s, "cases", []) or []:
+                    c.body = self.lower_jumps(c.body)
+            new = self._lower_loop(s) if isinstance(s, (ast.For, ast.While)) else None
+            out.extend(new if new is not None else [s])
+        return out
+
+    def _lower_loop(self, s: ast.For | ast.While) -> list[ast.stmt] | None:
+        body = s.body
+        jumps = sum(isinstance(m, (ast.Break, ast.Continue)) for m in _walk_all(body, False))
+        returns = sum(isinstance(m, ast.Return) for m in _walk_all(body))
+        if not jumps and not returns:
+            return None
+        if s.orelse or _count_via_ifs(body) != jumps + returns:
+            return None  # a jump inside try/with/match, or in a loop that was left alone
+        assigned = _assigned([s])
+        if (
+            assigned & (self.declared | self.captured)
+            or _mutates(s)
+            or _has([s], _DECL + (ast.NamedExpr,))
+        ):
+            return None  # this loop will not be converted, so it keeps its real jumps
+        if isinstance(s, ast.For):
+            targets = _target_names(s.target)
+            if targets is None or not set(targets) <= self.locals:
+                return None
+
+        self.n += 1
+        brk = f"__bn_break_{self.n}__"
+        state = {"break": False, "return": False}
+        new_body, _ = self._skip(body, brk, state)
+        pre: list[ast.stmt] = []
+        post: list[ast.stmt] = []
+        if state["break"]:
+            self.locals.add(brk)
+            pre.append(ast.Assign(targets=[_name(brk, store=True)], value=ast.Constant(False)))
+            if isinstance(s, ast.For):
+                # the loop variable must not advance once the loop has been left
+                item = f"__bn_item_{self.n}__"
+                self.locals.add(item)
+                unpack = ast.Assign(targets=[s.target], value=_name(item))
+                guard = ast.If(test=_call("not_", _name(brk)), body=[unpack, *new_body], orelse=[])
+                guard._bn_site = "#break guard"  # type: ignore[attr-defined]
+                new_body = [guard]
+                s.target = _name(item, store=True)
+                s._bn_break = brk  # type: ignore[attr-defined]
+            else:
+                s.test = _call("and_", _thunk(_call("not_", _name(brk))), _thunk(s.test))
+        if state["return"]:
+            self.uses_return_flag = True
+            self.locals |= {RET, RETF}
+            post.append(
+                ast.If(test=_name(RETF), body=[ast.Return(value=_name(RET))], orelse=[])
+            )
+        final: list[ast.stmt] = list(new_body) or [ast.Pass()]
+        s.body = final
+        return [_locate(n, s) for n in [*pre, s, *post]]
+
+    def _skip(
+        self, stmts: list[ast.stmt], brk: str, state: dict[str, bool]
+    ) -> tuple[list[ast.stmt], bool]:
+        """Replace the jumps in a loop body; returns the new block and "always jumps"."""
+        out: list[ast.stmt] = []
+        for i, s in enumerate(stmts):
+            if isinstance(s, ast.Continue):
+                return out, True
+            if isinstance(s, (ast.Break, ast.Return)):
+                state["break"] = True
+                if isinstance(s, ast.Return):
+                    state["return"] = True
+                    value = s.value or ast.Constant(None)
+                    out.append(_locate(ast.Assign(targets=[_name(RET, store=True)], value=value), s))
+                    out.append(
+                        _locate(ast.Assign(targets=[_name(RETF, store=True)], value=ast.Constant(True)), s)
+                    )
+                out.append(_locate(ast.Assign(targets=[_name(brk, store=True)], value=ast.Constant(True)), s))
+                return out, True
+            if isinstance(s, ast.If) and (_count_via_ifs(s.body) or _count_via_ifs(s.orelse)):
+                rest = stmts[i + 1 :]
+                then, a = self._skip(s.body + copy.deepcopy(rest), brk, state)
+                other, b = self._skip(s.orelse + rest, brk, state)
+                out.append(ast.copy_location(ast.If(test=s.test, body=then or [ast.Pass()], orelse=other), s))
+                return out, a and b
+            out.append(s)
+        return out, False
 
     def lower_returns(self, stmts: list[ast.stmt]) -> tuple[list[ast.stmt], bool]:
         """Rewrite early returns inside ``if`` so that the function has a single exit."""
@@ -781,6 +899,7 @@ class _Converter:
         call = _call(
             "for_", it, _name(b), _state(names), _strs(names),
             _strs(sorted(carried)), _strs(sorted(nameset & live)), self.site(s),
+            ast.Constant(getattr(s, "_bn_break", None)),
         )  # fmt: skip
         new = [_def(b, [item, *names], [unpack, *body], _state(names), names), *_bind(names, call)]
         return [_locate(n, s) for n in new]
@@ -829,6 +948,9 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
     n_locals = conv.rewrite_annotations(fdef.body)
     exprs = _Exprs(conv.site, conv.first_param, conv.builtins_ok, conv.readable)
     fdef.body = [exprs.visit(s) for s in fdef.body]
+    fdef.body = conv.lower_jumps(fdef.body)
+    if conv.uses_return_flag:
+        fdef.body.insert(0, ast.Assign(targets=[_name(RETF, store=True)], value=ast.Constant(False)))
     if any(
         isinstance(s, ast.If) and (_returns_via_ifs(s.body) or _returns_via_ifs(s.orelse))
         for s in fdef.body
@@ -907,6 +1029,9 @@ def source(raw: Callable[..., Any]) -> str:
     conv.rewrite_inplace(fdef.body)
     conv.rewrite_annotations(fdef.body)
     fdef.body = [_Exprs(conv.site, conv.first_param, conv.builtins_ok, conv.readable).visit(s) for s in fdef.body]
+    fdef.body = conv.lower_jumps(fdef.body)
+    if conv.uses_return_flag:
+        fdef.body.insert(0, ast.Assign(targets=[_name(RETF, store=True)], value=ast.Constant(False)))
     if any(
         isinstance(s, ast.If) and (_returns_via_ifs(s.body) or _returns_via_ifs(s.orelse))
         for s in fdef.body

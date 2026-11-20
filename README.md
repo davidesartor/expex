@@ -314,12 +314,19 @@ Rules and limits:
 - Under a traced `if`, both branches must give each variable the same shape
   and dtype. Errors name the variable.
 - Under a traced loop, carried variables must keep their shape and dtype.
+- `break`, `continue` and `return` inside a loop work, including on traced
+  conditions (`while True: ... if done: break` becomes a `while_loop`). A
+  staged `for` with a traced `break` still runs every iteration, with the
+  ones after the break masked out.
 - Some statements are deliberately left as plain Python (so they need
-  concrete conditions, and loops are unrolled): loops containing `break`,
-  `continue` or `return`; loops with an `else` clause; anything inside `try`
-  or `with`; statements that update something other than a local variable
-  in place (`self.buf[i] = v`, `d[k][j] = v`, `xs.sort()`); and statements
-  assigning a variable that a nested function or lambda also uses.
+  concrete conditions, and loops are unrolled): loops with an `else` clause
+  or with a jump inside `try` / `with`; anything inside `try` or `with`;
+  statements that update something other than a local variable in place
+  (`self.buf[i] = v`, `d[k][j] = v`, `xs.sort()`); and statements assigning
+  a variable that a nested function or lambda also uses.
+- A variable assigned in only one branch of a traced `if`, or first assigned
+  inside a traced loop, gets a zero placeholder on the other path. Reading it
+  there would be an error in Python; under tracing it is not detected.
 - After a staged loop, a collected list is a read-only sequence until the
   function returns it (it is returned as a real list). Another name bound to
   the same list before the loop does not see the collected values.

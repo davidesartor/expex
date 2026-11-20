@@ -246,7 +246,7 @@ def test_while_carry_type_error_names_variables():
     assert any("carried variables, in order: n, x" in n for n in e.value.__notes__)
 
 
-def test_loops_with_break_stay_python():
+def test_loops_with_break_are_staged():
     @fn
     def f[T](x: f32[T]) -> f32:
         total = 0.0
@@ -257,7 +257,7 @@ def test_loops_with_break_stay_python():
         return total
 
     assert both(f, jnp.arange(5.0)) == 1.0
-    assert f.flow == {}
+    assert any("for -> lax.scan" in how for how in f.flow.values())
 
 
 # ----------------------------------------------------------------------- for
