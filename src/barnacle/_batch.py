@@ -6,6 +6,8 @@ import inspect
 import math
 from typing import Any, Callable
 
+import numpy as np
+
 import jax
 import jax.numpy as jnp
 
@@ -73,14 +75,19 @@ class Batched:
         # is what the compiled function is specialised on.
         it = iter(stand_ins)
         template = f._walk(ba.arguments, lambda s, x, p: next(it))
+        # Arrays inside arguments that have no shape annotation (a params pytree,
+        # `self`, ...) are passed in as data too, unmapped, rather than being
+        # frozen into the compiled function.
+        for name, value in list(template.items()):
+            if not f.params[name].spec.leafy and name not in f.static_names:
+                template[name] = jax.tree.map(lambda x: _slot(x, consts), value)
         try:
             cache_key = (tuple(pattern), _freeze(template))
             hash(cache_key)
         except TypeError:
             raise TypeError(
                 f"{f.name}.batched(): the non-array arguments must be hashable, because the "
-                f"compiled function is specialised on them. Annotate array arguments "
-                f"(e.g. f32[...]) so that they are treated as data."
+                f"compiled function is specialised on them."
             ) from None
         run = self._cache.get(cache_key)
         if run is None:
@@ -108,6 +115,11 @@ class Batched:
         def one(m: tuple[Any, ...], c: tuple[Any, ...], k: Any) -> Any:
             im, ic, ip = iter(m), iter(c), iter(pattern)
             new = f._walk(template, lambda s, x, p: next(im) if next(ip) else next(ic))
+            for name, value in new.items():
+                if not f.params[name].spec.leafy and name not in f.static_names:
+                    new[name] = jax.tree.map(
+                        lambda x: next(ic) if isinstance(x, _Slot) else x, value
+                    )
             b2 = inspect.BoundArguments(f._sig, new)  # type: ignore[arg-type]
             return f._run(b2.args, b2.kwargs, key=k)
 
@@ -116,6 +128,26 @@ class Batched:
             return jax.vmap(one, in_axes=(0, None, None if k is None else 0))(m, c, k)
 
         return jax.jit(many)
+
+
+class _Slot:
+    """Marks where an array was taken out of an unannotated argument."""
+
+    def __init__(self, shape: tuple[Any, ...], dtype: Any):
+        self.sig = (tuple(shape), str(dtype))
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _Slot) and other.sig == self.sig
+
+    def __hash__(self) -> int:
+        return hash(self.sig)
+
+
+def _slot(x: Any, consts: list[Any]) -> Any:
+    if isinstance(x, (jax.Array, np.ndarray)):
+        consts.append(x)
+        return _Slot(x.shape, x.dtype)
+    return x
 
 
 def _pad(a: Any, size: int) -> Any:

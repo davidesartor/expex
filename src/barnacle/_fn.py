@@ -50,6 +50,9 @@ class Config:
         self.checked: bool = os.environ.get("BARNACLE_CHECKED", "1") not in ("0", "false", "")
         #: Attach "in f(x: f32[3, 4])" notes to exceptions passing through ``@fn``.
         self.notes: bool = os.environ.get("BARNACLE_NOTES", "1") not in ("0", "false", "")
+        #: Turn ``for`` loops into ``lax.scan`` / ``vmap`` when tracing. With False,
+        #: loops over arrays and ranges are unrolled, as in plain JAX.
+        self.lower_loops: bool = os.environ.get("BARNACLE_LOWER_LOOPS", "1") not in ("0", "false", "")
         #: Warn when a ``jit=True`` function has been traced more than this many times.
         self.retrace_warn: int = int(os.environ.get("BARNACLE_RETRACE_WARN", "4"))
 
@@ -622,6 +625,12 @@ class BoundFn(Generic[P, R]):
     def lift(self, *args: P.args, **kwargs: P.kwargs) -> R:
         __tracebackhide__ = True
         return self.fn.lift(self.obj, *args, **kwargs)
+
+    def batched(self, chunk: int | None = None, *, sizes: tuple[int, ...] | None = None) -> Any:
+        run = self.fn.batched(chunk, sizes=sizes)
+        bound = functools.partial(run, self.obj)
+        bound.batched = run  # type: ignore[attr-defined]
+        return bound
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.fn, name)

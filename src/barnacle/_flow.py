@@ -527,6 +527,12 @@ def for_(
     if it is not None:
         if isinstance(it.n, Tracer):
             return _fori(it, body_fn, state, names, live, site, k)
+        from ._fn import config
+
+        if not config.lower_loops:
+            it = None
+            LOG[site] = "for -> unrolled (config.lower_loops is off)"
+    if it is not None:
         try:
             return _lower_for(it, body_fn, state, names, carried, live, site, k)
         except _CannotLower as e:
@@ -536,9 +542,8 @@ def for_(
         except Exception as e:  # e.g. the loop index is used as a Python int
             first = (str(e).strip().splitlines() or [""])[0]
             LOG[site] = f"for -> unrolled ({type(e).__name__}: {first[:120]})"
-    else:
-        if _rng.tracing():
-            LOG[site] = f"for -> unrolled (iterating over a {type(iterable).__name__})"
+    elif _rng.tracing() and site not in LOG:
+        LOG[site] = f"for -> unrolled (iterating over a {type(iterable).__name__})"
     for i, item in enumerate(iterable):
         if k is None:
             state = body_fn(item, *state)

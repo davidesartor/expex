@@ -235,4 +235,32 @@ def test_batched_errors():
         return x
 
     with pytest.raises(TypeError, match="must be hashable"):
-        f.batched(chunk=2)(jnp.ones((3, 2)), jnp.ones(2))
+        f.batched(chunk=2)(jnp.ones((3, 2)), {1, 2})
+
+
+def test_batched_passes_unannotated_arrays_as_data():
+    @fn
+    def apply[D](params, x: f32[D]) -> f32[D]:
+        return x * params["scale"] + params["bias"][0]
+
+    run = apply.batched(chunk=4)
+    xs = jnp.ones((6, 3))
+    assert jnp.allclose(run({"scale": jnp.float32(2.0), "bias": [jnp.float32(1.0)]}, xs), 3.0)
+    # new parameter values are used, without recompiling
+    assert jnp.allclose(run({"scale": jnp.float32(5.0), "bias": [jnp.float32(0.0)]}, xs), 5.0)
+    assert run.traces == 1
+
+
+def test_batched_method():
+    class Model:
+        def __init__(self, k):
+            self.k = k
+
+        @fn
+        def call[D](self, x: f32[D]) -> f32[D]:
+            return x * self.k
+
+    m = Model(3.0)
+    run = m.call.batched(chunk=4)
+    assert jnp.allclose(run(jnp.ones((6, 2))), 3.0)
+    assert run.batched.traces == 1

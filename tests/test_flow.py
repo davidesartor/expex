@@ -569,3 +569,17 @@ def test_converted_source_is_inspectable():
         return -x
 
     assert "__barnacle_flow__.if_(" in f.converted_source
+
+
+def test_loop_lowering_can_be_switched_off(monkeypatch):
+    @fn
+    def total[T](x: f32[T]) -> f32:
+        s = 0.0
+        for v in x:
+            s = s + v
+        return s
+
+    monkeypatch.setattr(bn.config, "lower_loops", False)
+    assert jax.jit(total)(jnp.arange(4.0)) == 6.0
+    assert "unrolled (config.lower_loops is off)" in "".join(total.flow.values())
+    assert n_eqns(total, jnp.arange(4.0)) > 4
