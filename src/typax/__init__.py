@@ -11,6 +11,7 @@ from ._flow import rows, stack
 from ._fn import Fn, compile_cache, config, fn
 from ._rng import key, rng, seed
 from ._spec import show
+from ._struct import struct
 from ._types import (
     Arr, Batch, Bool, Complex, Dim, Etc, Float, Inexact, Int, Key, Num, Static, UInt,
     c64, c128, f16, f32, f64, i8, i16, i32, i64, u8, u16, u32, u64,
@@ -18,7 +19,7 @@ from ._types import (
 
 __all__ = [
     # decorate
-    "fn", "prove",
+    "fn", "struct", "prove",
     # annotate
     "f16", "f32", "f64", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "c64", "c128",
     "Arr", "Bool", "Int", "UInt", "Float", "Complex", "Inexact", "Num",
