@@ -20,8 +20,9 @@ From that signature, `@fn` gives you:
 |---|---|
 | **Checked calls** | Arguments and results are matched against the annotations, with errors that name the axis and where its size came from. |
 | **Shape proofs** | `tx.prove(attend)` traces the function with *symbolic* sizes and shows the declared output shape holds for every `B`, `T`, `D`. No test data needed. |
-| **Plain control flow** | `if`, `while` and `for` on traced values become `lax.cond`, `lax.while_loop`, `lax.scan` or `vmap` automatically. |
-| **Vectorising** | `attend.lift(...)` maps over any extra leading axes, worked out from the declared ranks. `attend.batched(chunk=64)` does it without recompiling per batch size. |
+| **Plain Python** | `if`, `while`, `for` (with `break` / `continue` / `return`) on traced values become `lax.cond`, `lax.while_loop`, `lax.scan` or `vmap`. `x[i] += 1`, `assert`, `print`, `min` / `max` work on traced values too. |
+| **Vectorising** | `attend.lift(...)` maps over any extra leading axes, worked out from the declared ranks; `@fn(lift=True)` makes that the default for a function written for one element. |
+| **Compiling** | `@fn(jit=True)` traces arrays and treats everything else as static, with no `static_argnames`; every retrace is explained. |
 | **Implicit random keys** | `@fn(random=True)` functions get a fresh key from `tx.key()`, safely under `jit`. |
 | **Debugging** | Retrace explanations, a NaN finder that points at the source line, program size and timing breakdowns. |
 
