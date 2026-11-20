@@ -189,7 +189,7 @@ def test_size_one_is_tried():
 
 
 def test_untraceable_function_is_an_error_with_hint():
-    @fn
+    @fn(convert=False)
     def relu[B](x: f32[B]) -> f32[B]:
         if x.sum() > 0:
             return x

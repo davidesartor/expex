@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any, Callable, Concatenate, Generic, ParamSpec
 import jax
 import jax.numpy as jnp
 
+from . import _rng
+from ._convert import NotConverted, convert as _convert
 from ._errors import Mismatch, RetraceWarning, ShapeError, StageError
 from ._expr import Expr
 from ._spec import (
@@ -101,12 +103,27 @@ class Fn(Generic[P, R]):
         jit: bool = False,
         checked: bool = True,
         prove: bool = True,
+        convert: bool = True,
+        random: bool = False,
         examples: dict[str, Any] | None = None,
         where: str | list[str] | tuple[str, ...] = (),
         defs: dict[str, str] | None = None,
     ):
         functools.update_wrapper(self, raw)
         self.raw = raw
+        self.random = random
+        #: The function that actually runs: ``raw`` with its control flow converted.
+        self._impl: Callable[..., Any] = raw
+        #: Why the control flow was not converted ("" if it was).
+        self.convert_note = "" if convert else "convert=False"
+        if convert:
+            try:
+                self._impl = _convert(raw)
+            except NotConverted as e:
+                self.convert_note = str(e)
+            except Exception as e:  # never let conversion break a working function
+                self.convert_note = f"conversion failed: {type(e).__name__}: {e}"
+        self.converted = self._impl is not raw
         self.name: str = getattr(raw, "__qualname__", getattr(raw, "__name__", repr(raw)))
         self.checked = checked
         self.prove = prove
@@ -173,9 +190,9 @@ class Fn(Generic[P, R]):
         if jit:
 
             @functools.wraps(raw)
-            def traced(*args: Any, **kwargs: Any) -> Any:
+            def traced(*args: Any, __bn_key__: Any = None, **kwargs: Any) -> Any:
                 self._record_trace(args, kwargs)
-                return self._run(args, kwargs)
+                return self._run(args, kwargs, key=__bn_key__)
 
             self._jitted = jax.jit(traced, static_argnames=tuple(self.static_names) or None)
 
@@ -187,6 +204,11 @@ class Fn(Generic[P, R]):
         __tracebackhide__ = True
         if self._jitted is not None:
             try:
+                if self.random:
+                    # The key is drawn out here and passed in as a real argument, so
+                    # the compiled function gets fresh randomness on every call.
+                    k = _rng.fresh(f"{self.name}()")
+                    return self._jitted(*args, __bn_key__=k, **kwargs)
                 return self._jitted(*args, **kwargs)
             except ValueError as e:
                 if "Non-hashable static arguments" in str(e):
@@ -205,16 +227,28 @@ class Fn(Generic[P, R]):
         kwargs: dict[str, Any],
         env: Env | None = None,
         force: bool = False,
+        key: Any = None,
+    ) -> Any:
+        __tracebackhide__ = True
+        if self.random:
+            if key is None:
+                key = _rng.fresh(f"{self.name}()")
+            with _rng.child(key):
+                return self._run_checked(args, kwargs, env, force)
+        return self._run_checked(args, kwargs, env, force)
+
+    def _run_checked(
+        self, args: tuple[Any, ...], kwargs: dict[str, Any], env: Env | None, force: bool
     ) -> Any:
         __tracebackhide__ = True
         if not force and not (self.checked and config.checked):
-            return self.raw(*args, **kwargs)
+            return self._impl(*args, **kwargs)
         if env is None:
             env = Env()
         try:
             bound = self._sig.bind(*args, **kwargs).arguments
         except TypeError:
-            return self.raw(*args, **kwargs)  # let Python raise its own error
+            return self._impl(*args, **kwargs)  # let Python raise its own error
         try:
             for name, spec in self._check_inputs:
                 if name in bound:
@@ -234,7 +268,7 @@ class Fn(Generic[P, R]):
         if self.where:
             self._check_where(env, final=False)
         try:
-            out = self.raw(*args, **kwargs)
+            out = self._impl(*args, **kwargs)
         except Exception as e:
             if config.notes:
                 self._annotate(e, bound, env)
@@ -439,6 +473,9 @@ class Fn(Generic[P, R]):
         n = len(bshape)
         prepared: list[Any] = []
         levels: list[set[int]] = []
+        if self.random:  # one key per example
+            prepared.append(jax.random.split(_rng.fresh(f"{self.name}.lift()"), bshape))
+            levels.append(set(range(n)))
         for (spec, v, path), b in zip(leaves, batches):
             if isinstance(spec, KeySpec) and not b:
                 split: Callable[[Any], Any] = lambda k: jax.random.split(k, bshape)  # noqa: E731
@@ -456,9 +493,14 @@ class Fn(Generic[P, R]):
 
         def core_fn(*lv: Any) -> Any:
             it = iter(lv)
+            k = next(it) if self.random else None
             new = self._walk(ba.arguments, lambda s, x, p: next(it))
             b2 = inspect.BoundArguments(self._sig, new)  # type: ignore[arg-type]
-            return self(*b2.args, **b2.kwargs)
+            if self._jitted is not None and self.random:
+                return self._jitted(*b2.args, __bn_key__=k, **b2.kwargs)
+            if self._jitted is not None:
+                return self._jitted(*b2.args, **b2.kwargs)
+            return self._run(b2.args, b2.kwargs, key=k)
 
         g: Callable[..., Any] = core_fn
         for level in reversed(range(n)):
@@ -481,6 +523,41 @@ class Fn(Generic[P, R]):
             else:
                 out[name] = {k: spec.walk(x, k, visit) for k, x in v.items()}
         return out
+
+    # ------------------------------------------------------------------ flow
+
+    @property
+    def flow(self) -> dict[int, str]:
+        """How each converted ``if``/``while``/``for`` last ran, by line number.
+
+        For example ``{12: "for -> lax.scan (carries h)", 15: "if -> lax.cond"}``.
+        Statements that have only run as plain Python are not listed.
+        """
+        from ._flow import LOG
+
+        try:
+            code = self.raw.__code__  # type: ignore[attr-defined]
+            lines, start = inspect.getsourcelines(self.raw)
+        except (OSError, TypeError, AttributeError):
+            return {}
+        out = {}
+        prefix = code.co_filename + ":"
+        for site, how in LOG.items():
+            if site.startswith(prefix):
+                try:
+                    line = int(site[len(prefix):])
+                except ValueError:
+                    continue
+                if start <= line < start + len(lines):
+                    out[line] = how
+        return dict(sorted(out.items()))
+
+    @property
+    def converted_source(self) -> str:
+        """The control-flow-converted source, for inspection."""
+        from ._convert import source
+
+        return source(self.raw)
 
     # ----------------------------------------------------------------- prove
 
@@ -616,6 +693,8 @@ def fn(
     jit: bool = False,
     checked: bool = True,
     prove: bool = True,
+    convert: bool = True,
+    random: bool = False,
     examples: dict[str, Any] | None = None,
     where: str | list[str] | tuple[str, ...] = (),
     **dims: str,
@@ -627,6 +706,8 @@ def fn(
     jit: bool = False,
     checked: bool = True,
     prove: bool = True,
+    convert: bool = True,
+    random: bool = False,
     examples: dict[str, Any] | None = None,
     where: str | list[str] | tuple[str, ...] = (),
     **dims: str,
@@ -648,6 +729,12 @@ def fn(
         runs once per trace and costs nothing in the compiled function.
     ``prove``
         Include the function when the prover / pytest plugin runs (default).
+    ``convert``
+        Rewrite plain ``if`` / ``while`` / ``for`` so that they also work on traced
+        values (default). See ``.flow`` for how each statement ran.
+    ``random``
+        Give the function an implicit PRNG key: ``barnacle.key()`` inside it
+        returns a fresh key on every call.
     ``examples``
         Values the prover should use for ``Static`` or unannotated parameters,
         as ``{"name": [value, ...]}``.
@@ -660,7 +747,10 @@ def fn(
     def wrap(raw: Callable[..., Any]) -> Fn[Any, Any]:
         if isinstance(raw, Fn):
             raw = raw.raw
-        return Fn(raw, jit=jit, checked=checked, prove=prove, examples=examples, where=where, defs=dims)
+        return Fn(
+            raw, jit=jit, checked=checked, prove=prove, convert=convert, random=random,
+            examples=examples, where=where, defs=dims,
+        )  # fmt: skip
 
     if f is not None:
         return wrap(f)

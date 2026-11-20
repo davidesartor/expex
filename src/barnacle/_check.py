@@ -29,6 +29,7 @@ import numpy as np
 import jax
 from jax import export
 
+from . import _rng
 from ._errors import ShapeError, StageError
 from ._expr import to_jax_constraint
 from ._fn import REGISTRY, BoundFn, Fn
@@ -233,9 +234,10 @@ def _trace(
 
     abstract_args = {n: arguments[n] for n in abstract}
     f._walk(abstract_args, collect)
+    leaves.append(ctx.key(()))  # a key, in case anything inside draws random numbers
 
     def g(*lv: Any) -> Any:
-        it = iter(lv)
+        it = iter(lv[:-1])
         new = dict(arguments)
         new.update(f._walk(abstract_args, lambda s, x, p: next(it)))
         ordered = {n: new[n] for n in f.params if n in new}
@@ -244,7 +246,8 @@ def _trace(
         for n, v in ctx.dims.items():
             env.dims[n] = v
             env.origin[n] = "the declared inputs"
-        f._run(ba.args, ba.kwargs, env, force=True)
+        with _rng.rng(lv[-1]):
+            f._run(ba.args, ba.kwargs, env, force=True)
         return ()
 
     if ctx.need_x64:

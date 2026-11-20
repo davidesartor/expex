@@ -457,7 +457,7 @@ def test_nested_call_chain_in_notes():
 
 
 def test_stage_hint():
-    @fn
+    @fn(convert=False)
     def relu[B](x: f32[B]) -> f32[B]:
         if x.sum() > 0:
             return x
@@ -471,7 +471,7 @@ def test_stage_hint():
     assert "jnp.where(cond, a, b)" in notes
     assert "array parameters of" in notes and ": x)" in notes
 
-    @fn
+    @fn(convert=False)
     def loop[B](x: f32[B], n: i32) -> f32[B]:
         for _ in range(n):  # type: ignore[call-overload]
             x = x * 2
