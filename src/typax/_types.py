@@ -130,6 +130,16 @@ class StaticAnn:
     def __repr__(self) -> str:
         return f"Static[{_item_repr(self.inner)}]"
 
+    def __or__(self, other: Any) -> Any:
+        from typing import Union
+
+        return Union[self, other]
+
+    def __ror__(self, other: Any) -> Any:
+        from typing import Union
+
+        return Union[other, self]
+
     def __call__(self, *a: Any, **k: Any) -> Any:
         raise TypeError("Static[...] is an annotation")
 

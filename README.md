@@ -274,13 +274,20 @@ def bounce(p: Particle, dt: f32) -> Particle:
     return p
 ```
 
-- `x[i] = v` and `x[i] op= v` on a local variable become `x.at[i]...` when `x`
-  is a JAX array. Python lists, dicts and NumPy arrays are still updated in
-  place. JAX arrays stay immutable values: another name bound to the same
-  array does not see the update.
+- `x[i] = v` and `x[i] op= v` on a local variable become `x.at[i].set(...)`
+  when `x` is a JAX array, with NumPy's semantics (duplicate indices are
+  assigned once; a boolean mask of `x`'s shape works under `jit`). Python
+  lists, dicts and NumPy arrays are still updated in place. JAX arrays stay
+  immutable values: another name bound to the same array does not see the
+  update.
 - `s.field = v` replaces a NamedTuple or frozen dataclass; ordinary objects
   get a normal attribute assignment.
-- A traced `assert` is checked when the compiled code runs.
+- A traced `assert` is checked when the compiled code runs, and only where
+  the surrounding branch or loop iteration was really reached. Under `jit` a
+  failure surfaces as JAX's runtime error carrying the assertion message.
+- `max` / `min` with a JAX array among several arguments use `jnp.maximum` /
+  `jnp.minimum` in every mode (so NaN propagates and dtypes promote, unlike
+  the builtins).
 - Real in-place updates of Python objects are refused inside traced control
   flow (a loop is unrolled instead; a traced `if` raises a `StageError`),
   because they would run once while tracing.
@@ -304,10 +311,13 @@ def safe_sqrt(x: f32) -> f32:
 jax.vmap(jax.grad(safe_sqrt))(jnp.array([4.0, 0.0, -1.0]))   # [0.25, 0., 0.]
 ```
 
-When a traced `if` (or `a if c else b`) is staged, every float value a branch
-reads is passed through `where(taken, x, stop_gradient(x))`. That leaves the
-value unchanged and lets no gradient flow back through a branch that was not
-taken, which is the zero it should contribute.
+This works because a staged `if` becomes `lax.cond`, not `where`, and each
+branch only receives gradient where it was taken. Recent JAX versions (0.12
+is the one tested) do that masking themselves when a `cond` is vmapped; on
+versions that do not, typax passes every float a branch reads through
+`where(taken, x, stop_gradient(x))` to the same effect. The right-hand side
+of a traced `and` / `or` and both sides of `a if c else b` are evaluated
+inside their branch too.
 
 Rules and limits:
 
@@ -428,7 +438,9 @@ def step(x, key):                   # or bring your own key
 ```
 
 Calling a random function under a plain `jax.jit` with no key in scope raises
-a `StageError` explaining these two options. Explicit `Key` parameters keep
+a `StageError` explaining these two options. So does mapping one with
+`jax.vmap` while a single key is in scope, since every element would draw the
+same numbers; `f.lift` gives each element its own key. Explicit `Key` parameters keep
 working as usual.
 
 ## Debugging
@@ -474,7 +486,9 @@ With `@fn(jit=True)` the function is compiled with arrays (and Python
 numbers) traced and everything else static: `Static[...]` parameters and
 struct fields, functions, strings and other non-array values, in the
 arguments and in the result. There is no `static_argnames` to maintain, and a
-NamedTuple holding both arrays and a callable can be passed and returned.
+NamedTuple or dataclass holding both arrays and a callable can be passed and
+returned. Static values are told apart strictly (`1`, `True` and `1.0` each
+get their own compiled version).
 Every trace is recorded:
 
 ```python
@@ -532,7 +546,9 @@ style. It keeps the public API.
   fits) to 1e-13 relative or better in float64, and the acquisition
   optimizer's results to 4e-7. `tests/test_bofus_port.py` checks a subset
   against stored reference output; `examples/bofus/parity.py` runs it all.
-- Every hand-sanitised double `where` in the original became a plain `if`.
+- Every hand-sanitised double `where` in the original became a plain `if`
+  (42 `jnp.where` calls down to 13), and compile and run times are on par
+  with the original.
 
 `examples/bofus/README.md` lists what changed construct by construct.
 

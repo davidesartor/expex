@@ -191,7 +191,7 @@ def _index_expr(node: ast.expr) -> ast.expr:
     if isinstance(node, ast.Slice):
         none = ast.Constant(None)
         return ast.Call(
-            func=_name("slice"),
+            func=_flow_attr("slice_"),
             args=[node.lower or none, node.upper or none, node.step or none],
             keywords=[],
         )
@@ -370,6 +370,19 @@ def _unbind(names: list[str]) -> list[ast.stmt]:
     ]
 
 
+def _positions(names: list[str], *read_sets: set[str]) -> ast.Tuple:
+    """For each read set: the indices of ``names`` it contains, as a constant."""
+    return ast.Tuple(
+        elts=[
+            ast.Tuple(
+                elts=[ast.Constant(i) for i, n in enumerate(names) if n in rs], ctx=ast.Load()
+            )
+            for rs in read_sets
+        ],
+        ctx=ast.Load(),
+    )
+
+
 def _def(
     name: str, params: list[str], body: list[ast.stmt], ret: ast.expr, state: list[str] | None = None
 ) -> ast.FunctionDef:
@@ -480,11 +493,12 @@ class _Exprs(ast.NodeTransformer):
         self.generic_visit(node)
         if _has_walrus(node):
             return node
-        reads = sorted((_reads([node.body]) | _reads([node.orelse])) & self.readable)
+        ra, rb = _reads([node.body]), _reads([node.orelse])
+        reads = sorted((ra | rb) & self.readable)
         return ast.copy_location(
             _call(
                 "ifexp", node.test, _thunk(node.body, reads), _thunk(node.orelse, reads),
-                self.site(node), _state(reads),
+                self.site(node), _state(reads), _positions(reads, ra, rb),
             ),
             node,
         )  # fmt: skip
@@ -608,15 +622,17 @@ class _Converter:
         if base.id in self.declared or base.id in self.captured or _has_walrus(s):
             return None
         if isinstance(target, ast.Subscript):
-            args = [s.value, _name(base.id), _index_expr(target.slice)]
+            where: ast.expr = _index_expr(target.slice)
             helper = "setitem_" if op is None else "augitem_"
         elif isinstance(target, ast.Attribute):
-            args = [s.value, _name(base.id), ast.Constant(target.attr)]
+            where = ast.Constant(target.attr)
             helper = "setattr_" if op is None else "augattr_"
         else:
             return None
-        if op is not None:
-            args.append(ast.Constant(op))
+        if op is None:  # Python evaluates the value, then the target
+            args = [s.value, _name(base.id), where]
+        else:  # ... but for `op=` it reads the target first, then evaluates the value
+            args = [_name(base.id), where, _thunk(s.value), ast.Constant(op)]
         return ast.Assign(targets=[_name(base.id, store=True)], value=_call(helper, *args))
 
     def rewrite_annotations(self, stmts: list[ast.stmt]) -> int:
@@ -843,11 +859,11 @@ class _Converter:
         # Variables the branches only read are passed in too, so that the helper
         # can cut their gradients where a branch is not taken (see `_guard`).
         reads = sorted(((reads_body | reads_else) & self.readable) - set(names))
+        both = names + reads
         call = _call(
             "if_", s.test, _name(t), _name(f), _state(names), _strs(names), self.site(s),
-            _state(reads),
+            _state(reads), _positions(both, reads_body, reads_else),
         )  # fmt: skip
-        both = names + reads
         new = [
             _def(t, both, body, ret),
             _def(f, both, orelse, copy.deepcopy(ret)),

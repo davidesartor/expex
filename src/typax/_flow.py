@@ -33,7 +33,7 @@ from ._errors import StageError
 __all__ = [
     "if_", "ifexp", "while_", "for_", "and_", "or_", "not_", "cmp_", "ld",
     "range_", "enumerate_", "zip_", "reversed_", "rows", "stack", "append_",
-    "setitem_", "augitem_", "setattr_", "augattr_", "print_", "max_", "min_", "assert_", "local_", "Stacked", "UNDEF", "LOG",
+    "setitem_", "augitem_", "setattr_", "augattr_", "print_", "max_", "min_", "assert_", "slice_", "local_", "Stacked", "UNDEF", "LOG",
 ]  # fmt: skip
 
 #: site ("file:line") -> how the statement there was last executed.
@@ -151,26 +151,28 @@ def _boolean(v: Any) -> bool:
 def and_(a: Callable[[], Any], b: Callable[[], Any]) -> Any:
     x = a()
     if isinstance(x, Tracer):
-        y = b()
-        if _boolean(x) and _boolean(y):
-            return jnp.logical_and(x, y)
-        # Python's `x and y` is `y if x else x`, not a boolean
-        return ifexp(x, lambda: y, lambda: x, "an `and` expression")
+        if x.shape != ():  # an extension: elementwise on boolean arrays
+            return jnp.logical_and(x, b())
+        # Python's `x and y` is `y if x else x`; y is only evaluated inside its branch
+        return _select_expr(x, b, lambda: x, "an `and` expression")
+    k = _rng.sub()
     if not x:
         return x
-    return b()
+    with _rng.child(k):
+        return b()
 
 
 def or_(a: Callable[[], Any], b: Callable[[], Any]) -> Any:
     x = a()
     if isinstance(x, Tracer):
-        y = b()
-        if _boolean(x) and _boolean(y):
-            return jnp.logical_or(x, y)
-        return ifexp(x, lambda: x, lambda: y, "an `or` expression")
+        if x.shape != ():
+            return jnp.logical_or(x, b())
+        return _select_expr(x, lambda: x, b, "an `or` expression")
+    k = _rng.sub()
     if x:
         return x
-    return b()
+    with _rng.child(k):
+        return b()
 
 
 _CMP = {
@@ -410,32 +412,100 @@ def _guard_lists(state: tuple[Any, ...], names: tuple[str, ...], what: str, site
     return check
 
 
-def _guard(values: tuple[Any, ...], taken: Any) -> tuple[Any, ...]:
-    """Cut the gradient of every float array in ``values`` where ``taken`` is false.
+_JAX_GUARDS: bool | None = None
+
+
+def _jax_guards_branches() -> bool:
+    """Does this JAX already cut gradients into untaken branches of a vmapped cond?"""
+    global _JAX_GUARDS
+    if _JAX_GUARDS is None:
+        try:
+            probe = jax.make_jaxpr(jax.vmap(lambda v: lax.cond(v > 0, lambda: v, lambda: -v)))
+            _JAX_GUARDS = "stop_gradient" in str(probe(np.ones(2, np.float32)))
+        except Exception:
+            _JAX_GUARDS = False
+    return _JAX_GUARDS
+
+
+class _Path(threading.local):
+    def __init__(self) -> None:
+        self.preds: list[Callable[[], Any]] = []  # conditions under which the code being traced runs
+
+
+_PATH = _Path()
+
+
+class _on_path:
+    """While tracing a branch: remember the condition under which it really runs."""
+
+    def __init__(self, pred: Any):
+        self.pred = pred if callable(pred) else (lambda: pred)
+
+    def __enter__(self) -> None:
+        _PATH.preds.append(self.pred)
+
+    def __exit__(self, *exc: Any) -> None:
+        _PATH.preds.pop()
+
+
+def _guard(values: tuple[Any, ...], taken: Any, which: Any = None) -> tuple[Any, ...]:
+    """Cut the gradient of the float arrays in ``values`` where ``taken`` is false.
 
     Under ``vmap`` a traced ``if`` evaluates both branches for every element and
     selects. The branch that is not taken may hit a singularity (``sqrt`` of a
     negative, ``log(0)``), and although its *value* is discarded, reverse-mode
     differentiation would still multiply its infinite derivative by zero and
     produce NaN. ``where(taken, x, stop_gradient(x))`` has the value ``x``
-    either way, but lets no gradient flow back through a branch that was not
+    either way, but lets no derivative flow back through a branch that was not
     taken, which is exactly the zero it should contribute.
+
+    (An identity with a custom derivative would avoid the forward-pass
+    operations, but JAX mis-batches it when a jitted, vmapped function is
+    differentiated from outside, so the plain formulation is used.)
+
+    ``which`` selects the positions to guard (those the branch reads).
     """
-
-    def leaf(a: Any) -> Any:
-        if isinstance(a, jax.Array) and jnp.issubdtype(a.dtype, jnp.inexact):
-            return jnp.where(taken, a, lax.stop_gradient(a))
-        return a
-
+    if _jax_guards_branches():
+        return values
+    flat: list[Any] = []
+    plans: list[Any] = []
+    for pos, v in enumerate(values):
+        if (
+            (which is not None and pos not in which)
+            or v is UNDEF
+            or v is None
+            or isinstance(v, (list, _Collector, Stacked))
+            or callable(v)
+        ):
+            plans.append(None)
+            continue
+        try:
+            leaves, tree = jax.tree.flatten(v)
+        except Exception:
+            plans.append(None)
+            continue
+        idx = [
+            i for i, a in enumerate(leaves)
+            if isinstance(a, jax.Array) and jnp.issubdtype(a.dtype, jnp.inexact)
+        ]  # fmt: skip
+        if not idx:
+            plans.append(None)
+            continue
+        plans.append((leaves, tree, idx, len(flat)))
+        flat.extend(leaves[i] for i in idx)
+    if not flat:
+        return values
+    gated = [jnp.where(taken, a, lax.stop_gradient(a)) for a in flat]
     out = []
-    for v in values:
-        if v is UNDEF or v is None or isinstance(v, (list, _Collector, Stacked)) or callable(v):
+    for v, plan in zip(values, plans):
+        if plan is None:
             out.append(v)
-        else:
-            try:
-                out.append(jax.tree.map(leaf, v))
-            except Exception:
-                out.append(v)
+            continue
+        leaves, tree, idx, start = plan
+        leaves = list(leaves)
+        for k, i in enumerate(idx):
+            leaves[i] = gated[start + k]
+        out.append(tree.unflatten(leaves))
     return tuple(out)
 
 
@@ -451,7 +521,9 @@ def if_(
     names: tuple[str, ...],
     site: str,
     reads: tuple[Any, ...] = (),
+    read_by: tuple[tuple[int, ...] | None, tuple[int, ...] | None] = (None, None),
 ) -> tuple[Any, ...]:
+    """``read_by`` lists, per branch, which positions of ``state + reads`` it reads."""
     k = _rng.sub()
     if not isinstance(pred, Tracer):
         with _rng.child(k):
@@ -460,11 +532,13 @@ def if_(
     check = _guard_lists(state, names, "if", site)
     taken = _truth(pred)
 
-    def run(fn: Callable[..., tuple[Any, ...]], on: Any) -> Callable[[], tuple[Any, ...]]:
-        args = _guard(state + reads, on)
+    def run(
+        fn: Callable[..., tuple[Any, ...]], on: Any, which: Any
+    ) -> Callable[[], tuple[Any, ...]]:
+        args = _guard(state + reads, on, which)
 
         def r() -> tuple[Any, ...]:
-            with _rng.child(k):
+            with _rng.child(k), _on_path(on):
                 out = fn(*args)
             check(out)
             return out
@@ -472,7 +546,8 @@ def if_(
         return r
 
     LOG[site] = "if -> lax.cond"
-    return _cond(pred, (run(true_fn, taken), run(false_fn, ~taken)), names, site)
+    branches = (run(true_fn, taken, read_by[0]), run(false_fn, ~taken, read_by[1]))
+    return _cond(pred, branches, names, site)
 
 
 def ifexp(
@@ -481,13 +556,32 @@ def ifexp(
     b: Callable[..., Any],
     site: str,
     reads: tuple[Any, ...] = (),
+    read_by: tuple[tuple[int, ...] | None, tuple[int, ...] | None] = (None, None),
 ) -> Any:
     if not isinstance(pred, Tracer):
-        return a(*reads) if pred else b(*reads)
+        k = _rng.sub()
+        with _rng.child(k):
+            return a(*reads) if pred else b(*reads)
     _check_pred(pred, "... if ... else ...", site)
     taken = _truth(pred)
-    ra, rb = _guard(reads, taken), _guard(reads, ~taken)
-    return _cond(pred, (lambda: (a(*ra),), lambda: (b(*rb),)), ("<the expression>",), site)[0]
+    ra, rb = _guard(reads, taken, read_by[0]), _guard(reads, ~taken, read_by[1])
+    return _select_expr(pred, lambda: a(*ra), lambda: b(*rb), site)
+
+
+def _select_expr(pred: Any, a: Callable[[], Any], b: Callable[[], Any], site: str) -> Any:
+    """``a() if pred else b()`` for a traced scalar ``pred``; each side runs in its branch."""
+    _check_pred(pred, "... if ... else ...", site)
+    k = _rng.sub()
+    taken = _truth(pred)
+
+    def side(fn: Callable[[], Any], on: Any) -> Callable[[], tuple[Any, ...]]:
+        def r() -> tuple[Any, ...]:
+            with _rng.child(k), _on_path(on):
+                return (fn(),)
+
+        return r
+
+    return _cond(pred, (side(a, taken), side(b, ~taken)), ("<the expression>",), site)[0]
 
 
 # -------------------------------------------------------------------- while
@@ -533,24 +627,41 @@ _IOP = {
 }  # fmt: skip
 
 
+slice_ = slice  # the builtin, reachable even where the name `slice` is shadowed
+
+
+def _mask(obj: Any, index: Any) -> Any:
+    """``index`` as a mask broadcastable against ``obj`` if it is a boolean array, else None."""
+    if isinstance(index, (jax.Array, np.ndarray)) and index.dtype == np.bool_ and index.ndim:
+        return index.reshape(index.shape + (1,) * (obj.ndim - index.ndim))
+    return None
+
+
 def setitem_(value: Any, obj: Any, index: Any) -> Any:
     """``obj[index] = value``; for a JAX array, ``obj.at[index].set(value)``."""
     if isinstance(obj, jax.Array):
+        mask = _mask(obj, index)
+        if mask is not None:  # a boolean mask keeps the shape fixed, so it can be traced
+            return jnp.where(mask, value, obj).astype(obj.dtype)
         return obj.at[index].set(value)
     _no_mutation(obj, "item assignment")
     obj[index] = value
     return obj
 
 
-def augitem_(value: Any, obj: Any, index: Any, op: str) -> Any:
-    """``obj[index] op= value``; for a JAX array, ``obj.at[index].add(value)`` etc."""
+def augitem_(obj: Any, index: Any, value: Callable[[], Any], op: str) -> Any:
+    """``obj[index] op= value``; for a JAX array a functional update with NumPy's semantics.
+
+    As in Python, the old element is read before the right-hand side is evaluated.
+    """
     if isinstance(obj, jax.Array):
-        method = getattr(obj.at[index], _AT.get(op, ""), None)
-        if method is not None:
-            return method(value)
-        return obj.at[index].set(_IOP[op](obj[index], value))
+        mask = _mask(obj, index)
+        if mask is not None:
+            return jnp.where(mask, _IOP[op](obj, value()), obj).astype(obj.dtype)
+        return obj.at[index].set(_IOP[op](obj[index], value()))
     _no_mutation(obj, "item assignment")
-    obj[index] = _IOP[op](obj[index], value)
+    old = obj[index]
+    obj[index] = _IOP[op](old, value())
     return obj
 
 
@@ -579,8 +690,8 @@ def setattr_(value: Any, obj: Any, name: str) -> Any:
     return obj
 
 
-def augattr_(value: Any, obj: Any, name: str, op: str) -> Any:
-    new = _IOP[op](getattr(obj, name), value)
+def augattr_(obj: Any, name: str, value: Callable[[], Any], op: str) -> Any:
+    new = _IOP[op](getattr(obj, name), value())
     if _replaceable(obj):
         return _replace(obj, name, new)
     _no_mutation(obj, "attribute assignment")
@@ -593,36 +704,38 @@ def augattr_(value: Any, obj: Any, name: str, op: str) -> Any:
 
 def print_(*args: Any, **kwargs: Any) -> None:
     """``print`` that also works on traced values (prints when the code runs)."""
-    if not any(isinstance(a, Tracer) for a in args):
+    idx = [i for i, a in enumerate(args) if isinstance(a, Tracer)]
+    if not idx:
         print(*args, **kwargs)
         return
-    sep = kwargs.get("sep", " ")
-    parts, values = [], []
-    for a in args:
-        if isinstance(a, (Tracer, jax.Array, np.ndarray)):
-            parts.append("{}")
-            values.append(a)
-        else:
-            parts.append(str(a).replace("{", "{{").replace("}", "}}"))
-    jax.debug.print(sep.join(parts), *values)
+    template = [None if i in idx else a for i, a in enumerate(args)]
+
+    def show(*values: Any) -> None:
+        out = list(template)
+        for i, v in zip(idx, values):
+            out[i] = v
+        print(*out, **kwargs)
+
+    jax.debug.callback(show, *[args[i] for i in idx])
+
+
+def _extreme(args: tuple[Any, ...], kwargs: dict[str, Any], builtin: Any, pair: Any) -> Any:
+    # With a JAX array among several arguments, use the array function in every
+    # mode, so that eager and compiled runs agree on dtype and on NaN handling.
+    if kwargs or len(args) < 2 or not any(isinstance(a, jax.Array) for a in args):
+        return builtin(*args, **kwargs)
+    out = args[0]
+    for a in args[1:]:
+        out = pair(out, a)
+    return out
 
 
 def max_(*args: Any, **kwargs: Any) -> Any:
-    if kwargs or len(args) < 2 or not any(isinstance(a, Tracer) for a in args):
-        return max(*args, **kwargs)
-    out = args[0]
-    for a in args[1:]:
-        out = jnp.maximum(out, a)
-    return out
+    return _extreme(args, kwargs, max, jnp.maximum)
 
 
 def min_(*args: Any, **kwargs: Any) -> Any:
-    if kwargs or len(args) < 2 or not any(isinstance(a, Tracer) for a in args):
-        return min(*args, **kwargs)
-    out = args[0]
-    for a in args[1:]:
-        out = jnp.minimum(out, a)
-    return out
+    return _extreme(args, kwargs, min, jnp.minimum)
 
 
 def assert_(test: Any, msg: Callable[[], Any] | None, site: str) -> None:
@@ -642,7 +755,12 @@ def assert_(test: Any, msg: Callable[[], Any] | None, site: str) -> None:
         if not np.all(ok):
             raise AssertionError(message)
 
-    jax.debug.callback(check, test)
+    # Under vmap both branches of a traced `if` run for every element, so the
+    # assertion only counts where the code around it was really reached.
+    ok = jnp.all(test)
+    for reached in _PATH.preds:
+        ok = jnp.logical_or(ok, jnp.logical_not(reached()))
+    jax.debug.callback(check, ok)
 
 
 def while_(
@@ -656,13 +774,13 @@ def while_(
     k = _rng.sub()
     it = 0
     while True:
-        with _rng.child(k, it):
+        with _rng.child(k, 2 * it):
             c = test_fn(*state)
         if isinstance(c, Tracer):
             break
         if not c:
             return state
-        with _rng.child(k, it):
+        with _rng.child(k, 2 * it + 1):
             state = body_fn(*state)
         it += 1
 
@@ -688,12 +806,13 @@ def while_(
 
     def cond_f(c2: Any) -> Any:
         n, carry = c2
-        with _rng.child(k, n):
+        with _rng.child(k, 2 * n):
             return truth(test_fn(*merge(carry)))
 
     def body_f(c2: Any) -> Any:
         n, carry = c2
-        with _rng.child(k, n), _staged():
+        still = lambda: truth(test_fn(*merge(carry)))  # noqa: E731 - only evaluated by an assert
+        with _rng.child(k, 2 * n + 1), _staged(), _on_path(still):
             out = body_fn(*merge(carry))
         check(out)
         for i, v in enumerate(out):
@@ -903,14 +1022,17 @@ def stack(seq: Any) -> Any:
 
 def reversed_(it: Any) -> Any:
     inner = _as_iter(it) if _rng.tracing() else None
-    if inner is None or isinstance(inner.n, Tracer):
+    if inner is None:
         return reversed(it)
     n = inner.n
+    if isinstance(n, Tracer) and jax.tree.leaves(inner.xs):
+        return reversed(it)
     return _Iter(
         n,
         jax.tree.map(lambda a: a[::-1], inner.xs),
         lambda x, i: inner.make(x, n - 1 - i),
         lambda: reversed(list(inner.py())),
+        inner.chunk,
     )
 
 
@@ -941,6 +1063,7 @@ def enumerate_(iterable: Any, start: int = 0) -> Any:
         inner.xs,
         lambda x, i: (_weaken(i) + start, inner.make(x, i)),
         lambda: enumerate(inner.py(), start),
+        inner.chunk,
     )
 
 

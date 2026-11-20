@@ -733,6 +733,19 @@ class UnionSpec(Spec):
         try:
             opt = self._select(value, path, Env())
         except Mismatch:
+            # No exact match, e.g. an array with extra batch axes (as `lift`
+            # sees it): fall back to the first member of the right kind.
+            if value is None:
+                return value
+            arrayish = hasattr(value, "shape") and hasattr(value, "dtype")
+            for o in self.options:
+                if isinstance(o, NoneSpec):
+                    continue
+                cls = getattr(o, "cls", None)
+                if (cls is not None and isinstance(value, cls)) or (
+                    arrayish and isinstance(o, (ArraySpec, KeySpec))
+                ):
+                    return o.walk(value, path, visit)
             return value
         return opt.walk(value, path, visit)
 
@@ -957,6 +970,10 @@ def parse(ann: Any, subst: dict[Any, Any] | None = None, _stack: tuple[type, ...
     if origin is typing.Annotated:
         return parse(args[0], subst, _stack)
     if origin is typing.Union or origin is types.UnionType:
+        if any(isinstance(a, StaticAnn) for a in args):
+            # `Static[int] | None`: the whole value is static
+            plain = tuple(a.inner if isinstance(a, StaticAnn) else a for a in args)
+            return StaticSpec(typing.Union[plain])  # type: ignore[arg-type]
         opts = tuple(parse(a, subst, _stack) for a in args)
         if not any(o.leafy for o in opts if not isinstance(o, NoneSpec)):
             return OpaqueSpec(ann)

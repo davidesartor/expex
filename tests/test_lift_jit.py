@@ -162,8 +162,9 @@ def test_unhashable_static_gets_a_note():
     def f[B](x: f32[B], n: Static[list]) -> f32[B]:
         return x
 
+    f(jnp.ones(2), [1])  # lists are fine: static values are keyed by content
     with pytest.raises(TypeError, match="must be hashable"):
-        f(jnp.ones(2), [1])
+        f(jnp.ones(2), [jnp.ones(2)])
 
 
 def test_nested_lift_traces_each_function_once_per_example_shape():

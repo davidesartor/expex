@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import inspect
 import linecache
@@ -38,6 +39,15 @@ from ._spec import (
 if TYPE_CHECKING:
     from ._batch import Batched
     from ._check import Report
+
+_BatchTracer: Any = ()
+try:  # private, but there is no public way to ask "is this value being vmapped?"
+    from jax._src.interpreters import batching as _batching
+
+    _BatchTracer = _batching.BatchTracer
+except Exception:  # pragma: no cover
+    pass
+
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -416,6 +426,15 @@ class Fn(Generic[P, R]):
         if self.random:
             if key is None:
                 key = _rng.fresh(f"{self.name}()")
+            if not isinstance(key, _BatchTracer) and any(
+                isinstance(x, _BatchTracer) for x in jax.tree.leaves((args, kwargs))
+            ):
+                raise StageError(
+                    f"{self.name}() is being mapped with jax.vmap, but its random key is "
+                    f"shared by the whole batch: every element would draw the same numbers.\n"
+                    f"    - use {self.name}.lift(...), which gives each element its own key\n"
+                    f"    - or split a key yourself and pass the keys as a mapped argument"
+                )
             with _rng.child(key):
                 return self._run_checked(args, kwargs, env, force)
         return self._run_checked(args, kwargs, env, force)
@@ -458,6 +477,9 @@ class Fn(Generic[P, R]):
             raise self._error(m, "argument", env) from None
         if self.where:
             self._check_where(env, final=False)
+        # Objects this call creates are its own: updating them in place is fine
+        # even when the call itself sits inside a traced branch of the caller.
+        depth, _flow._STAGE.depth = _flow._STAGE.depth, 0
         try:
             if self._has_locals:
                 _flow.CALLS.stack.append((env, self))
@@ -468,9 +490,11 @@ class Fn(Generic[P, R]):
             else:
                 out = self._impl(*args, **kwargs)
         except Exception as e:
+            _flow._STAGE.depth = depth
             if config.notes and not getattr(e, "_typax_local", None) is self:
                 self._annotate(e, bound, env)
             raise
+        _flow._STAGE.depth = depth
         if self.converted:
             out = _flow.unstack(out)  # lists collected by a staged loop
         if self._check_ret:
@@ -916,16 +940,37 @@ class _StaticValue:
         self.value = value
 
     def __eq__(self, other: object) -> bool:
-        if not isinstance(other, _StaticValue):
-            return False
-        a, b = self.value, other.value
-        return a is b or (type(a) is type(b) and bool(a == b))
+        return isinstance(other, _StaticValue) and _static_key(self.value) == _static_key(other.value)
 
     def __hash__(self) -> int:
-        return hash(self.value)
+        return hash(_static_key(self.value))
 
     def __repr__(self) -> str:
         return f"static {self.value!r}"
+
+
+def _static_key(v: Any) -> Any:
+    """A hashable stand-in under which two static values count as the same.
+
+    Stricter than ``==``: ``1``, ``True`` and ``1.0`` are equal in Python (and so
+    are ``0.0`` and ``-0.0``) but can make a function behave differently, so
+    each must get its own compiled version.
+    """
+    t = type(v)
+    if t in (tuple, list):
+        return (t, tuple(_static_key(x) for x in v))
+    if t is dict:
+        return (t, tuple((_static_key(k), _static_key(x)) for k, x in v.items()))
+    if t in (frozenset, set):
+        return (t, frozenset(_static_key(x) for x in v))
+    if t is float:
+        return (t, v.hex())
+    if t is complex:
+        return (t, v.real.hex(), v.imag.hex())
+    if isinstance(v, tuple) and hasattr(v, "_fields"):
+        return (t, tuple(_static_key(x) for x in v))
+    hash(v)  # raises TypeError for unhashable values
+    return (t, v)
 
 
 def _is_traced_leaf(x: Any) -> bool:
@@ -953,24 +998,67 @@ def _has_static(spec: Spec) -> bool:
     return bool(cached)
 
 
+def _opaque_dataclass(v: Any) -> bool:
+    """A dataclass instance that is not a registered pytree (JAX sees it as one leaf)."""
+    if not dataclasses.is_dataclass(v) or isinstance(v, type):
+        return False
+    leaves = jax.tree.leaves(v)
+    return len(leaves) == 1 and leaves[0] is v
+
+
+class _Record:
+    """The fields of a dataclass that is not a pytree, so that jit can trace its arrays."""
+
+    def __init__(self, cls: type, names: tuple[str, ...], values: tuple[Any, ...]):
+        self.cls = cls
+        self.names = names
+        self.values = values
+
+    def restore(self, values: dict[str, Any]) -> Any:
+        obj: Any = object.__new__(self.cls)
+        for n, x in values.items():
+            object.__setattr__(obj, n, x)
+        return obj
+
+
+jax.tree_util.register_pytree_node(
+    _Record,
+    lambda r: (r.values, (r.cls, r.names)),
+    lambda aux, values: _Record(aux[0], aux[1], tuple(values)),
+)
+
+
 def _mark(spec: Spec, v: Any, wrap: bool) -> Any:
     """Wrap (or unwrap) the values that ``spec`` declares Static, inside ``v``."""
-    if not _has_static(spec):
+    if isinstance(v, _Record) or (wrap and getattr(spec, "fields", None) is not None and _opaque_dataclass(v)):
+        pass  # handled below even when the class has no Static field
+    elif not _has_static(spec):
         return v
     if isinstance(spec, StaticSpec):
         if wrap:
             return _StaticValue(v)
         return v.value if isinstance(v, _StaticValue) else v
     fields = getattr(spec, "fields", None)
+    if isinstance(v, _Record) and fields is not None:  # unwrap
+        restored = {
+            n: _mark(fields[n], x, wrap) if n in fields else x for n, x in zip(v.names, v.values)
+        }
+        return v.restore(restored)
     if fields is not None and isinstance(v, getattr(spec, "cls", ())):
+        if wrap and _opaque_dataclass(v):
+            # a dataclass JAX cannot look into: carry its fields as a record
+            dc: Any = v
+            names = tuple(f.name for f in dataclasses.fields(dc))
+            packed = tuple(
+                _mark(fields[n], getattr(v, n), True) if n in fields else getattr(v, n) for n in names
+            )
+            return _Record(type(v), names, packed)
         new = {n: _mark(s, getattr(v, n), wrap) for n, s in fields.items() if _has_static(s)}
         if isinstance(v, tuple):
             record: Any = v
             return record._replace(**new)
-        import dataclasses
-
-        obj: Any = v
-        return dataclasses.replace(obj, **new)
+        instance: Any = v
+        return dataclasses.replace(instance, **new)
     elems = getattr(spec, "elems", None)
     if elems is not None and isinstance(v, tuple) and len(v) == len(elems):
         return tuple(_mark(s, x, wrap) for s, x in zip(elems, v))
@@ -1020,26 +1108,20 @@ class _Frozen:
         ba = inspect.BoundArguments(f._sig, arguments)  # type: ignore[arg-type]
         return ba.args, ba.kwargs
 
-    def __eq__(self, other: object) -> bool:
+    def _key(self) -> Any:
         return (
-            isinstance(other, _Frozen)
-            and self.names == other.names
-            and self.tree == other.tree
-            and len(self.static) == len(other.static)
-            and all(a is b or (type(a) is type(b) and _eq(a, b)) for a, b in zip(self.static, other.static))
+            self.names,
+            self.tree,
+            tuple(x if x is _Frozen or isinstance(x, _StaticValue) else _static_key(x) for x in self.static),
         )
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _Frozen) and self._key() == other._key()
 
     def __hash__(self) -> int:
         if self._hash is None:
-            self._hash = hash((self.names, self.tree, self.static))
+            self._hash = hash(self._key())
         return self._hash
-
-
-def _eq(a: Any, b: Any) -> bool:
-    try:
-        return bool(a == b)
-    except Exception:
-        return False
 
 
 class BoundFn(Generic[P, R]):

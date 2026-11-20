@@ -39,5 +39,13 @@ The port does not depend on equinox or jaxtyping.
   (identical), rkhs 1e-15, gp 3e-15 (four L-BFGS fits included), kernels
   6e-13, acquisition 4e-7 (the L-BFGS acquisition optimizer, whose stopping
   tolerance is 1e-5). NaN and infinity patterns are identical.
-- The whole `parity.py` workload, which is mostly compilation, takes 61 s
-  with the original and 74 s with the port on the same machine.
+- Speed, same machine, CPU, float64 (first call includes compilation; "then"
+  is the median of repeated calls). Run-to-run noise is around 10-20%.
+
+  | | original, first | original, then | port, first | port, then |
+  |---|---|---|---|---|
+  | `GaussianProcess.fit` (24 points, 4 restarts) | 2.1 s | 4.5 ms | 2.1 s | 5.4 ms |
+  | `predict_joint` | 0.41 s | 0.53 ms | 0.44 s | 0.51 ms |
+  | gradient of `predict_joint` | 1.4 s | 5.0 ms | 1.2 s | 5.1 ms |
+  | `optimize_expected_improvement`, q = 1 | 6.2 s | 102 ms | 4.5 s | 83 ms |
+  | `optimize_expected_improvement`, q = 2 | 7.5 s | 165 ms | 6.0 s | 173 ms |
