@@ -22,7 +22,7 @@ classifiers = [
 dependencies = ["jax>=0.4.30", "numpy"]
 
 [project.optional-dependencies]
-dev = ["pytest", "pyright", "mypy"]
+dev = ["pytest", "pyright", "mypy", "optax"]
 
 [project.urls]
 Repository = "https://github.com/davidesartor/typax"

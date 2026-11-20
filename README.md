@@ -29,7 +29,7 @@ It is a plain Python library (3.12+). The annotations are ordinary names, so
 pyright and mypy accept them without plugins.
 
 ```
-pip install -e .          # from a checkout
+pip install -e .          # from a checkout (`pip install typax` once it is on PyPI)
 python examples/tour.py                        # see everything run
 python -m typax examples/transformer.py     # prove a small transformer's shapes
 ```
@@ -67,6 +67,9 @@ def example[*Batch, H, W](
   the categories `Float Int UInt Complex Inexact Num Arr` (`Arr` is any dtype).
 - **Containers**: `tuple[...]`, `list[X]`, `dict[str, X]`, `X | None`, unions,
   NamedTuples and dataclasses with annotated fields.
+- **Stacked structures**: `Batch[Transition, T, N]` is a `Transition` whose
+  every array has leading axes `T, N` (what you get from stacking per-step
+  values, or what `.lift` receives).
 - **Derived sizes and constraints** go on the decorator, because type checkers
   reject arithmetic in annotations:
 
@@ -228,7 +231,9 @@ print(rnn.flow)        # {<line>: 'for -> lax.scan (carries h)'}
 
 `ys.append(v)` inside a loop is how you collect per-iteration results; after a
 staged loop `ys` is a read-only sequence backed by one stacked array
-(`jnp.asarray(ys)` is free). `and`, `or`, `not` and `a if c else b` are
+(`jnp.asarray(ys)` is free; `tx.stack(ys)` does the same for lists of
+pytrees). `for row in tx.rows(tree)` iterates over the leading axis of every
+array in a pytree, and `reversed(...)` works on all of these. `and`, `or`, `not` and `a if c else b` are
 converted too. The 100-step loop above traces to a handful of operations
 instead of hundreds, which is what keeps compile times down.
 
@@ -266,6 +271,13 @@ xs, w = jnp.ones((32, 5, 3)), jnp.ones(3)
 score.lift(xs, w).shape                              # (32, 5): xs mapped, w shared
 score.lift(jnp.ones((8, 1, 5, 3)), jnp.ones((7, 3))).shape   # (8, 7, 5): batch axes broadcast
 ```
+
+Under `vmap` (and so under `lift`, at any nesting depth) JAX traces a
+function once with a single example's shapes, not once per element and not
+with the batch. The annotation checks therefore see one example at every
+level, and tracing cost does not depend on the batch size. Compilation is
+different: XLA compiles for the full batched shapes, which is what `batched`
+below works around.
 
 `lift` is explicit on purpose: a plain call with a rank-3 `xs` is still an
 error. Batch axes must lead. A single `Key` argument is split into one key
@@ -378,6 +390,30 @@ traced more than `tx.config.retrace_warn` times (default 4).
 
 Common tracer errors raised inside an `@fn` (`TracerBoolConversionError` and
 friends) get a note quoting the offending line and listing the fixes.
+
+## A real port: PPO from PureJaxRL
+
+`examples/ppo.py` is [PureJaxRL](https://github.com/luchris429/purejaxrl)'s
+`ppo.py` (CartPole) rewritten in this style: per-environment functions with
+shapes in their signatures, `.lift` instead of `vmap` with `in_axes`, plain
+`for` loops instead of four nested `lax.scan`s over closures, and
+`if done:` for the environment's auto-reset.
+
+- Starting from the same initial parameters and key, it reproduces the
+  unmodified original: after 3 updates the parameters agree to 3e-8 and every
+  episode return, length and boundary is identical (`tests/test_ppo_port.py`
+  checks this against stored reference output).
+- The two runs stay identical for the first 21 of 976 updates (about 10,000
+  environment steps with sampled actions). After that they drift apart, as
+  two differently compiled float32 programs do once a rounding difference
+  flips one sampled action; the learning curves stay close (final mean
+  return 482 vs 492 on this seed). I could not make them bit-identical.
+- All four loops are staged as `lax.scan` automatically, and trace, compile
+  and run times match the original within noise.
+- `python -m typax examples/ppo.py` proves the shapes of all 11 functions.
+
+`examples/compare_ppo.py` and `examples/run_purejaxrl_original.py` rerun the
+comparison against a PureJaxRL checkout.
 
 ## Static type checking
 

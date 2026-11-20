@@ -583,3 +583,31 @@ def test_loop_lowering_can_be_switched_off(monkeypatch):
     assert jax.jit(total)(jnp.arange(4.0)) == 6.0
     assert "unrolled (config.lower_loops is off)" in "".join(total.flow.values())
     assert n_eqns(total, jnp.arange(4.0)) > 4
+
+
+def test_rows_stack_and_reversed():
+    @fn
+    def returns[T](reward: f32[T], done: f32[T], gamma: Static[float] = 0.9) -> f32[T]:
+        g = 0.0
+        out = []
+        for step in reversed(tx.rows({"r": reward, "d": done})):
+            g = step["r"] + gamma * g * (1 - step["d"])
+            out.append({"g": g})
+        return tx.stack(out)["g"][::-1]
+
+    r = jnp.array([1.0, 2.0, 3.0, 4.0])
+    d = jnp.array([0.0, 1.0, 0.0, 0.0])
+    ref = fn(convert=False)(returns.raw)(r, d)
+    assert jnp.allclose(both(returns, r, d), ref)
+    assert "scan (carries g)" in "".join(returns.flow.values())
+
+    @fn
+    def rev[T](x: f32[T]) -> f32[T]:
+        out = []
+        for i in reversed(range(x.shape[0])):
+            out.append(x[i] * i)
+        return jnp.asarray(out)
+
+    assert both(rev, jnp.arange(4.0)).tolist() == [9.0, 4.0, 1.0, 0.0]
+    with pytest.raises(ValueError, match="leading axes differ"):
+        tx.rows((jnp.ones(2), jnp.ones(3)))

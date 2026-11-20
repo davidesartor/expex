@@ -19,7 +19,7 @@ __all__ = [
     "Arr", "Bool", "Int", "UInt", "Float", "Complex", "Inexact", "Num",
     "f16", "f32", "f64", "i8", "i16", "i32", "i64",
     "u8", "u16", "u32", "u64", "c64", "c128",
-    "Static", "Key",
+    "Static", "Key", "Batch", "BatchAnn",
 ]  # fmt: skip
 
 
@@ -142,6 +142,32 @@ class _StaticRuntime:
         return "Static"
 
 
+class BatchAnn:
+    """Runtime value of ``Batch[T, B, ...]``: ``T`` with leading axes on every array."""
+
+    __slots__ = ("inner", "items")
+
+    def __init__(self, inner: Any, items: tuple[Any, ...]):
+        self.inner = inner
+        self.items = items
+
+    def __repr__(self) -> str:
+        return f"Batch[{_item_repr(self.inner)}, {', '.join(map(_item_repr, self.items))}]"
+
+    def __call__(self, *a: Any, **k: Any) -> Any:
+        raise TypeError("Batch[...] is an annotation")
+
+
+class _BatchRuntime:
+    def __getitem__(self, args: Any) -> BatchAnn:
+        if not isinstance(args, tuple) or len(args) < 2:
+            raise TypeError("use Batch[Type, Dim, ...], e.g. Batch[Transition, T]")
+        return BatchAnn(args[0], tuple(args[1:]))
+
+    def __repr__(self) -> str:
+        return "Batch"
+
+
 class KeyAnn:
     """Runtime value of ``Key`` / ``Key[B]``: a PRNG key or a batch of them."""
 
@@ -214,7 +240,9 @@ if TYPE_CHECKING:
     type c128[*Shape] = jax.Array
     type Static[T] = T
     type Key[*Shape] = jax.Array
+    type Batch[T, *Shape] = T
 else:
+    Batch = _BatchRuntime()
     globals().update(_runtime)
     Static = _StaticRuntime()
     Key = KeyAnn()

@@ -415,7 +415,7 @@ class _Converter:
                     elif isinstance(sub, ast.Nonlocal):
                         self.captured |= set(sub.names)
         self.builtins_ok = {
-            b for b in ("range", "enumerate", "zip") if b not in self.locals and b not in shadowed
+            b for b in ("range", "enumerate", "zip", "reversed") if b not in self.locals and b not in shadowed
         }
 
     def site(self, node: ast.AST) -> ast.expr:

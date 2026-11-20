@@ -335,6 +335,15 @@ def _nbytes(aval: Any) -> int:
         return 0
 
 
+def _is_wide(dtype: Any) -> bool:
+    """A 64-bit numeric dtype (False for keys and other non-NumPy dtypes)."""
+    try:
+        dt = np.dtype(dtype)
+    except TypeError:
+        return False
+    return dt.kind in "fiuc" and dt.itemsize >= 8
+
+
 def _mb(n: int) -> str:
     return f"{n / 1e6:.1f} MB" if n >= 1e5 else f"{n / 1e3:.1f} kB"
 
@@ -375,11 +384,7 @@ def summary(f: Callable[..., Any], *args: Any, **kwargs: Any) -> Summary:
     largest: list[tuple[int, str, str]] = []
     wide = None
     total = 0
-    in_wide = any(
-        np.dtype(v.aval.dtype).itemsize >= 8
-        for v in closed.jaxpr.invars
-        if hasattr(v.aval, "dtype") and np.dtype(v.aval.dtype).kind in "fiuc"
-    )
+    in_wide = any(_is_wide(getattr(v.aval, "dtype", None)) for v in closed.jaxpr.invars)
     for eqn in iter_eqns(closed.jaxpr):
         total += 1
         by_op[eqn.primitive.name] += 1

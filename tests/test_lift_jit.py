@@ -162,3 +162,22 @@ def test_unhashable_static_gets_a_note():
     with pytest.raises(ValueError) as e:
         f(jnp.ones(2), [1])
     assert any("must be hashable" in n for n in e.value.__notes__)
+
+
+def test_nested_lift_traces_each_function_once_per_example_shape():
+    calls = {"inner": 0, "outer": 0}
+
+    @fn
+    def inner[D](x: f32[D]) -> f32:
+        calls["inner"] += 1
+        return x.sum()
+
+    @fn
+    def outer[N, D](xs: f32[N, D]) -> f32:
+        calls["outer"] += 1
+        return inner.lift(xs).max()
+
+    out = jax.jit(outer.lift)(jnp.ones((32, 16, 3)))
+    assert out.shape == (32,)
+    # tracing and checking see one example at each level, never the batch
+    assert calls == {"inner": 1, "outer": 1}

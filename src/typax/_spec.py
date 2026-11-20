@@ -25,7 +25,7 @@ from jax.core import Tracer
 
 from ._errors import Mismatch
 from ._expr import Expr
-from ._types import SHORT_NAMES, ArrayAnn, Dim, DType, Etc, KeyAnn, StaticAnn
+from ._types import SHORT_NAMES, ArrayAnn, BatchAnn, Dim, DType, Etc, KeyAnn, StaticAnn
 
 # --------------------------------------------------------------------------
 # Dimensions
@@ -830,6 +830,29 @@ def _class_annotations(cls: type) -> dict[str, Any]:
     return out
 
 
+def _prepend(spec: Spec, lead: tuple[Any, ...]) -> Spec:
+    """``spec`` with the axes ``lead`` in front of every array (for ``Batch[...]``)."""
+    if isinstance(spec, (ArraySpec, KeySpec)):
+        dims = lead + spec.dims
+        var = [i for i, d in enumerate(dims) if isinstance(d, (DVar, DEtc))]
+        if len(var) > 1:
+            raise TypeError("Batch[...] would give a shape with more than one variadic")
+        v = var[0] if var else None
+        return ArraySpec(spec.dtype, dims, v) if isinstance(spec, ArraySpec) else KeySpec(dims, v)
+    if isinstance(spec, TupleSpec):
+        return TupleSpec(tuple(_prepend(s, lead) for s in spec.elems))
+    if isinstance(spec, SeqSpec):
+        return SeqSpec(_prepend(spec.elem, lead), spec.kind)
+    if isinstance(spec, DictSpec):
+        return DictSpec(_prepend(spec.value, lead))
+    if isinstance(spec, UnionSpec):
+        return UnionSpec(tuple(_prepend(s, lead) for s in spec.options))
+    if isinstance(spec, StructSpec):
+        label = f"Batch[{spec.label}, {', '.join(map(str, lead))}]"
+        return StructSpec(spec.cls, {n: _prepend(s, lead) for n, s in spec.fields.items()}, label)
+    return spec
+
+
 def parse_owner(cls: type) -> Spec:
     """Spec for ``self`` inside a method of ``cls``.
 
@@ -870,6 +893,9 @@ def parse(ann: Any, subst: dict[Any, Any] | None = None, _stack: tuple[type, ...
         return KeySpec(dims, var)
     if isinstance(ann, StaticAnn):
         return StaticSpec(ann.inner)
+    if isinstance(ann, BatchAnn):
+        lead, _ = _parse_dims(ann.items, subst)
+        return _prepend(parse(ann.inner, subst, _stack), lead)
     if isinstance(ann, typing.TypeAliasType):
         return parse(ann.__value__, subst, _stack)
 

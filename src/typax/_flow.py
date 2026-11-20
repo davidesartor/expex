@@ -32,7 +32,7 @@ from ._errors import StageError
 
 __all__ = [
     "if_", "ifexp", "while_", "for_", "and_", "or_", "not_", "cmp_", "ld",
-    "range_", "enumerate_", "zip_", "append_", "local_", "Stacked", "UNDEF", "LOG",
+    "range_", "enumerate_", "zip_", "reversed_", "rows", "stack", "append_", "local_", "Stacked", "UNDEF", "LOG",
 ]  # fmt: skip
 
 #: site ("file:line") -> how the statement there was last executed.
@@ -610,13 +610,78 @@ def _as_iter(it: Any) -> _Iter | None:
         return _Iter(it.shape[0], it, lambda x, i: x, lambda: it)
     if isinstance(it, Stacked):
         return _Iter(len(it), it.array, lambda x, i: x, lambda: it)
+    if isinstance(it, rows):
+        return _Iter(len(it), it.tree, lambda x, i: x, lambda: it)
     return None
 
 
+class rows:
+    """Iterate over the leading axis of every array in a pytree at once.
+
+    ``for batch in rows(data)`` yields ``data`` with each leaf indexed by
+    ``[0]``, ``[1]``, ... Inside ``@fn`` such a loop is staged like a loop over
+    a single array.
+    """
+
+    def __init__(self, tree: Any):
+        leaves = jax.tree.leaves(tree)
+        if not leaves:
+            raise ValueError("rows() needs a pytree with at least one array")
+        sizes = {int(jnp.shape(x)[0]) for x in leaves}
+        if len(sizes) != 1:
+            raise ValueError(f"rows(): leading axes differ: {sorted(sizes)}")
+        self.tree = tree
+        self.n = sizes.pop()
+
+    def __len__(self) -> int:
+        return self.n
+
+    def __getitem__(self, i: int) -> Any:
+        if not -self.n <= i < self.n:
+            raise IndexError(i)
+        return jax.tree.map(lambda a: a[i], self.tree)
+
+    def __iter__(self) -> Any:
+        return (self[i] for i in range(self.n))
+
+
+def stack(seq: Any) -> Any:
+    """Stack a list of pytrees collected in a loop into one pytree of arrays.
+
+    Free when the list came from a staged loop; otherwise ``jnp.stack`` per leaf.
+    """
+    if isinstance(seq, Stacked):
+        return seq.array
+    seq = list(seq)
+    if not seq:
+        raise ValueError("stack() of an empty list")
+    return jax.tree.map(lambda *xs: jnp.stack(xs), *seq)
+
+
+def reversed_(it: Any) -> Any:
+    inner = _as_iter(it) if _rng.tracing() else None
+    if inner is None or isinstance(inner.n, Tracer):
+        return reversed(it)
+    n = inner.n
+    return _Iter(
+        n,
+        jax.tree.map(lambda a: a[::-1], inner.xs),
+        lambda x, i: inner.make(x, n - 1 - i),
+        lambda: reversed(list(inner.py())),
+    )
+
+
 def range_(*args: Any) -> Any:
-    if not any(isinstance(a, Tracer) for a in args):
-        return range(*args)
     lo, hi, step = (0, args[0], 1) if len(args) == 1 else (*args, 1) if len(args) == 2 else args
+    if not any(isinstance(a, Tracer) for a in args):
+        try:
+            return range(*args)
+        except TypeError:
+            if not _rng.tracing() or type(step) is not int:
+                raise
+        # a symbolic size (the prover's `T`): a loop of statically unknown but fixed length
+        n = (hi - lo) if step == 1 else -(-(hi - lo) // step)
+        return _Iter(n, (), lambda x, i: lo + _weaken(i) * step, lambda: range(lo, hi, step))
     if isinstance(step, Tracer):
         raise StageError("range() with a traced step is not supported; make the step a Python int.")
     n = jnp.maximum(0, -(-(jnp.asarray(hi) - lo) // step))

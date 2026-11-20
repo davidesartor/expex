@@ -480,3 +480,26 @@ def test_stage_hint():
     with pytest.raises(jax.errors.TracerIntegerConversionError) as e2:
         jax.jit(loop)(jnp.ones(3), 2)
     assert "jax.lax.fori_loop" in "\n".join(e2.value.__notes__)
+
+
+def test_batch_annotation():
+    from typax import Batch
+
+    class Step(NamedTuple):
+        obs: f32[Literal[4]]
+        reward: f32
+        key: Key
+
+    @fn
+    def total[T, N](traj: Batch[Step, T, N], last: Batch[f32[Literal[4]], N]) -> f32[N]:
+        return traj.reward.sum(0) + last.sum(-1)
+
+    keys = jax.random.split(jax.random.key(0), (6, 3))
+    traj = Step(jnp.ones((6, 3, 4)), jnp.ones((6, 3)), keys)
+    assert total(traj, jnp.ones((3, 4))).shape == (3,)
+    assert "traj: Batch[Step, T, N]" in repr(total)
+    with pytest.raises(ShapeError, match=r"declared  traj.reward: f32\[T, N\]"):
+        total(Step(jnp.ones((6, 3, 4)), jnp.ones((6, 2)), keys), jnp.ones((3, 4)))
+    from typax import prove
+
+    assert prove(total).status == "proved"
