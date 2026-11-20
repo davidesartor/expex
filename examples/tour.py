@@ -1,12 +1,12 @@
-"""A tour of barnacle. Run with:  python examples/tour.py"""
+"""A tour of typax. Run with:  python examples/tour.py"""
 
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 
-import barnacle as bn
-from barnacle import Static, debug, f32, fn, i32
+import typax as tx
+from typax import Static, debug, f32, fn, i32
 
 
 def section(title: str) -> None:
@@ -60,18 +60,18 @@ if __name__ == "__main__":
     section("1. A call that breaks the contract")
     try:
         rnn(p, xs[:, :2])
-    except bn.ShapeError as e:
+    except tx.ShapeError as e:
         print(e)
 
     section("2. Proving the annotations for all sizes (no data needed)")
     for f in (cell, rnn, loss):
-        print(bn.prove(f))
+        print(tx.prove(f))
 
     @fn
     def off_by_one[T, D](xs: f32[T, D]) -> f32[T, D]:
         return xs[1:] - xs[:-1]
 
-    print(bn.prove(off_by_one))
+    print(tx.prove(off_by_one))
 
     section("3. Plain Python control flow, staged automatically")
     step = jax.jit(jax.value_and_grad(loss))
@@ -106,14 +106,14 @@ if __name__ == "__main__":
 
     @fn(random=True)
     def dropout[D](x: f32[D], rate: Static[float] = 0.5) -> f32[D]:
-        keep = jax.random.bernoulli(bn.key(), 1 - rate, x.shape)
+        keep = jax.random.bernoulli(tx.key(), 1 - rate, x.shape)
         return jnp.where(keep, x / (1 - rate), 0.0)
 
-    bn.seed(0)
+    tx.seed(0)
     print(dropout(jnp.ones(6)), dropout(jnp.ones(6)), sep="\n")
     try:
         jax.jit(dropout)(jnp.ones(6))
-    except bn.StageError as e:
+    except tx.StageError as e:
         print("\nunder a plain jit:", str(e).splitlines()[0])
 
     section("6. Finding a NaN")

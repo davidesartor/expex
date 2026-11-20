@@ -84,7 +84,7 @@ def local_(value: Any, ann: Callable[[], Any], name: str, site: str) -> Any:
             spec = parse(ann())
             if not spec.leafy:
                 spec = None
-        except Exception:  # not a barnacle annotation, or names not available here
+        except Exception:  # not a typax annotation, or names not available here
             spec = None
         _LOCAL_SPECS[site] = spec
     if spec is None:
@@ -262,7 +262,7 @@ def _cond(
             plan = {**plan, **new_plan}
             continue
         if err is not None:
-            err.add_note(f"barnacle: in the `if` at {site}; variables it assigns: {', '.join(names)}")
+            err.add_note(f"typax: in the `if` at {site}; variables it assigns: {', '.join(names)}")
             raise err
         break
 
@@ -487,7 +487,7 @@ def while_(
         _, final = lax.while_loop(cond_f, body_f, (count0, init))
     except TypeError as e:
         e.add_note(
-            f"barnacle: in the `while` at {site}; carried variables, in order: "
+            f"typax: in the `while` at {site}; carried variables, in order: "
             f"{', '.join(names[i] for i in dyn)}.\n"
             f"    Each must keep the same shape and dtype on every iteration."
         )
@@ -834,7 +834,7 @@ def _fori(
         )
     except TypeError as e:
         e.add_note(
-            f"barnacle: in the `for` at {site}; carried variables, in order: "
+            f"typax: in the `for` at {site}; carried variables, in order: "
             f"{', '.join(names[i] for i in dyn)}.\n"
             f"    Each must keep the same shape and dtype on every iteration."
         )

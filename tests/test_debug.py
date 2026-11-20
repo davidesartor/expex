@@ -4,8 +4,8 @@ import jax
 import jax.numpy as jnp
 from jax import lax
 
-import barnacle as bn
-from barnacle import debug, f32, fn
+import typax as tx
+from typax import debug, f32, fn
 
 
 def test_find_nan_points_at_the_line():
@@ -132,13 +132,13 @@ def test_timing():
 
     @fn(jit=True, random=True)
     def r[D](x: f32[D]) -> f32[D]:
-        return x + jax.random.normal(bn.key(), x.shape)
+        return x + jax.random.normal(tx.key(), x.shape)
 
     assert debug.timing(r, jnp.ones(8), repeat=1).ops >= 1
 
 
 def test_debug_tools_keep_static_arguments_static():
-    from barnacle import Static
+    from typax import Static
 
     @fn
     def rep[T](x: f32[T], n: Static[int], mode: Static[str] = "log") -> f32:

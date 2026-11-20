@@ -573,7 +573,7 @@ class NoneSpec(Spec):
 
 
 class OpaqueSpec(Spec):
-    """Anything barnacle does not look into."""
+    """Anything typax does not look into."""
 
     leafy = False
 

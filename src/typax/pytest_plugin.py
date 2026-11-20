@@ -1,9 +1,9 @@
 """pytest plugin: one test per ``@fn``, proving its shape annotations.
 
-Enable with ``pytest --barnacle mypackage`` or in the config file::
+Enable with ``pytest --typax mypackage`` or in the config file::
 
     [tool.pytest.ini_options]
-    barnacle = ["mypackage"]
+    typax = ["mypackage"]
 """
 
 from __future__ import annotations
@@ -14,15 +14,15 @@ import pytest
 
 
 def pytest_addoption(parser: Any) -> None:
-    group = parser.getgroup("barnacle")
+    group = parser.getgroup("typax")
     group.addoption(
-        "--barnacle",
+        "--typax",
         action="append",
         default=[],
         metavar="MODULE",
         help="prove the shape annotations of every @fn in this module/package (repeatable)",
     )
-    parser.addini("barnacle", "modules whose @fn functions are proved", type="args", default=[])
+    parser.addini("typax", "modules whose @fn functions are proved", type="args", default=[])
 
 
 class ProofFailed(Exception):
@@ -43,7 +43,7 @@ class ProofItem(pytest.Item):
         if report.status == UNCHECKED:
             pytest.skip(report.detail)
         if report.status == SPOT:
-            self.add_report_section("call", "barnacle", str(report))
+            self.add_report_section("call", "typax", str(report))
 
     def repr_failure(self, excinfo: Any, style: Any = None) -> Any:
         if isinstance(excinfo.value, ProofFailed):
@@ -58,7 +58,7 @@ class ProofItem(pytest.Item):
 
 
 def pytest_collection_modifyitems(session: Any, config: Any, items: list[Any]) -> None:
-    targets = list(config.getoption("barnacle")) + list(config.getini("barnacle"))
+    targets = list(config.getoption("typax")) + list(config.getini("typax"))
     if not targets:
         return
     from ._check import collect
@@ -70,4 +70,4 @@ def pytest_collection_modifyitems(session: Any, config: Any, items: list[Any]) -
                 continue
             seen.add(id(f))
             mod = getattr(f.raw, "__module__", "?")
-            items.append(ProofItem.from_parent(session, name=f"barnacle::{mod}.{f.name}", fn=f))
+            items.append(ProofItem.from_parent(session, name=f"typax::{mod}.{f.name}", fn=f))

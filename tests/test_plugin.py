@@ -7,7 +7,7 @@ import textwrap
 MODULE = textwrap.dedent(
     """
     import jax.numpy as jnp
-    from barnacle import fn, f32, Static
+    from typax import fn, f32, Static
 
     @fn
     def good[B, T](x: f32[B, T]) -> f32[T, B]:
@@ -31,7 +31,7 @@ MODULE = textwrap.dedent(
 def test_plugin(pytester):
     pytester.makepyfile(shapes_mod=MODULE)
     pytester.syspathinsert()
-    result = pytester.runpytest("--barnacle", "shapes_mod", "-rs")
+    result = pytester.runpytest("--typax", "shapes_mod", "-rs")
     result.assert_outcomes(passed=1, failed=1, skipped=1)
     result.stdout.fnmatch_lines(
         [
@@ -45,14 +45,14 @@ def test_plugin_ini_and_off_by_default(pytester):
     pytester.makepyfile(shapes_mod=MODULE, test_x="def test_x(): pass")
     pytester.syspathinsert()
     pytester.runpytest().assert_outcomes(passed=1)
-    pytester.makeini("[pytest]\nbarnacle = shapes_mod\n")
+    pytester.makeini("[pytest]\ntypax = shapes_mod\n")
     pytester.runpytest().assert_outcomes(passed=2, failed=1, skipped=1)
 
 
 def test_cli(tmp_path):
     (tmp_path / "shapes_cli.py").write_text(MODULE)
     r = subprocess.run(
-        [sys.executable, "-m", "barnacle", "shapes_cli"],
+        [sys.executable, "-m", "typax", "shapes_cli"],
         cwd=tmp_path, capture_output=True, text=True,
     )  # fmt: skip
     assert r.returncode == 1

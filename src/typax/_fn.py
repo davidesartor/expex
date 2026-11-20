@@ -46,24 +46,24 @@ S = TypeVar("S")
 
 
 class Config:
-    """Global switches. Also settable through ``BARNACLE_*`` environment variables."""
+    """Global switches. Also settable through ``TYPAX_*`` environment variables."""
 
     def __init__(self) -> None:
         #: Check arguments and return values on every (traced or eager) call.
-        self.checked: bool = os.environ.get("BARNACLE_CHECKED", "1") not in ("0", "false", "")
+        self.checked: bool = os.environ.get("TYPAX_CHECKED", "1") not in ("0", "false", "")
         #: Attach "in f(x: f32[3, 4])" notes to exceptions passing through ``@fn``.
-        self.notes: bool = os.environ.get("BARNACLE_NOTES", "1") not in ("0", "false", "")
+        self.notes: bool = os.environ.get("TYPAX_NOTES", "1") not in ("0", "false", "")
         #: Turn ``for`` loops into ``lax.scan`` / ``vmap`` when tracing. With False,
         #: loops over arrays and ranges are unrolled, as in plain JAX.
-        self.lower_loops: bool = os.environ.get("BARNACLE_LOWER_LOOPS", "1") not in ("0", "false", "")
+        self.lower_loops: bool = os.environ.get("TYPAX_LOWER_LOOPS", "1") not in ("0", "false", "")
         #: Warn when a ``jit=True`` function has been traced more than this many times.
-        self.retrace_warn: int = int(os.environ.get("BARNACLE_RETRACE_WARN", "4"))
+        self.retrace_warn: int = int(os.environ.get("TYPAX_RETRACE_WARN", "4"))
 
 
 config = Config()
 
 
-def compile_cache(path: str = "~/.cache/barnacle", min_compile_seconds: float = 1.0) -> str:
+def compile_cache(path: str = "~/.cache/typax", min_compile_seconds: float = 1.0) -> str:
     """Keep compiled functions on disk, so later runs of a program skip compilation.
 
     Turns on JAX's persistent compilation cache in ``path``. Only functions that
@@ -145,7 +145,7 @@ class Fn(Generic[P, R]):
             except Exception as e:  # never let conversion break a working function
                 self.convert_note = f"conversion failed: {type(e).__name__}: {e}"
         self.converted = self._impl is not raw
-        self._has_locals = bool(getattr(self._impl, "__barnacle_locals__", 0))
+        self._has_locals = bool(getattr(self._impl, "__typax_locals__", 0))
         self.name: str = getattr(raw, "__qualname__", getattr(raw, "__name__", repr(raw)))
         self.checked = checked
         self.prove = prove
@@ -279,7 +279,7 @@ class Fn(Generic[P, R]):
             except ValueError as e:
                 if "Non-hashable static arguments" in str(e):
                     e.add_note(
-                        f"barnacle: {self.name}() is jit=True and its Static parameters "
+                        f"typax: {self.name}() is jit=True and its Static parameters "
                         f"({', '.join(self.static_names)}) are passed to jax.jit as static "
                         f"arguments, so their values must be hashable (use tuples, not lists "
                         f"or arrays)."
@@ -351,7 +351,7 @@ class Fn(Generic[P, R]):
             else:
                 out = self._impl(*args, **kwargs)
         except Exception as e:
-            if config.notes and not getattr(e, "_barnacle_local", None) is self:
+            if config.notes and not getattr(e, "_typax_local", None) is self:
                 self._annotate(e, bound, env)
             raise
         if self.converted:
@@ -390,7 +390,7 @@ class Fn(Generic[P, R]):
 
     @property
     def signature(self) -> str:
-        """The signature as barnacle understands it."""
+        """The signature as typax understands it."""
         tps = getattr(self.raw, "__type_params__", ())
         head = getattr(self.raw, "__name__", self.name)
         if tps:
@@ -421,7 +421,7 @@ class Fn(Generic[P, R]):
                 resolve(env)
         except Mismatch as m:
             e = self._error(m, "local", env, site)
-            setattr(e, "_barnacle_local", self)
+            setattr(e, "_typax_local", self)
             raise e from None
 
     def _error(self, m: Mismatch, role: str, env: Env, site: str = "") -> Exception:
@@ -466,7 +466,7 @@ class Fn(Generic[P, R]):
                 f"{n}: {describe(v)}" for n, v in bound.items() if self.params[n].spec.leafy
             )
             binds = env.summary()
-            note = f"barnacle: in {self.name}({args})" + (f"  [{binds}]" if binds else "")
+            note = f"typax: in {self.name}({args})" + (f"  [{binds}]" if binds else "")
             if note not in getattr(e, "__notes__", ()):
                 e.add_note(note)
         except Exception:
@@ -492,7 +492,7 @@ class Fn(Generic[P, R]):
             warnings.warn(
                 f"{self.name}() has been traced {n} times; each trace recompiles.\n"
                 + self.explain_retrace()
-                + f"\n(inspect `{self.name}.traces`, or raise barnacle.config.retrace_warn)",
+                + f"\n(inspect `{self.name}.traces`, or raise typax.config.retrace_warn)",
                 RetraceWarning,
                 stacklevel=4,
             )
@@ -691,7 +691,7 @@ class Fn(Generic[P, R]):
     # ----------------------------------------------------------------- prove
 
     def check(self, **examples: Any) -> "Report":
-        """Prove the declared shapes for all sizes. See :func:`barnacle.prove`."""
+        """Prove the declared shapes for all sizes. See :func:`typax.prove`."""
         from ._check import prove
 
         return prove(self, examples=examples or None)
@@ -780,7 +780,7 @@ def _user_frame(e: BaseException) -> tuple[str, int, str] | None:
 
 
 def _stage_hint(e: Exception, f: Fn[Any, Any]) -> None:
-    if not isinstance(e, jax.errors.JAXTypeError) or getattr(e, "_barnacle_hint", False):
+    if not isinstance(e, jax.errors.JAXTypeError) or getattr(e, "_typax_hint", False):
         return
     E = jax.errors
     if isinstance(e, E.TracerBoolConversionError):
@@ -807,12 +807,12 @@ def _stage_hint(e: Exception, f: Fn[Any, Any]) -> None:
         fixes = []
     else:
         return
-    setattr(e, "_barnacle_hint", True)
+    setattr(e, "_typax_hint", True)
     frame = _user_frame(e)
     where = f"`{frame[2]}`  ({frame[0]}:{frame[1]})" if frame and frame[2] else "this code"
     traced = [n for n, p in f.params.items() if isinstance(p.spec, (ArraySpec, KeySpec))]
     lines = [
-        f"barnacle: {where} needs {need},",
+        f"typax: {where} needs {need},",
         "    but the value is traced: inside jit/vmap/grad, array arguments have no "
         "values, only shapes.",
     ]
@@ -876,7 +876,7 @@ def fn(
         Rewrite plain ``if`` / ``while`` / ``for`` so that they also work on traced
         values (default). See ``.flow`` for how each statement ran.
     ``random``
-        Give the function an implicit PRNG key: ``barnacle.key()`` inside it
+        Give the function an implicit PRNG key: ``typax.key()`` inside it
         returns a fresh key on every call.
     ``examples``
         Values the prover should use for ``Static`` or unannotated parameters,

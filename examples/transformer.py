@@ -1,6 +1,6 @@
-"""A small transformer written with barnacle.
+"""A small transformer written with typax.
 
-    python -m barnacle examples/transformer.py     # prove every shape
+    python -m typax examples/transformer.py     # prove every shape
     python examples/transformer.py                 # train a few steps
 """
 
@@ -9,8 +9,8 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-import barnacle as bn
-from barnacle import Dim, Int, Static, f32, fn
+import typax as tx
+from typax import Dim, Int, Static, f32, fn
 
 
 class Vocab(Dim): ...
@@ -98,6 +98,6 @@ if __name__ == "__main__":
         value, model = step(model, data)
         print(f"step {i}: loss {value:.4f}")
     print()
-    print(bn.format_reports(bn.prove(__import__("__main__"))))
+    print(tx.format_reports(tx.prove(__import__("__main__"))))
     print()
-    print(bn.debug.timing(loss, model, data[0], 4))
+    print(tx.debug.timing(loss, model, data[0], 4))

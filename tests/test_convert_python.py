@@ -8,7 +8,7 @@ import contextlib
 
 import pytest
 
-from barnacle._convert import NotConverted, convert
+from typax._convert import NotConverted, convert
 
 G = 10
 

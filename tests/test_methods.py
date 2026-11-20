@@ -8,8 +8,8 @@ import pytest
 import jax
 import jax.numpy as jnp
 
-import barnacle as bn
-from barnacle import ShapeError, Static, f32, fn
+import typax as tx
+from typax import ShapeError, Static, f32, fn
 
 
 @dataclass
@@ -47,13 +47,13 @@ def test_inconsistent_instance_is_reported():
 
 
 def test_methods_are_proved_without_an_instance():
-    assert bn.prove(Linear.__call__).status == "proved"
-    r = bn.prove(Linear.wrong)
+    assert tx.prove(Linear.__call__).status == "proved"
+    r = tx.prove(Linear.wrong)
     assert r.status == "failed" and "returned     f32[B, O]" in r.detail
-    assert bn.prove(Linear.first_two).status == "proved"
+    assert tx.prove(Linear.first_two).status == "proved"
     # and with one
     lin = Linear(jnp.ones((5, 3)), jnp.zeros(5))
-    assert bn.prove(lin.__call__).status == "proved"
+    assert tx.prove(lin.__call__).status == "proved"
 
 
 def test_method_lift_jit_and_grad():
@@ -74,7 +74,7 @@ def test_plain_classes_are_unaffected():
             return x * self.k
 
     assert Plain().call(jnp.ones(3)).shape == (3,)
-    assert bn.prove(Plain.call).status == "unchecked"
+    assert tx.prove(Plain.call).status == "unchecked"
 
 
 def test_stacked_model():
@@ -90,7 +90,7 @@ def test_stacked_model():
 
     mlp = MLP(Linear(jnp.ones((8, 3)), jnp.zeros(8)), Linear(jnp.ones((2, 8)), jnp.zeros(2)))
     assert mlp(jnp.ones((4, 3))).shape == (4, 2)
-    assert bn.prove(MLP.__call__).status == "proved"
+    assert tx.prove(MLP.__call__).status == "proved"
     broken = MLP(Linear(jnp.ones((8, 3)), jnp.zeros(8)), Linear(jnp.ones((2, 7)), jnp.zeros(2)))
     with pytest.raises(ShapeError, match="H is 8"):
         broken(jnp.ones((4, 3)))
@@ -99,7 +99,7 @@ def test_stacked_model():
 def test_compile_cache(tmp_path):
     old = jax.config.jax_compilation_cache_dir
     try:
-        path = bn.compile_cache(str(tmp_path / "cache"), min_compile_seconds=0.0)
+        path = tx.compile_cache(str(tmp_path / "cache"), min_compile_seconds=0.0)
         assert os.path.isdir(path) and jax.config.jax_compilation_cache_dir == path
         assert jax.jit(lambda x: x * 2 + 1)(jnp.ones(3)).shape == (3,)
     finally:

@@ -7,8 +7,8 @@ import pytest
 import jax
 import jax.numpy as jnp
 
-import barnacle as bn
-from barnacle import Dim, Etc, Key, Static, f32, f64, fn, format_reports, i32, prove
+import typax as tx
+from typax import Dim, Etc, Key, Static, f32, f64, fn, format_reports, i32, prove
 
 
 def status(f, **ex):
@@ -335,7 +335,7 @@ def test_sizes_can_refer_to_static_arguments():
         return x.reshape(t, heads, d // heads).transpose(1, 0, 2)
 
     assert split(jnp.ones((5, 8)), 4).shape == (4, 5, 2)
-    with pytest.raises(bn.ShapeError, match=r"constraint `D % heads == 0` is violated \(D=8, heads=3\)"):
+    with pytest.raises(tx.ShapeError, match=r"constraint `D % heads == 0` is violated \(D=8, heads=3\)"):
         split(jnp.ones((5, 8)), 3)
     r = prove(split)
     assert r.status == "proved" and r.cases == 3, r
@@ -344,7 +344,7 @@ def test_sizes_can_refer_to_static_arguments():
     def wrong[T, N](x: f32[T], n: Static[int]) -> f32[N, T]:
         return jnp.stack([x] * (n + 1))
 
-    with pytest.raises(bn.ShapeError, match=r"axis 0 should be n = 3 \(with n=3\), but is 4"):
+    with pytest.raises(tx.ShapeError, match=r"axis 0 should be n = 3 \(with n=3\), but is 4"):
         wrong(jnp.ones(2), 3)
     assert status(wrong) == "failed"
 

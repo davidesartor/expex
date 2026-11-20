@@ -213,7 +213,7 @@ def _choices(f: Fn[Any, Any], examples: dict[str, Any]) -> dict[str, list[Any]]:
                 if name in ("self", "cls") and name == next(iter(f.params)):
                     raise _Unchecked(
                         "it is a method, so it needs an instance: "
-                        "prove it with barnacle.prove(instance.method)."
+                        "prove it with typax.prove(instance.method)."
                     )
                 what = "Static parameter" if isinstance(p.spec, StaticSpec) else "parameter"
                 why = "" if isinstance(p.spec, StaticSpec) else " and no shape annotation"
@@ -369,7 +369,7 @@ def _summ(e: BaseException, limit: int = 6) -> str:
 
 
 def _full(e: BaseException) -> str:
-    notes = [n for n in getattr(e, "__notes__", ()) if n.startswith("barnacle:")]
+    notes = [n for n in getattr(e, "__notes__", ()) if n.startswith("typax:")]
     return "\n".join([str(e).strip(), *notes])
 
 
@@ -502,9 +502,9 @@ def _at(sizes: dict[str, int]) -> str:
     return ", ".join(f"{k}={v}" for k, v in sizes.items() if not k.startswith("_")) or "no free sizes"
 
 
-def _barnacle_notes(e: BaseException) -> str:
+def _typax_notes(e: BaseException) -> str:
     return "".join(
-        "\n" + _indent(n) for n in getattr(e, "__notes__", ()) if n.startswith("barnacle:")
+        "\n" + _indent(n) for n in getattr(e, "__notes__", ()) if n.startswith("typax:")
     )
 
 
@@ -562,7 +562,7 @@ def _prove_case(
         return Report(
             f, ERROR,
             f"the function raised while being traced on abstract inputs ({at}):\n"
-            + _indent(_summ(err, 12)) + _barnacle_notes(err) + hint,
+            + _indent(_summ(err, 12)) + _typax_notes(err) + hint,
         )  # fmt: skip
 
     if not used:
@@ -627,7 +627,7 @@ def main(argv: list[str] | None = None) -> int:
     import os
 
     ap = argparse.ArgumentParser(
-        prog="barnacle", description="Prove the shape annotations of every @fn in a package."
+        prog="typax", description="Prove the shape annotations of every @fn in a package."
     )
     ap.add_argument("targets", nargs="+", help="module/package names, or paths to .py files")
     ap.add_argument("-v", "--verbose", action="store_true")

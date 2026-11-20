@@ -5,8 +5,8 @@ import pytest
 import jax
 import jax.numpy as jnp
 
-import barnacle as bn
-from barnacle import ShapeError, f32, fn, i32
+import typax as tx
+from typax import ShapeError, f32, fn, i32
 
 
 @fn
@@ -40,14 +40,14 @@ def test_local_mismatch_is_reported_at_its_line():
 
 
 def test_locals_are_proved_for_all_sizes():
-    assert bn.prove(encode).status == "proved"
+    assert tx.prove(encode).status == "proved"
 
     @fn
     def bad[B, T](x: f32[B, T]) -> f32[B]:
         d: f32[B, T] = x[:, 1:] - x[:, :-1]
         return d.sum(1)
 
-    r = bn.prove(bad)
+    r = tx.prove(bad)
     assert r.status == "failed"
     assert "local variable `d`" in r.detail and "assigned     f32[B, T - 1]" in r.detail
 
@@ -84,7 +84,7 @@ def test_locals_inside_staged_control_flow():
         return out
 
     assert jnp.allclose(jax.jit(f)(jnp.ones((4, 3))), 8.0)
-    assert bn.prove(f).status == "proved"
+    assert tx.prove(f).status == "proved"
 
 
 def test_locals_are_skipped_when_checks_are_off(monkeypatch):
@@ -95,5 +95,5 @@ def test_locals_are_skipped_when_checks_are_off(monkeypatch):
 
     with pytest.raises(ShapeError):
         bad(jnp.ones(3))
-    monkeypatch.setattr(bn.config, "checked", False)
+    monkeypatch.setattr(tx.config, "checked", False)
     assert bad(jnp.ones(3)).shape == (3,)

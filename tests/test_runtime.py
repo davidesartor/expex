@@ -9,7 +9,7 @@ import pytest
 import jax
 import jax.numpy as jnp
 
-from barnacle import (
+from typax import (
     Arr, Bool, Dim, Etc, Float, Int, Key, ShapeError, StageError, Static, config, f32, fn, i32,
 )  # fmt: skip
 
@@ -437,7 +437,7 @@ def test_notes_on_exceptions():
     with pytest.raises(TypeError) as e:
         badadd(jnp.ones((2, 3)), jnp.ones((3, 2)))
     notes = "\n".join(e.value.__notes__)
-    assert "barnacle: in " in notes
+    assert "typax: in " in notes
     assert "badadd(x: f32[2, 3], y: f32[3, 2])  [B=2, T=3]" in notes
 
 

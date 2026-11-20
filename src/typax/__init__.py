@@ -1,4 +1,4 @@
-"""barnacle: shape-typed functions for JAX.
+"""typax: shape-typed functions for JAX.
 
 Annotate with ``f32[B, T]`` and decorate with ``@fn``; the annotations are then
 checked on every call, provable for all sizes, and usable for vectorising.

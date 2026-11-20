@@ -7,8 +7,8 @@ import pytest
 import jax
 import jax.numpy as jnp
 
-from barnacle import fn
-from barnacle._convert import NotConverted, convert
+from typax import fn
+from typax._convert import NotConverted, convert
 
 
 def same(f, *args):

@@ -250,8 +250,8 @@ class _Interp:
             return  # unknown structure: report the enclosing operation instead
 
     def dive_while(self, p: dict[str, Any], invals: list[Any], path: list[str]) -> None:
-        cn, bn = p["cond_nconsts"], p["body_nconsts"]
-        cconsts, bconsts, carry = invals[:cn], invals[cn : cn + bn], invals[cn + bn :]
+        cn, tx = p["cond_nconsts"], p["body_nconsts"]
+        cconsts, bconsts, carry = invals[:cn], invals[cn : cn + tx], invals[cn + tx :]
         cond_j, body_j = p["cond_jaxpr"], p["body_jaxpr"]
         body = jax.jit(lambda c, x: list(eval_jaxpr(_jp(body_j), [], *c, *x)))
         cond = jax.jit(lambda c, x: list(eval_jaxpr(_jp(cond_j), [], *c, *x))[0])

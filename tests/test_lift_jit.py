@@ -8,7 +8,7 @@ import pytest
 import jax
 import jax.numpy as jnp
 
-from barnacle import Key, RetraceWarning, ShapeError, Static, config, f32, fn
+from typax import Key, RetraceWarning, ShapeError, Static, config, f32, fn
 
 
 @fn

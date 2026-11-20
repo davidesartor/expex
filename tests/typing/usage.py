@@ -6,8 +6,8 @@ from typing import Any, Literal, NamedTuple, assert_type
 import jax
 import jax.numpy as jnp
 
-import barnacle as bn
-from barnacle import Dim, Etc, Float, Int, Key, Static, f32, fn, i32
+import typax as tx
+from typax import Dim, Etc, Float, Int, Key, Static, f32, fn, i32
 
 
 class RGB(Dim, size=3): ...
@@ -38,7 +38,7 @@ def pad[B, T, U](x: f32[B, T]) -> f32[B, U]:
 
 @fn(jit=True, random=True, examples={"n": [1, 2]})
 def step[B](x: f32[B], lr: f32, n: Static[int], key: Key, mode: Static[str] = "a") -> f32[B]:
-    return x * lr * n + jax.random.normal(bn.key(), x.shape)
+    return x * lr * n + jax.random.normal(tx.key(), x.shape)
 
 
 @fn
@@ -70,14 +70,14 @@ assert_type(Model().call(x[0, 0]), jax.Array)
 assert_type(Model().call.lift(x[0], scale=2.0), jax.Array)
 assert_type(attend.batched(chunk=8)(x, x), Any)
 
-report = bn.prove(attend)
+report = tx.prove(attend)
 assert_type(report.ok, bool)
 attend.check().raise_if_failed()
 step.traces
 step.explain_retrace()
 attend.flow
-with bn.rng(0):
-    bn.key()
+with tx.rng(0):
+    tx.key()
 
 # Errors a type checker should catch:
 attend(x)  # E: missing argument

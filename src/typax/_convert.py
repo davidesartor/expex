@@ -14,7 +14,7 @@ A statement becomes::
     def __bn_false_1__(x, y):
         ...original else...
         return (x, y)
-    (x, y) = __barnacle_flow__.if_(test, __bn_true_1__, __bn_false_1__, (x, y), ...)
+    (x, y) = __typax_flow__.if_(test, __bn_true_1__, __bn_false_1__, (x, y), ...)
 
 What is left alone (and keeps plain Python semantics): loops containing
 ``break`` / ``continue`` / ``return``, loops with an ``else`` clause,
@@ -34,7 +34,7 @@ from typing import Any, Callable, Iterable
 
 from . import _flow
 
-FLOW = "__barnacle_flow__"
+FLOW = "__typax_flow__"
 RET = "__bn_ret__"
 
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
@@ -724,8 +724,8 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
     new.__module__ = raw.__module__
     new.__doc__ = raw.__doc__
     new.__dict__.update(raw.__dict__)
-    new.__barnacle_converted__ = conv.count  # type: ignore[attr-defined]
-    new.__barnacle_locals__ = n_locals  # type: ignore[attr-defined]
+    new.__typax_converted__ = conv.count  # type: ignore[attr-defined]
+    new.__typax_locals__ = n_locals  # type: ignore[attr-defined]
     return new
 
 

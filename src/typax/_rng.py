@@ -86,7 +86,7 @@ def current() -> KeyCtx | None:
     return _state.stack[-1] if _state.stack else None
 
 
-def fresh(what: str = "barnacle.key()") -> Any:
+def fresh(what: str = "typax.key()") -> Any:
     """A new key from the active context, or from the global key at top level."""
     ctx = current()
     if ctx is not None:
@@ -97,8 +97,8 @@ def fresh(what: str = "barnacle.key()") -> Any:
             f"in scope.\n"
             f"    The global key lives in Python, so inside a compiled function it would be "
             f"frozen into a constant and every call would draw the same numbers.\n"
-            f"    - let barnacle own the jit:   @fn(jit=True, random=True)\n"
-            f"    - or pass a key explicitly:   with barnacle.rng(key): ...   (key being an "
+            f"    - let typax own the jit:   @fn(jit=True, random=True)\n"
+            f"    - or pass a key explicitly:   with typax.rng(key): ...   (key being an "
             f"argument of the jitted function)"
         )
     if _state.root is None:
@@ -113,7 +113,7 @@ def key() -> Any:
 
 def keys(shape: int | tuple[int, ...]) -> Any:
     """``shape`` fresh keys at once."""
-    return jax.random.split(fresh("barnacle.keys()"), shape)
+    return jax.random.split(fresh("typax.keys()"), shape)
 
 
 @contextlib.contextmanager
