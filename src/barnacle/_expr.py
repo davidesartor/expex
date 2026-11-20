@@ -134,7 +134,7 @@ def _to_jax(node: ast.AST) -> str:
         if type(node.op) in _JAX_FUNCS:
             return f"{_JAX_FUNCS[type(node.op)]}({l}, {r})"
         if isinstance(node.op, ast.Pow) and isinstance(node.right, ast.Constant):
-            return f"{l}^{node.right.value}"
+            return f"{l}^{node.right.value!r}"
         raise ValueError
     if isinstance(node, ast.UnaryOp):
         v = _to_jax(node.operand)

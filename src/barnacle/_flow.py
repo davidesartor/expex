@@ -152,8 +152,10 @@ def _cond(
 ) -> tuple[Any, ...]:
     """``lax.cond`` over branches returning tuples that may mix arrays and other values."""
     plan: dict[int, Any] = {}
+    recs: list[list[tuple[str, Any]]] = []
+    res: Any = ()
     for attempt in range(3):
-        recs: list[list[tuple[str, Any]]] = []
+        recs = []
 
         def wrap(fn: Callable[[], tuple[Any, ...]]) -> Callable[[], tuple[Any, ...]]:
             def w() -> tuple[Any, ...]:
@@ -177,7 +179,6 @@ def _cond(
             return w
 
         err: TypeError | None = None
-        res: Any = ()
         try:
             res = lax.cond(pred, wrap(fns[0]), wrap(fns[1]))
         except TypeError as e:

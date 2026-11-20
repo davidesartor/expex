@@ -28,6 +28,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from jax import lax
+from jax.core import eval_jaxpr
 
 from . import _rng
 from ._fn import BoundFn, Fn
@@ -96,7 +97,7 @@ def _stats(x: Any) -> str:
         (int(np.isposinf(a).sum()), "+inf"),
         (int(np.isneginf(a).sum()), "-inf"),
         (int((a == 0).sum()), "zero"),
-        (int((a < 0).sum()), "negative"),
+        (int((fin < 0).sum()), "negative"),
     ]
     flags = ", ".join(f"{n} {w}" for n, w in counts if n and a.size > 1)
     if flags:
@@ -154,6 +155,8 @@ def _line_of(source: str) -> str:
 def _bind(eqn: Any, invals: list[Any]) -> list[Any]:
     r = eqn.primitive.get_bind_params(eqn.params)
     # older JAX returns (subfuns, params); newer returns the params alone
+    subfuns: Any
+    params: Any
     subfuns, params = r if isinstance(r, tuple) and len(r) == 2 else ((), r)
     ctx = getattr(getattr(eqn, "ctx", None), "manager", None)
     if ctx is not None:
@@ -228,8 +231,8 @@ class _Interp:
         cn, bn = p["cond_nconsts"], p["body_nconsts"]
         cconsts, bconsts, carry = invals[:cn], invals[cn : cn + bn], invals[cn + bn :]
         cond_j, body_j = p["cond_jaxpr"], p["body_jaxpr"]
-        body = jax.jit(lambda c, x: list(jax.core.eval_jaxpr(_jp(body_j), [], *c, *x)))
-        cond = jax.jit(lambda c, x: list(jax.core.eval_jaxpr(_jp(cond_j), [], *c, *x))[0])
+        body = jax.jit(lambda c, x: list(eval_jaxpr(_jp(body_j), [], *c, *x)))
+        cond = jax.jit(lambda c, x: list(eval_jaxpr(_jp(cond_j), [], *c, *x))[0])
         it = 0
         while bool(cond(cconsts, carry)):
             new = body(bconsts, carry)
@@ -253,7 +256,7 @@ class _Interp:
             xs = [x[::-1] for x in xs]
 
         def step(c: Any, x: Any) -> Any:
-            out = list(jax.core.eval_jaxpr(_jp(body_j), [], *consts, *c, *x))
+            out = list(eval_jaxpr(_jp(body_j), [], *consts, *c, *x))
             bad = jnp.zeros((), bool)
             for o in out:
                 if _is_float(o):
@@ -266,7 +269,8 @@ class _Interp:
             return
         first = int(flags.argmax())
         if first:
-            carry, _ = lax.scan(step, tuple(carry), tuple(x[:first] for x in xs), length=first)
+            done, _ = lax.scan(step, tuple(carry), tuple(x[:first] for x in xs), length=first)
+            carry = list(done)
         it = length - 1 - first if reverse else first
         self.run(body_j, [*consts, *carry, *[x[first] for x in xs]], path + [f"scan iteration {it}"])
 
@@ -418,6 +422,8 @@ class Timing:
 
     def __str__(self) -> str:
         def ms(s: float) -> str:
+            if s < 1e-3:
+                return f"{s * 1e6:.0f} us"
             return f"{s * 1e3:.1f} ms" if s < 1 else f"{s:.2f} s"
 
         out = (

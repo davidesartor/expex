@@ -22,7 +22,7 @@ import random
 import sys
 import types
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Iterable, overload
 
 import numpy as np
 
@@ -90,8 +90,8 @@ class Report:
         out = [head]
         if self.detail:
             out.append(_indent(self.detail))
-        for n in self.notes:
-            out.append(_indent(n))
+        for note in self.notes:
+            out.append(_indent(note))
         return "\n".join(out)
 
 
@@ -334,6 +334,10 @@ def _full(e: BaseException) -> str:
     return "\n".join([str(e).strip(), *notes])
 
 
+@overload
+def prove(target: "Fn[Any, Any] | BoundFn[Any, Any]", examples: dict[str, Any] | None = None) -> Report: ...
+@overload
+def prove(target: "str | types.ModuleType", examples: None = None) -> list[Report]: ...
 def prove(target: Any, examples: dict[str, Any] | None = None) -> Any:
     """Prove the shape annotations of an ``@fn`` function for all sizes.
 
@@ -488,7 +492,9 @@ def _prove_case(
         if sizes is None:
             continue
         try:
-            _, ctx, err = _attempt(f, fixed, abstract, lambda: _Ctx(None, dict(sizes), var_rank))
+            _, ctx, err = _attempt(
+                f, fixed, abstract, lambda s=sizes: _Ctx(None, dict(s), var_rank)
+            )
         except (_BadSizes, Unsynthesizable):
             continue
         assert ctx.sizes is not None

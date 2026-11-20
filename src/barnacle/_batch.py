@@ -50,7 +50,7 @@ class Batched:
             is_key = isinstance(spec, KeySpec)
             if is_key and not b:  # one key: give every example its own
                 split: Callable[[Any], Any] = lambda k: jax.random.split(k, n)  # noqa: E731
-                for _ in range(spec.core_rank or 0):
+                for _ in range(spec.core_rank or 0):  # type: ignore[attr-defined]
                     split = jax.vmap(split, out_axes=1)
                 v = split(v)
                 b = (n,)

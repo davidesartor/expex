@@ -20,6 +20,8 @@ from typing import Any, Callable
 import numpy as np
 
 import jax
+import jax.numpy as jnp
+from jax.core import Tracer
 
 from ._errors import Mismatch
 from ._expr import Expr
@@ -289,7 +291,7 @@ _SCALARS = (bool, int, float, complex)
 
 def _is_key_dtype(dtype: Any) -> bool:
     try:
-        return bool(jax.dtypes.issubdtype(dtype, jax.dtypes.prng_key))
+        return bool(jnp.issubdtype(dtype, jax.dtypes.prng_key))
     except Exception:
         return False
 
@@ -539,7 +541,7 @@ class StaticSpec(Spec):
         return f"Static[{getattr(self.inner, '__name__', None) or repr(self.inner)}]"
 
     def match(self, value: Any, path: str, env: Env) -> None:
-        if isinstance(value, jax.core.Tracer):
+        if isinstance(value, Tracer):
             m = Mismatch(
                 path, self, value,
                 "it is a traced value, but Static arguments must be concrete Python "
@@ -635,7 +637,8 @@ class SeqSpec(Spec):
             raise Mismatch(
                 path, self, value, f"expected a {self.kind.__name__}, got {describe(value)}."
             )
-        for i, v in enumerate(value):
+        seq: Any = value
+        for i, v in enumerate(seq):
             self.elem.match(v, f"{path}[{i}]", env)
 
     def walk(self, value: Any, path: str, visit: Visit) -> Any:
@@ -758,8 +761,8 @@ class StructSpec(Spec):
         if all(new[n] is getattr(value, n) for n in new):
             return value
         if dataclasses.is_dataclass(value):
-            return dataclasses.replace(value, **new)  # type: ignore[arg-type]
-        return value._replace(**new)
+            return dataclasses.replace(value, **new)  # type: ignore[type-var]
+        return value._replace(**new)  # type: ignore[attr-defined]
 
     def abstract(self, ctx: Any, path: str) -> Any:
         kwargs = {}

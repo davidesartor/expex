@@ -689,7 +689,7 @@ def _stage_hint(e: Exception, f: Fn[Any, Any]) -> None:
         fixes = []
     else:
         return
-    e._barnacle_hint = True  # type: ignore[attr-defined]
+    setattr(e, "_barnacle_hint", True)
     frame = _user_frame(e)
     where = f"`{frame[2]}`  ({frame[0]}:{frame[1]})" if frame and frame[2] else "this code"
     traced = [n for n, p in f.params.items() if isinstance(p.spec, (ArraySpec, KeySpec))]
