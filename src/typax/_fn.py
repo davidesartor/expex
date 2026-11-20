@@ -452,12 +452,58 @@ class Fn(Generic[P, R]):
         binds = env.summary()
         if binds and role != "argument":
             lines.append(f"    Bound so far: {binds}.")
+        hint = self._hint(m, role, env)
+        if hint:
+            lines += ["", f"    Hint: {hint}"]
         if site:
             text = linecache.getline(*_split_site(site)).strip()
             lines += ["", f"    at {site}" + (f"\n    > {text}" if text else "")]
         lines += ["", f"    {self.signature}", f"    defined at {self.location}"]
         cls = StageError if getattr(m, "stage", False) else ShapeError
         return cls("\n".join(lines))
+
+    def _hint(self, m: Mismatch, role: str, env: Env) -> str:
+        """A suggestion for the most common causes of a mismatch, or ''."""
+        spec = m.spec
+        if not isinstance(spec, ArraySpec):
+            return ""
+        value: Any = m.value
+        try:
+            shape, dtype = tuple(value.shape), value.dtype
+        except AttributeError:
+            return ""
+        if not spec.dtype.accepts(dtype):
+            want, got = spec.dtype.dtype, np.dtype(dtype) if _is_np(dtype) else None
+            if want is not None and got is not None and want.kind == got.kind:
+                if got.itemsize > want.itemsize:
+                    src = "NumPy and Python default to 64 bits; " if got.itemsize == 8 else ""
+                    return f"{src}convert with jnp.asarray(x, jnp.{want.name})."
+                return f"convert with x.astype(jnp.{want.name}), or declare the wider dtype."
+            if want is not None and got is not None and want.kind == "f" and got.kind in "iub":
+                return f"this is an integer array; convert with x.astype(jnp.{want.name})."
+            return ""
+        rank = spec.core_rank
+        if rank is None:
+            return ""
+        if len(shape) > rank and role == "argument":
+            extra = len(shape) - rank
+            return (
+                f"`{m.path}` has {extra} extra leading ax{'is' if extra == 1 else 'es'}. To map "
+                f"over {'it' if extra == 1 else 'them'}, call {self.name}.lift(...)."
+            )
+        if len(shape) == rank and rank > 1:
+            want_shape = []
+            for d in spec.dims:
+                v = d.value if hasattr(d, "value") else env.dims.get(getattr(d, "name", ""), None)
+                if not isinstance(v, int):
+                    return ""
+                want_shape.append(v)
+            if tuple(want_shape) != shape and sorted(want_shape) == sorted(shape):
+                perm = [want_shape.index(s) for s in shape]
+                if len(set(perm)) == len(perm):
+                    names = ", ".join(str(spec.dims[i]) for i in perm)
+                    return f"the axes look permuted: this has the layout [{names}]."
+        return ""
 
     def _annotate(self, e: Exception, bound: dict[str, Any], env: Env) -> None:
         try:
@@ -707,6 +753,30 @@ class Fn(Generic[P, R]):
             return self
         return BoundFn(self, obj)
 
+    def info(self) -> str:
+        """Everything typax knows about this function, as text."""
+        lines = [self.signature, f"  defined at {self.location}"]
+        opts = [
+            k for k, v in (("jit", self.jit), ("random", self.random), ("unchecked", not self.checked)) if v
+        ]
+        if opts:
+            lines.append("  options: " + ", ".join(opts))
+        for k, e in self.defs.items():
+            lines.append(f"  {k} = {e}")
+        for w in self.where:
+            lines.append(f"  where {w}")
+        if self.converted:
+            lines.append("  control flow: converted")
+            for line, how in self.flow.items():
+                lines.append(f"    line {line}: {how}")
+        else:
+            lines.append(f"  control flow: not converted ({self.convert_note})")
+        if self.jit:
+            lines.append(f"  traced {len(self.traces)} time(s)")
+            for i in range(1, len(self.traces)):
+                lines.append("    " + self.explain_retrace(i).replace("\n", "\n    "))
+        return "\n".join(lines)
+
     def __repr__(self) -> str:
         return f"<fn {self.signature}>"
 
@@ -738,6 +808,14 @@ class BoundFn(Generic[P, R]):
 
     def __repr__(self) -> str:
         return f"<bound {self.fn!r} of {type(self.obj).__name__}>"
+
+
+def _is_np(dtype: Any) -> bool:
+    try:
+        np.dtype(dtype)
+    except TypeError:
+        return False
+    return True
 
 
 def _split_site(site: str) -> tuple[str, int]:

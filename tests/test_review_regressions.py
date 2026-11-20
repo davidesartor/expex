@@ -7,7 +7,7 @@ import pytest
 import jax
 import jax.numpy as jnp
 
-from typax import fn
+from typax import StageError, fn
 from typax._convert import NotConverted, convert
 
 
@@ -274,7 +274,7 @@ def test_in_place_container_updates_in_loops():
         return d["n"]
 
     assert cond_mutation(1.0) == 1
-    with pytest.raises(jax.errors.TracerBoolConversionError):  # refused, not silently wrong
+    with pytest.raises(StageError, match="item assignment on a dict inside traced"):  # refused
         jax.jit(cond_mutation)(1.0)
 
 

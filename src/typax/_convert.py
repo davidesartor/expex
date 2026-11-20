@@ -136,6 +136,37 @@ def _returns_via_ifs(stmts: list[ast.stmt]) -> bool:
     )
 
 
+def _index_expr(node: ast.expr) -> ast.expr:
+    """A subscript's index as an ordinary expression (``1:3`` -> ``slice(1, 3)``)."""
+    if isinstance(node, ast.Slice):
+        none = ast.Constant(None)
+        return ast.Call(
+            func=_name("slice"),
+            args=[node.lower or none, node.upper or none, node.step or none],
+            keywords=[],
+        )
+    if isinstance(node, ast.Tuple):
+        return ast.Tuple(elts=[_index_expr(e) for e in node.elts], ctx=ast.Load())
+    return node
+
+
+def _is_rewritable(m: ast.AST) -> bool:
+    """Statements/calls worth converting even without control flow around them."""
+    if isinstance(m, ast.Assert):
+        return True
+    if isinstance(m, (ast.Assign, ast.AugAssign)):
+        targets = m.targets if isinstance(m, ast.Assign) else [m.target]
+        return any(
+            isinstance(t, (ast.Subscript, ast.Attribute)) and isinstance(t.value, ast.Name)
+            for t in targets
+        )
+    return (
+        isinstance(m, ast.Call)
+        and isinstance(m.func, ast.Name)
+        and m.func.id in ("print", "max", "min")
+    )
+
+
 def _is_local_annotation(m: ast.AST) -> bool:
     return (
         isinstance(m, ast.AnnAssign)
@@ -325,9 +356,15 @@ def _locate(new: ast.stmt, old: ast.stmt) -> ast.stmt:
 class _Exprs(ast.NodeTransformer):
     """``and`` / ``or`` / ``not`` / ``a if c else b`` -> staged helpers."""
 
-    def __init__(self, site: Callable[[ast.AST], ast.expr], first_param: str | None = None):
+    def __init__(
+        self,
+        site: Callable[[ast.AST], ast.expr],
+        first_param: str | None = None,
+        builtins_ok: set[str] | frozenset[str] = frozenset(),
+    ):
         self.site = site
         self.first_param = first_param
+        self.builtins_ok = builtins_ok
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
         return node  # nested functions are left alone
@@ -347,6 +384,13 @@ class _Exprs(ast.NodeTransformer):
             # zero-argument super() reads the *current* function's first argument,
             # which is wrong once the call sits inside a generated branch function
             node.args = [_name("__class__"), _name(self.first_param)]
+        elif (
+            isinstance(node.func, ast.Name)
+            and node.func.id in ("print", "max", "min")
+            and node.func.id in self.builtins_ok
+        ):
+            # builtins that need a concrete value: staged versions handle traced ones
+            node.func = ast.copy_location(_flow_attr(node.func.id + "_"), node.func)
         return node
 
     def visit_Compare(self, node: ast.Compare) -> Any:
@@ -415,7 +459,7 @@ class _Converter:
                     elif isinstance(sub, ast.Nonlocal):
                         self.captured |= set(sub.names)
         self.builtins_ok = {
-            b for b in ("range", "enumerate", "zip", "reversed") if b not in self.locals and b not in shadowed
+            b for b in ("range", "enumerate", "zip", "reversed", "print", "max", "min") if b not in self.locals and b not in shadowed
         }
 
     def site(self, node: ast.AST) -> ast.expr:
@@ -456,6 +500,54 @@ class _Converter:
                             ),
                             s,
                         )
+
+    def rewrite_inplace(self, stmts: list[ast.stmt]) -> None:
+        """In-place updates of a local variable become rebinding assignments.
+
+        ``x[i] = v`` -> ``x = setitem_(v, x, i)``, which is ``x.at[i].set(v)`` for
+        a JAX array and a real item assignment for anything else. Likewise
+        ``x[i] += v``, ``s.field = v`` (``_replace`` for NamedTuples) and
+        ``assert``.
+        """
+        holder = ast.Module(body=stmts, type_ignores=[])
+        for m in [holder, *_walk_all(stmts)]:
+            if isinstance(m, _SCOPES):
+                continue
+            for fld in ("body", "orelse", "finalbody"):
+                seq = getattr(m, fld, None)
+                if not isinstance(seq, list):
+                    continue
+                for i, s in enumerate(seq):
+                    new = self._inplace(s)
+                    if new is not None:
+                        seq[i] = _locate(new, s)
+
+    def _inplace(self, s: ast.stmt) -> ast.stmt | None:
+        if isinstance(s, ast.Assert):
+            msg = _thunk(s.msg) if s.msg is not None else ast.Constant(None)
+            return ast.Expr(value=_call("assert_", s.test, msg, self.site(s)))
+        if isinstance(s, ast.Assign) and len(s.targets) == 1:
+            target, op = s.targets[0], None
+        elif isinstance(s, ast.AugAssign):
+            target, op = s.target, type(s.op).__name__
+        else:
+            return None
+        base = getattr(target, "value", None)
+        if not (isinstance(base, ast.Name) and base.id in self.locals):
+            return None
+        if base.id in self.declared or base.id in self.captured or _has_walrus(s):
+            return None
+        if isinstance(target, ast.Subscript):
+            args = [s.value, _name(base.id), _index_expr(target.slice)]
+            helper = "setitem_" if op is None else "augitem_"
+        elif isinstance(target, ast.Attribute):
+            args = [s.value, _name(base.id), ast.Constant(target.attr)]
+            helper = "setattr_" if op is None else "augattr_"
+        else:
+            return None
+        if op is not None:
+            args.append(ast.Constant(op))
+        return ast.Assign(targets=[_name(base.id, store=True)], value=_call(helper, *args))
 
     def rewrite_annotations(self, stmts: list[ast.stmt]) -> int:
         """``h: f32[B, T] = v`` -> ``h = local_(v, lambda: f32[B, T], ...)`` (a checked local)."""
@@ -653,6 +745,7 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
         isinstance(m, _INTERESTING)
         or (isinstance(m, ast.UnaryOp) and isinstance(m.op, ast.Not))
         or _is_local_annotation(m)
+        or _is_rewritable(m)
         for m in _walk_all(fdef.body)
     ):
         raise NotConverted("no control flow to convert")
@@ -662,8 +755,9 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
     ast.increment_lineno(tree, code.co_firstlineno - 1)
     conv = _Converter(fdef, code.co_filename, set(raw.__globals__) | set(code.co_freevars))
     conv.rewrite_appends(fdef.body)
+    conv.rewrite_inplace(fdef.body)
     n_locals = conv.rewrite_annotations(fdef.body)
-    exprs = _Exprs(conv.site, conv.first_param)
+    exprs = _Exprs(conv.site, conv.first_param, conv.builtins_ok)
     fdef.body = [exprs.visit(s) for s in fdef.body]
     if any(
         isinstance(s, ast.If) and (_returns_via_ifs(s.body) or _returns_via_ifs(s.orelse))
@@ -738,8 +832,9 @@ def source(raw: Callable[..., Any]) -> str:
     ast.increment_lineno(tree, raw.__code__.co_firstlineno - 1)
     conv = _Converter(fdef, raw.__code__.co_filename, set(getattr(raw, "__globals__", {})))
     conv.rewrite_appends(fdef.body)
+    conv.rewrite_inplace(fdef.body)
     conv.rewrite_annotations(fdef.body)
-    fdef.body = [_Exprs(conv.site, conv.first_param).visit(s) for s in fdef.body]
+    fdef.body = [_Exprs(conv.site, conv.first_param, conv.builtins_ok).visit(s) for s in fdef.body]
     if any(
         isinstance(s, ast.If) and (_returns_via_ifs(s.body) or _returns_via_ifs(s.orelse))
         for s in fdef.body

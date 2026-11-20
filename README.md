@@ -132,6 +132,10 @@ def encode[B, T, D](x: f32[B, T], table: f32[T, D]) -> f32[B, D]:
     return h.mean(1)
 ```
 
+Error messages add a hint for the usual causes (a batch passed where one
+example is expected, permuted axes, a float64 NumPy array), and `f.info()`
+prints everything typax knows about a function.
+
 Checks are shape and dtype comparisons, so under `jit` they run once per
 trace and cost nothing in the compiled function. Under `vmap` and `grad` they
 see the per-example shapes, which is what the annotations describe. Any
@@ -237,6 +241,44 @@ array in a pytree, and `reversed(...)` works on all of these. `and`, `or`, `not`
 converted too. The 100-step loop above traces to a handful of operations
 instead of hundreds, which is what keeps compile times down.
 
+### In-place updates, `assert`, `print`, `min` / `max`
+
+The same conversion lets you write updates the NumPy way:
+
+```python
+class Particle(NamedTuple):
+    pos: f32
+    vel: f32
+
+@fn
+def histogram[N](idx: i32[N]) -> f32[4]:
+    counts = jnp.zeros(4)
+    for i in idx:
+        counts[i] += 1               # counts = counts.at[i].add(1)
+    assert (counts >= 0).all(), "negative count"
+    print("total", counts.sum())     # jax.debug.print when traced
+    return counts
+
+@fn
+def bounce(p: Particle, dt: f32) -> Particle:
+    p.vel -= 9.8 * dt                # p = p._replace(vel=...)
+    p.pos = max(p.pos + p.vel * dt, 0.0)   # jnp.maximum when traced
+    return p
+```
+
+- `x[i] = v` and `x[i] op= v` on a local variable become `x.at[i]...` when `x`
+  is a JAX array. Python lists, dicts and NumPy arrays are still updated in
+  place. JAX arrays stay immutable values: another name bound to the same
+  array does not see the update.
+- `s.field = v` replaces a NamedTuple or frozen dataclass; ordinary objects
+  get a normal attribute assignment.
+- A traced `assert` is checked when the compiled code runs.
+- Real in-place updates of Python objects are refused inside traced control
+  flow (a loop is unrolled instead; a traced `if` raises a `StageError`),
+  because they would run once while tracing.
+- Static type checkers do not know about this: pyright flags item assignment
+  on a `jax.Array` and attribute assignment on a NamedTuple.
+
 Rules and limits:
 
 - Under a traced `if`, both branches must give each variable the same shape
@@ -245,9 +287,9 @@ Rules and limits:
 - Some statements are deliberately left as plain Python (so they need
   concrete conditions, and loops are unrolled): loops containing `break`,
   `continue` or `return`; loops with an `else` clause; anything inside `try`
-  or `with`; statements that update an object in place (`d[k] = v`,
-  `obj.a = v`, `xs.sort()`); and statements assigning a variable that a
-  nested function or lambda also uses.
+  or `with`; statements that update something other than a local variable
+  in place (`self.buf[i] = v`, `d[k][j] = v`, `xs.sort()`); and statements
+  assigning a variable that a nested function or lambda also uses.
 - After a staged loop, a collected list is a read-only sequence until the
   function returns it (it is returned as a real list). Another name bound to
   the same list before the loop does not see the collected values.

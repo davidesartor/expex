@@ -32,7 +32,8 @@ from ._errors import StageError
 
 __all__ = [
     "if_", "ifexp", "while_", "for_", "and_", "or_", "not_", "cmp_", "ld",
-    "range_", "enumerate_", "zip_", "reversed_", "rows", "stack", "append_", "local_", "Stacked", "UNDEF", "LOG",
+    "range_", "enumerate_", "zip_", "reversed_", "rows", "stack", "append_",
+    "setitem_", "augitem_", "setattr_", "augattr_", "print_", "max_", "min_", "assert_", "local_", "Stacked", "UNDEF", "LOG",
 ]  # fmt: skip
 
 #: site ("file:line") -> how the statement there was last executed.
@@ -229,7 +230,8 @@ def _cond(
 
         def wrap(fn: Callable[[], tuple[Any, ...]]) -> Callable[[], tuple[Any, ...]]:
             def w() -> tuple[Any, ...]:
-                out = fn()
+                with _staged():
+                    out = fn()
                 metas: list[tuple[str, Any]] = []
                 dyn: list[Any] = []
                 for i, v in enumerate(out):
@@ -415,8 +417,156 @@ def ifexp(pred: Any, a: Callable[[], Any], b: Callable[[], Any], site: str) -> A
 # -------------------------------------------------------------------- while
 
 
-class _CannotLower(Exception):
+class _CannotLower(StageError):
     """A loop cannot be turned into lax control flow; the reason is the message."""
+
+
+class _Stage(threading.local):
+    depth = 0  # > 0 while the body of a staged if / while / for is being traced
+
+
+_STAGE = _Stage()
+
+
+class _staged:
+    def __enter__(self) -> None:
+        _STAGE.depth += 1
+
+    def __exit__(self, *exc: Any) -> None:
+        _STAGE.depth -= 1
+
+
+# ------------------------------------------------------- in-place updates
+
+
+def _no_mutation(obj: Any, what: str) -> None:
+    if _STAGE.depth:
+        raise _CannotLower(
+            f"{what} on a {type(obj).__name__} inside traced control flow: the update "
+            f"would happen once while tracing, not once per iteration or branch. "
+            f"Use a JAX array (updated functionally) or move it out of the traced code"
+        )
+
+
+_AT = {"Add": "add", "Sub": "subtract", "Mult": "multiply", "Div": "divide", "Pow": "power"}
+_IOP = {
+    "Add": operator.iadd, "Sub": operator.isub, "Mult": operator.imul, "Div": operator.itruediv,
+    "FloorDiv": operator.ifloordiv, "Mod": operator.imod, "Pow": operator.ipow,
+    "MatMult": operator.imatmul, "BitAnd": operator.iand, "BitOr": operator.ior,
+    "BitXor": operator.ixor, "LShift": operator.ilshift, "RShift": operator.irshift,
+}  # fmt: skip
+
+
+def setitem_(value: Any, obj: Any, index: Any) -> Any:
+    """``obj[index] = value``; for a JAX array, ``obj.at[index].set(value)``."""
+    if isinstance(obj, jax.Array):
+        return obj.at[index].set(value)
+    _no_mutation(obj, "item assignment")
+    obj[index] = value
+    return obj
+
+
+def augitem_(value: Any, obj: Any, index: Any, op: str) -> Any:
+    """``obj[index] op= value``; for a JAX array, ``obj.at[index].add(value)`` etc."""
+    if isinstance(obj, jax.Array):
+        method = getattr(obj.at[index], _AT.get(op, ""), None)
+        if method is not None:
+            return method(value)
+        return obj.at[index].set(_IOP[op](obj[index], value))
+    _no_mutation(obj, "item assignment")
+    obj[index] = _IOP[op](obj[index], value)
+    return obj
+
+
+def _replaceable(obj: Any) -> bool:
+    if isinstance(obj, tuple) and hasattr(obj, "_replace"):
+        return True
+    params = getattr(type(obj), "__dataclass_params__", None)
+    return bool(params is not None and params.frozen)
+
+
+def _replace(obj: Any, name: str, value: Any) -> Any:
+    if isinstance(obj, tuple):
+        record: Any = obj
+        return record._replace(**{name: value})
+    import dataclasses
+
+    return dataclasses.replace(obj, **{name: value})
+
+
+def setattr_(value: Any, obj: Any, name: str) -> Any:
+    """``obj.name = value``; NamedTuples and frozen dataclasses are replaced instead."""
+    if _replaceable(obj):
+        return _replace(obj, name, value)
+    _no_mutation(obj, "attribute assignment")
+    setattr(obj, name, value)
+    return obj
+
+
+def augattr_(value: Any, obj: Any, name: str, op: str) -> Any:
+    new = _IOP[op](getattr(obj, name), value)
+    if _replaceable(obj):
+        return _replace(obj, name, new)
+    _no_mutation(obj, "attribute assignment")
+    setattr(obj, name, new)
+    return obj
+
+
+# --------------------------------------------------------- staged builtins
+
+
+def print_(*args: Any, **kwargs: Any) -> None:
+    """``print`` that also works on traced values (prints when the code runs)."""
+    if not any(isinstance(a, Tracer) for a in args):
+        print(*args, **kwargs)
+        return
+    sep = kwargs.get("sep", " ")
+    parts, values = [], []
+    for a in args:
+        if isinstance(a, (Tracer, jax.Array, np.ndarray)):
+            parts.append("{}")
+            values.append(a)
+        else:
+            parts.append(str(a).replace("{", "{{").replace("}", "}}"))
+    jax.debug.print(sep.join(parts), *values)
+
+
+def max_(*args: Any, **kwargs: Any) -> Any:
+    if kwargs or len(args) < 2 or not any(isinstance(a, Tracer) for a in args):
+        return max(*args, **kwargs)
+    out = args[0]
+    for a in args[1:]:
+        out = jnp.maximum(out, a)
+    return out
+
+
+def min_(*args: Any, **kwargs: Any) -> Any:
+    if kwargs or len(args) < 2 or not any(isinstance(a, Tracer) for a in args):
+        return min(*args, **kwargs)
+    out = args[0]
+    for a in args[1:]:
+        out = jnp.minimum(out, a)
+    return out
+
+
+def assert_(test: Any, msg: Callable[[], Any] | None, site: str) -> None:
+    """``assert``; a traced condition is checked when the compiled code runs."""
+    if not isinstance(test, Tracer):
+        if not test:
+            raise AssertionError(*(() if msg is None else (msg(),)))
+        return
+    import linecache
+
+    fname, _, line = site.rpartition(":")
+    text = linecache.getline(fname, int(line)).strip() if line.isdigit() else ""
+    detail = "" if msg is None else f": {msg()}"
+    message = f"assertion failed at {site}{detail}" + (f"\n    > {text}" if text else "")
+
+    def check(ok: Any) -> None:
+        if not np.all(ok):
+            raise AssertionError(message)
+
+    jax.debug.callback(check, test)
 
 
 def while_(
@@ -463,7 +613,7 @@ def while_(
 
     def body_f(c2: Any) -> Any:
         n, carry = c2
-        with _rng.child(k, n):
+        with _rng.child(k, n), _staged():
             out = body_fn(*merge(carry))
         check(out)
         for i, v in enumerate(out):
@@ -798,7 +948,7 @@ def _lower_for(
             cs[j] = args[j] = _Collector()
         for j in last_idx:
             args[j] = UNDEF
-        with _rng.child(k, i):
+        with _rng.child(k, i), _staged():
             out = body_fn(it.make(x, i), *args)
         for j, v in enumerate(out):
             if j in coll:
@@ -873,7 +1023,7 @@ def _fori(
 
     def body_f(c: Any) -> Any:
         i, carry = c
-        with _rng.child(k, i):
+        with _rng.child(k, i), _staged():
             out = body_fn(it.make((), i), *merge(carry))
         for j, v in enumerate(out):
             if j in dyn:

@@ -503,3 +503,35 @@ def test_batch_annotation():
     from typax import prove
 
     assert prove(total).status == "proved"
+
+
+def test_hints():
+    @fn
+    def f[B, T](x: f32[B, T], y: f32[B, T]) -> f32[B, T]:
+        return x + y
+
+    def hint(*args):
+        with pytest.raises(ShapeError) as e:
+            f(*args)
+        return str(e.value)
+
+    a = jnp.ones((2, 3))
+    assert "Hint: `y` has 1 extra leading axis. To map over it, call" in hint(a, jnp.ones((5, 2, 3)))
+    assert "Hint: the axes look permuted: this has the layout [T, B]." in hint(a, a.T)
+    assert "Hint: NumPy and Python default to 64 bits; convert with jnp.asarray(x, jnp.float32)" in hint(a, np.ones((2, 3)))
+    assert "Hint: this is an integer array; convert with x.astype(jnp.float32)" in hint(a, jnp.ones((2, 3), jnp.int32))
+    assert "Hint" not in hint(a, jnp.ones((2, 4)))
+
+
+def test_info():
+    @fn(U="T + 1", where="T >= 2", jit=True)
+    def pad[B, T, U](x: f32[B, T]) -> f32[B, U]:
+        return jnp.pad(x, ((0, 0), (0, 1)))
+
+    pad(jnp.ones((2, 3)))
+    pad(jnp.ones((2, 4)))
+    text = pad.info()
+    assert "pad[B, T, U](x: f32[B, T]) -> f32[B, T + 1]" in text
+    assert "U = T + 1" in text and "where T >= 2" in text and "options: jit" in text
+    assert "traced 2 time(s)" in text and "x: f32[2, 3]  ->  f32[2, 4]" in text
+    assert "not converted (no control flow to convert)" in text
