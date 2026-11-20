@@ -120,6 +120,15 @@ attend(): argument `k` does not match its annotation.
     B is 2 (from `q: f32[2, 3, 4]`), but axis 0 of `k` is 5.
 ```
 
+Annotated local variables are checked too, and proved along with the rest:
+
+```python
+@fn
+def encode[B, T, D](x: f32[B, T], table: f32[T, D]) -> f32[B, D]:
+    h: f32[B, T, D] = x[:, :, None] * table
+    return h.mean(1)
+```
+
 Checks are shape and dtype comparisons, so under `jit` they run once per
 trace and cost nothing in the compiled function. Under `vmap` and `grad` they
 see the per-example shapes, which is what the annotations describe. Any
@@ -228,8 +237,15 @@ Rules and limits:
 - Under a traced `if`, both branches must give each variable the same shape
   and dtype. Errors name the variable.
 - Under a traced loop, carried variables must keep their shape and dtype.
-- Loops containing `break`, `continue` or `return`, and loops with an `else`
-  clause, are left as plain Python (so they need concrete conditions).
+- Some statements are deliberately left as plain Python (so they need
+  concrete conditions, and loops are unrolled): loops containing `break`,
+  `continue` or `return`; loops with an `else` clause; anything inside `try`
+  or `with`; statements that update an object in place (`d[k] = v`,
+  `obj.a = v`, `xs.sort()`); and statements assigning a variable that a
+  nested function or lambda also uses.
+- After a staged loop, a collected list is a read-only sequence until the
+  function returns it (it is returned as a real list). Another name bound to
+  the same list before the loop does not see the collected values.
 - If a `for` loop cannot be staged (the index is used as a Python int, a
   shape changes between iterations, ...) it is unrolled as in plain JAX, and
   `f.flow` says why.

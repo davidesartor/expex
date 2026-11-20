@@ -308,7 +308,8 @@ class Fn(Generic[P, R]):
     ) -> Any:
         __tracebackhide__ = True
         if not force and not (self.checked and config.checked):
-            return self._impl(*args, **kwargs)
+            out = self._impl(*args, **kwargs)
+            return _flow.unstack(out) if self.converted else out
         if self._owner is not None:
             self._resolve_owner()
         if env is None:
@@ -353,6 +354,8 @@ class Fn(Generic[P, R]):
             if config.notes and not getattr(e, "_barnacle_local", None) is self:
                 self._annotate(e, bound, env)
             raise
+        if self.converted:
+            out = _flow.unstack(out)  # lists collected by a staged loop
         if self._check_ret:
             try:
                 self.ret.match(out, "return", env)

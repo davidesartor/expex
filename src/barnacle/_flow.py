@@ -15,6 +15,7 @@ Every helper receives the variables the statement assigns as a tuple
 
 from __future__ import annotations
 
+import operator
 import threading
 from collections.abc import Sequence
 from typing import Any, Callable
@@ -30,7 +31,7 @@ from . import _rng
 from ._errors import StageError
 
 __all__ = [
-    "if_", "ifexp", "while_", "for_", "and_", "or_", "not_", "ld",
+    "if_", "ifexp", "while_", "for_", "and_", "or_", "not_", "cmp_", "ld",
     "range_", "enumerate_", "zip_", "append_", "local_", "Stacked", "UNDEF", "LOG",
 ]  # fmt: skip
 
@@ -142,10 +143,18 @@ def _desc(v: Any) -> str:
 # --------------------------------------------------------------------- bool
 
 
+def _boolean(v: Any) -> bool:
+    return type(v) is bool or getattr(v, "dtype", None) == np.bool_
+
+
 def and_(a: Callable[[], Any], b: Callable[[], Any]) -> Any:
     x = a()
     if isinstance(x, Tracer):
-        return jnp.logical_and(x, b())
+        y = b()
+        if _boolean(x) and _boolean(y):
+            return jnp.logical_and(x, y)
+        # Python's `x and y` is `y if x else x`, not a boolean
+        return ifexp(x, lambda: y, lambda: x, "an `and` expression")
     if not x:
         return x
     return b()
@@ -154,10 +163,36 @@ def and_(a: Callable[[], Any], b: Callable[[], Any]) -> Any:
 def or_(a: Callable[[], Any], b: Callable[[], Any]) -> Any:
     x = a()
     if isinstance(x, Tracer):
-        return jnp.logical_or(x, b())
+        y = b()
+        if _boolean(x) and _boolean(y):
+            return jnp.logical_or(x, y)
+        return ifexp(x, lambda: x, lambda: y, "an `or` expression")
     if x:
         return x
     return b()
+
+
+_CMP = {
+    "Lt": operator.lt, "LtE": operator.le, "Gt": operator.gt, "GtE": operator.ge,
+    "Eq": operator.eq, "NotEq": operator.ne, "Is": operator.is_, "IsNot": operator.is_not,
+    "In": lambda a, b: a in b, "NotIn": lambda a, b: a not in b,
+}  # fmt: skip
+
+
+def cmp_(left: Any, ops: tuple[str, ...], *rights: Callable[[], Any]) -> Any:
+    """A chained comparison ``a < b < c``: each operand is evaluated once."""
+    acc: Any = None
+    for op, thunk in zip(ops, rights):
+        right = thunk()
+        r = _CMP[op](left, right)
+        if acc is not None:
+            r = jnp.logical_and(acc, r)
+        if isinstance(r, Tracer):
+            acc = r  # cannot short-circuit on a traced value
+        elif not r:
+            return r
+        left = right
+    return True if acc is None else acc
 
 
 def not_(x: Any) -> Any:
@@ -203,7 +238,9 @@ def _cond(
                         metas.append(("static", UNDEF))
                     elif _dyn(v):
                         if p is not None:
-                            v = jnp.asarray(v, p)
+                            leaves, tree = jax.tree.flatten(v)
+                            tree_: Any = tree
+                            v = tree_.unflatten([_cast(x, d, w) for x, (d, w) in zip(leaves, p)])
                         metas.append(("dyn", v))
                         dyn.append(v)
                     else:
@@ -264,20 +301,50 @@ def _plan(recs: list[list[tuple[str, Any]]], names: tuple[str, ...], site: str) 
                 f"and dtype."
             )
         if m0[0] == "dyn":
-            v0, v1 = m0[1], m1[1]
-            if not (_leaf(v0) and _leaf(v1)):
-                continue
-            s0, s1 = jnp.shape(v0), jnp.shape(v1)
-            if s0 != s1:
+            t0: Any
+            t1: Any
+            l0, t0 = jax.tree.flatten(m0[1])
+            l1, t1 = jax.tree.flatten(m1[1])
+            if t0 != t1:
                 raise StageError(
-                    f"`{names[i]}` has shape {_desc(v0)} in one branch of the traced `if` at "
-                    f"{site} and {_desc(v1)} in the other.\n    Both branches must give it "
-                    f"the same shape and dtype."
+                    f"`{names[i]}` has a different structure in the two branches of the "
+                    f"traced `if` at {site}: {_desc(m0[1])} vs {_desc(m1[1])}."
                 )
-            d0, d1 = jnp.result_type(v0), jnp.result_type(v1)
-            if d0 != d1 or _weak(v0) != _weak(v1):
-                plan[i] = jnp.result_type(v0, v1)
+            casts = []
+            change = False
+            for v0, v1 in zip(l0, l1):
+                if jnp.shape(v0) != jnp.shape(v1):
+                    raise StageError(
+                        f"`{names[i]}` has shape {_desc(v0)} in one branch of the traced `if` "
+                        f"at {site} and {_desc(v1)} in the other.\n    Both branches must "
+                        f"give it the same shape and dtype."
+                    )
+                d0, d1 = jnp.result_type(v0), jnp.result_type(v1)
+                change = change or d0 != d1 or _weak(v0) != _weak(v1)
+                casts.append((jnp.result_type(v0, v1), _weak(v0) and _weak(v1)))
+            if change:
+                plan[i] = casts
     return plan
+
+
+def _cast(x: Any, dtype: Any, weak: bool) -> Any:
+    """Convert to ``dtype``, keeping the value weakly typed if asked (as Python scalars are)."""
+    try:
+        from jax._src.lax.lax import _convert_element_type
+
+        return _convert_element_type(x, dtype, weak_type=weak)
+    except Exception:
+        return jnp.asarray(x, dtype)
+
+
+def _weaken(i: Any) -> Any:
+    """A traced loop index that promotes like the Python int it replaces."""
+    try:
+        from jax._src.lax.lax import _convert_element_type
+
+        return _convert_element_type(i, weak_type=True)
+    except Exception:
+        return i
 
 
 def _leaf(v: Any) -> bool:
@@ -374,6 +441,7 @@ def while_(
         it += 1
 
     _check_pred(c, "while", site)
+    truth = (lambda v: v) if _boolean(c) else (lambda v: v != 0)
     try:
         check = _guard_lists(state, names, "while", site)
     except _CannotLower as e:
@@ -391,7 +459,7 @@ def while_(
     def cond_f(c2: Any) -> Any:
         n, carry = c2
         with _rng.child(k, n):
-            return test_fn(*merge(carry))
+            return truth(test_fn(*merge(carry)))
 
     def body_f(c2: Any) -> Any:
         n, carry = c2
@@ -465,11 +533,47 @@ class Stacked(Sequence):  # type: ignore[type-arg]
     def __jax_array__(self) -> Any:
         return self.array
 
+    def __add__(self, other: Any) -> list[Any]:
+        return list(self) + list(other)
+
+    def __radd__(self, other: Any) -> list[Any]:
+        return list(other) + list(self)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, (list, Stacked)) and list(self) == list(other)
+
+    __hash__ = None  # type: ignore[assignment]
+
     def __array__(self, *a: Any, **k: Any) -> Any:
         return np.asarray(self.array, *a, **k)
 
     def __repr__(self) -> str:
         return f"Stacked({self.array!r})"
+
+
+def unstack(out: Any) -> Any:
+    """Turn ``Stacked`` values in a function's result back into real lists."""
+    t = type(out)
+    if t is Stacked:
+        return list(out)
+    if t is tuple:
+        return tuple(unstack(v) for v in out) if any(_has_stacked(v) for v in out) else out
+    if t is list:
+        return [unstack(v) for v in out] if any(_has_stacked(v) for v in out) else out
+    if t is dict:
+        return {k: unstack(v) for k, v in out.items()} if any(map(_has_stacked, out.values())) else out
+    return out
+
+
+def _has_stacked(v: Any) -> bool:
+    t = type(v)
+    if t is Stacked:
+        return True
+    if t in (tuple, list):
+        return any(_has_stacked(x) for x in v)
+    if t is dict:
+        return any(_has_stacked(x) for x in v.values())
+    return False
 
 
 def append_(lst: Any, item: Any) -> Any:
@@ -501,7 +605,7 @@ def _as_iter(it: Any) -> _Iter | None:
         return it
     if isinstance(it, range):
         start, step = it.start, it.step
-        return _Iter(len(it), (), lambda x, i: start + i * step, lambda: it)
+        return _Iter(len(it), (), lambda x, i: start + _weaken(i) * step, lambda: it)
     if _is_arr(it) and getattr(it, "ndim", 0) >= 1:
         return _Iter(it.shape[0], it, lambda x, i: x, lambda: it)
     if isinstance(it, Stacked):
@@ -516,15 +620,19 @@ def range_(*args: Any) -> Any:
     if isinstance(step, Tracer):
         raise StageError("range() with a traced step is not supported; make the step a Python int.")
     n = jnp.maximum(0, -(-(jnp.asarray(hi) - lo) // step))
-    return _Iter(n, (), lambda x, i: lo + i * step, lambda: range(lo, hi, step))
+    return _Iter(n, (), lambda x, i: lo + _weaken(i) * step, lambda: range(lo, hi, step))
 
 
-def enumerate_(it: Any, start: int = 0) -> Any:
+def enumerate_(iterable: Any, start: int = 0) -> Any:
+    it = iterable
     inner = _as_iter(it) if _rng.tracing() else None
     if inner is None:
         return enumerate(it, start)
     return _Iter(
-        inner.n, inner.xs, lambda x, i: (i + start, inner.make(x, i)), lambda: enumerate(inner.py(), start)
+        inner.n,
+        inner.xs,
+        lambda x, i: (_weaken(i) + start, inner.make(x, i)),
+        lambda: enumerate(inner.py(), start),
     )
 
 

@@ -89,6 +89,10 @@ def _assigned(nodes: Iterable[ast.AST]) -> set[str]:
                 out.add((a.asname or a.name).split(".")[0])
         elif isinstance(n, ast.ExceptHandler) and n.name:
             out.add(n.name)
+        elif isinstance(n, (ast.MatchAs, ast.MatchStar)) and n.name:
+            out.add(n.name)
+        elif isinstance(n, ast.MatchMapping) and n.rest:
+            out.add(n.rest)
         for c in ast.iter_child_nodes(n):
             visit(c)
 
@@ -139,6 +143,27 @@ def _is_local_annotation(m: ast.AST) -> bool:
         and isinstance(m.target, ast.Name)
         and not isinstance(m.annotation, ast.Constant)
     )
+
+
+_MUTATORS = frozenset(
+    "append extend insert pop remove clear sort reverse update setdefault popitem add discard "
+    "appendleft popleft".split()
+)
+
+
+def _mutates(s: ast.stmt) -> bool:
+    """Does ``s`` update an object in place (``d[k] = v``, ``o.a = v``, ``xs.sort()``)?"""
+    for m in _walk_scope(s):
+        if isinstance(m, (ast.Subscript, ast.Attribute)) and isinstance(m.ctx, (ast.Store, ast.Del)):
+            return True
+        if (
+            isinstance(m, ast.Expr)
+            and isinstance(m.value, ast.Call)
+            and isinstance(m.value.func, ast.Attribute)
+            and m.value.func.attr in _MUTATORS
+        ):
+            return True
+    return False
 
 
 def _target_names(t: ast.AST) -> list[str] | None:
@@ -246,7 +271,22 @@ def _state(names: list[str]) -> ast.Tuple:
     return ast.Tuple(elts=[_call("ld", _thunk(_name(n))) for n in names], ctx=ast.Load())
 
 
-def _def(name: str, params: list[str], body: list[ast.stmt], ret: ast.expr) -> ast.FunctionDef:
+def _unbind(names: list[str]) -> list[ast.stmt]:
+    """``if x is UNDEF: del x`` for each name: undefined variables stay unbound."""
+    return [
+        ast.If(
+            test=ast.Compare(left=_name(n), ops=[ast.Is()], comparators=[_flow_attr("UNDEF")]),
+            body=[ast.Delete(targets=[ast.Name(id=n, ctx=ast.Del())])],
+            orelse=[],
+        )
+        for n in names
+    ]
+
+
+def _def(
+    name: str, params: list[str], body: list[ast.stmt], ret: ast.expr, state: list[str] | None = None
+) -> ast.FunctionDef:
+    body = [*_unbind(params if state is None else state), *body]
     f = ast.FunctionDef(
         name=name,
         args=ast.arguments(
@@ -267,16 +307,11 @@ def _bind(names: list[str], call: ast.expr) -> list[ast.stmt]:
     """Assign the helper's result back, leaving undefined variables unbound."""
     if not names:
         return [ast.Expr(value=call)]
-    out: list[ast.stmt] = [ast.Assign(targets=[_tuple(names, store=True)], value=call)]
-    for n in names:
-        out.append(
-            ast.If(
-                test=ast.Compare(left=_name(n), ops=[ast.Is()], comparators=[_flow_attr("UNDEF")]),
-                body=[ast.Delete(targets=[ast.Name(id=n, ctx=ast.Del())])],
-                orelse=[],
-            )
-        )
-    return out
+    return [ast.Assign(targets=[_tuple(names, store=True)], value=call), *_unbind(names)]
+
+
+def _has_walrus(node: ast.AST) -> bool:
+    return any(isinstance(m, ast.NamedExpr) for m in ast.walk(node))
 
 
 def _locate(new: ast.stmt, old: ast.stmt) -> ast.stmt:
@@ -314,8 +349,19 @@ class _Exprs(ast.NodeTransformer):
             node.args = [_name("__class__"), _name(self.first_param)]
         return node
 
+    def visit_Compare(self, node: ast.Compare) -> Any:
+        self.generic_visit(node)
+        if len(node.ops) < 2 or _has_walrus(node):
+            return node
+        ops = ast.Tuple(elts=[ast.Constant(type(o).__name__) for o in node.ops], ctx=ast.Load())
+        return ast.copy_location(
+            _call("cmp_", node.left, ops, *[_thunk(c) for c in node.comparators]), node
+        )
+
     def visit_BoolOp(self, node: ast.BoolOp) -> Any:
         self.generic_visit(node)
+        if _has_walrus(node):
+            return node  # `:=` inside a thunk would bind in the wrong scope
         attr = "and_" if isinstance(node.op, ast.And) else "or_"
         acc = node.values[0]
         for v in node.values[1:]:
@@ -330,6 +376,8 @@ class _Exprs(ast.NodeTransformer):
 
     def visit_IfExp(self, node: ast.IfExp) -> Any:
         self.generic_visit(node)
+        if _has_walrus(node):
+            return node
         return ast.copy_location(
             _call("ifexp", node.test, _thunk(node.body), _thunk(node.orelse), self.site(node)), node
         )
@@ -354,6 +402,18 @@ class _Converter:
         self.declared = declared
         self.first_param = (args.posonlyargs + args.args)[0].arg if args.posonlyargs + args.args else None
         self.locals = (set(params) | _assigned(fdef.body)) - declared
+        # Names used inside nested functions, lambdas and generator expressions.
+        # A statement assigning one of them is not converted: conversion moves
+        # the assignment into a helper function, and the closure would stop
+        # seeing the updates.
+        self.captured: set[str] = set()
+        for m in ast.walk(fdef):
+            if m is not fdef and isinstance(m, _SCOPES[:3] + (ast.GeneratorExp,)):
+                for sub in ast.walk(m):
+                    if isinstance(sub, ast.Name):
+                        self.captured.add(sub.id)
+                    elif isinstance(sub, ast.Nonlocal):
+                        self.captured |= set(sub.names)
         self.builtins_ok = {
             b for b in ("range", "enumerate", "zip") if b not in self.locals and b not in shadowed
         }
@@ -447,13 +507,12 @@ class _Converter:
     # -- statements
 
     def block(self, stmts: list[ast.stmt], live_out: set[str]) -> list[ast.stmt]:
-        suffix: list[set[str]] = [set()]
-        for s in reversed(stmts):
-            suffix.append(suffix[-1] | _reads([s]))
-        suffix.reverse()
         out: list[ast.stmt] = []
         for i, s in enumerate(stmts):
-            out.extend(self.stmt(s, live_out | suffix[i + 1]))
+            # live after s: read by the rest before being rewritten, or live at the
+            # end of the block and not definitely rewritten by the rest
+            reads, definite = _rbw(stmts[i + 1 :], set())
+            out.extend(self.stmt(s, reads | (live_out - definite)))
         return out
 
     def stmt(self, s: ast.stmt, live: set[str]) -> list[ast.stmt]:
@@ -464,6 +523,10 @@ class _Converter:
         if isinstance(s, ast.For):
             return self.for_(s, live)
         if isinstance(s, _SCOPES):
+            return [s]
+        if isinstance(s, (ast.Try, ast.TryStar, ast.With, ast.AsyncWith)):
+            # An exception caught here must see the assignments made before it
+            # was raised, which a converted statement only writes back at its end.
             return [s]
         inner = live | _reads([s])
         for field in ("body", "orelse", "finalbody"):
@@ -490,8 +553,13 @@ class _Converter:
         return it
 
     def _blocked(self, s: ast.stmt) -> bool:
-        if _assigned([s]) & self.declared:
+        assigned = _assigned([s])
+        if assigned & self.declared:
             return True  # assigns a global/nonlocal: must stay in this scope
+        if assigned & self.captured:
+            return True  # a closure shares the variable
+        if _mutates(s):
+            return True  # in-place updates must happen exactly as written
         return _has([s], _DECL + (ast.NamedExpr,)) or _has_return([s])
 
     def if_(self, s: ast.If, live: set[str]) -> list[ast.stmt]:
@@ -512,7 +580,7 @@ class _Converter:
     def while_(self, s: ast.While, live: set[str]) -> list[ast.stmt]:
         names = sorted(_assigned(s.body) & self.locals)
         ok = not s.orelse and not self._blocked(s) and not _has_jump(s.body)
-        back = _rbw(s.body, set())[0] | _reads([s.test])
+        back = _rbw(s.body, set())[0] | _reads([s.test]) | _reads(s.orelse)
         body = self.block(s.body, live | back)
         if not ok:
             s.body = body
@@ -537,7 +605,7 @@ class _Converter:
         )
         rbw, definite = _rbw(s.body, set(targets or ()))
         if not ok:
-            s.body = self.block(s.body, live | rbw)
+            s.body = self.block(s.body, live | rbw | _reads(s.orelse))
             return [s]
         assert targets is not None
         nameset = (_assigned(s.body) | set(targets)) & self.locals
@@ -554,7 +622,7 @@ class _Converter:
             "for_", it, _name(b), _state(names), _strs(names),
             _strs(sorted(carried)), _strs(sorted(nameset & live)), self.site(s),
         )  # fmt: skip
-        new = [_def(b, [item, *names], [unpack, *body], _state(names)), *_bind(names, call)]
+        new = [_def(b, [item, *names], [unpack, *body], _state(names), names), *_bind(names, call)]
         return [_locate(n, s) for n in new]
 
 
@@ -568,6 +636,8 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
     """Return a control-flow-converted copy of ``raw``, or raise :class:`NotConverted`."""
     if not isinstance(raw, types.FunctionType):
         raise NotConverted("not a plain Python function")
+    if hasattr(raw, "__wrapped__"):
+        raise NotConverted("wraps another function (its source is the inner function's)")
     code = raw.__code__
     if code.co_flags & (inspect.CO_GENERATOR | inspect.CO_COROUTINE | inspect.CO_ASYNC_GENERATOR):
         raise NotConverted("generators and async functions are not converted")
@@ -590,7 +660,7 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
         raise NotConverted("uses private (name-mangled) attributes")
 
     ast.increment_lineno(tree, code.co_firstlineno - 1)
-    conv = _Converter(fdef, code.co_filename, set(raw.__globals__))
+    conv = _Converter(fdef, code.co_filename, set(raw.__globals__) | set(code.co_freevars))
     conv.rewrite_appends(fdef.body)
     n_locals = conv.rewrite_annotations(fdef.body)
     exprs = _Exprs(conv.site, conv.first_param)
