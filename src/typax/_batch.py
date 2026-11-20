@@ -44,32 +44,33 @@ class Batched:
             return f(*args, **kwargs)
         n = math.prod(bshape)
 
+        # Everything that depends on the batch size happens in NumPy on the host:
+        # a JAX operation would itself be compiled once per new shape, which is
+        # exactly the cost this method exists to avoid.
         mapped: list[Any] = []
         consts: list[Any] = []
-        pattern: list[bool] = []
+        modes: list[Any] = []
         stand_ins: list[Any] = []
         for (spec, v, path), b in zip(leaves, batches):
             is_key = isinstance(spec, KeySpec)
-            if is_key and not b:  # one key: give every example its own
-                split: Callable[[Any], Any] = lambda k: jax.random.split(k, n)  # noqa: E731
-                for _ in range(spec.core_rank or 0):  # type: ignore[attr-defined]
-                    split = jax.vmap(split, out_axes=1)
-                v = split(v)
-                b = (n,)
+            typed = is_key and _is_typed_key(v)
             if b:
-                v = jnp.asarray(v) if not is_key else v
-                core = tuple(v.shape[len(b):])
+                host = np.asarray(jax.random.key_data(v) if typed else v)
+                core = tuple(host.shape[len(b):])
                 if b != (n,):
-                    v = jnp.broadcast_to(v, bshape + core).reshape((n,) + core)
-                mapped.append(v)
-                pattern.append(True)
+                    host = np.broadcast_to(host, bshape + core).reshape((n,) + core)
+                mapped.append(host)
+                modes.append(("mapkey", str(jax.random.key_impl(v))) if typed else ("map", None))
+                core = core[:-1] if typed else core
             else:
                 core = tuple(jnp.shape(v))
                 consts.append(v)
-                pattern.append(False)
+                # one key for the whole batch: every example derives its own from it
+                modes.append(("foldkey", spec.core_rank or 0) if is_key else ("const", None))  # type: ignore[attr-defined]
             dtype = v.dtype if hasattr(v, "dtype") else jnp.result_type(v)
             stand_ins.append(jax.ShapeDtypeStruct(core, dtype))
-        keys = jax.random.split(_rng.fresh(f"{f.name}.batched()"), n) if f.random else None
+        base_key = _rng.fresh(f"{f.name}.batched()") if f.random else None
+        index = np.arange(n, dtype=np.uint32)
 
         # The arguments with every array replaced by a shape/dtype stand-in: this
         # is what the compiled function is specialised on.
@@ -82,7 +83,7 @@ class Batched:
             if not f.params[name].spec.leafy and name not in f.static_names:
                 template[name] = jax.tree.map(lambda x: _slot(x, consts), value)
         try:
-            cache_key = (tuple(pattern), _freeze(template))
+            cache_key = (tuple(modes), _freeze(template))
             hash(cache_key)
         except TypeError:
             raise TypeError(
@@ -91,7 +92,7 @@ class Batched:
             ) from None
         run = self._cache.get(cache_key)
         if run is None:
-            run = self._cache[cache_key] = self._compile(template, tuple(pattern))
+            run = self._cache[cache_key] = self._compile(template, tuple(modes))
 
         outs: list[Any] = []
         pos = 0
@@ -100,34 +101,61 @@ class Batched:
             size = max((s for s in self.sizes if s <= rem), default=self.sizes[0])
             take = min(size, rem)
             part = tuple(_pad(m[pos : pos + take], size) for m in mapped)
-            kpart = None if keys is None else _pad(keys[pos : pos + take], size)
-            out = run(part, tuple(consts), kpart)
-            outs.append(out if take == size else jax.tree.map(lambda a: a[:take], out))
+            out = run(part, tuple(consts), _pad(index[pos : pos + take], size), base_key)
+            outs.append(jax.tree.map(lambda a: _to_host(a)[:take], out))
             pos += take
-        res = outs[0] if len(outs) == 1 else jax.tree.map(lambda *a: jnp.concatenate(a), *outs)
+        res = outs[0] if len(outs) == 1 else jax.tree.map(lambda *a: np.concatenate(a), *outs)
         if bshape != (n,):
             res = jax.tree.map(lambda a: a.reshape(bshape + a.shape[1:]), res)
-        return res
+        return jax.tree.map(jnp.asarray, res)
 
-    def _compile(self, template: dict[str, Any], pattern: tuple[bool, ...]) -> Callable[..., Any]:
+    def _compile(self, template: dict[str, Any], modes: tuple[Any, ...]) -> Callable[..., Any]:
         f = self.fn
 
-        def one(m: tuple[Any, ...], c: tuple[Any, ...], k: Any) -> Any:
-            im, ic, ip = iter(m), iter(c), iter(pattern)
-            new = f._walk(template, lambda s, x, p: next(im) if next(ip) else next(ic))
+        def one(m: tuple[Any, ...], c: tuple[Any, ...], i: Any, base: Any) -> Any:
+            im, ic, imode = iter(m), iter(c), iter(modes)
+
+            def leaf(s: Any, x: Any, p: str) -> Any:
+                mode, arg = next(imode)
+                if mode == "map":
+                    return next(im)
+                if mode == "mapkey":
+                    return jax.random.wrap_key_data(next(im), impl=arg)
+                if mode == "const":
+                    return next(ic)
+                fold: Callable[[Any], Any] = lambda k: jax.random.fold_in(k, i)  # noqa: E731
+                for _ in range(arg):
+                    fold = jax.vmap(fold)
+                return fold(next(ic))
+
+            new = f._walk(template, leaf)
             for name, value in new.items():
                 if not f.params[name].spec.leafy and name not in f.static_names:
                     new[name] = jax.tree.map(
                         lambda x: next(ic) if isinstance(x, _Slot) else x, value
                     )
             b2 = inspect.BoundArguments(f._sig, new)  # type: ignore[arg-type]
-            return f._run(b2.args, b2.kwargs, key=k)
+            key = None if base is None else jax.random.fold_in(base, i)
+            return f._run(b2.args, b2.kwargs, key=key)
 
-        def many(m: tuple[Any, ...], c: tuple[Any, ...], k: Any) -> Any:
+        def many(m: tuple[Any, ...], c: tuple[Any, ...], i: Any, base: Any) -> Any:
             self.traces += 1
-            return jax.vmap(one, in_axes=(0, None, None if k is None else 0))(m, c, k)
+            return jax.vmap(one, in_axes=(0, None, 0, None))(m, c, i, base)
 
         return jax.jit(many)
+
+
+def _is_typed_key(v: Any) -> bool:
+    try:
+        return bool(jnp.issubdtype(v.dtype, jax.dtypes.prng_key))
+    except Exception:
+        return False
+
+
+def _to_host(a: Any) -> Any:
+    if _is_typed_key(a):
+        raise TypeError("batched() cannot return PRNG keys; return jax.random.key_data(key)")
+    return np.asarray(a)
 
 
 class _Slot:
@@ -151,11 +179,11 @@ def _slot(x: Any, consts: list[Any]) -> Any:
 
 
 def _pad(a: Any, size: int) -> Any:
-    """Pad the leading axis to ``size`` by repeating the last row."""
+    """Pad the leading axis of a host array to ``size`` by repeating the last row."""
     short = size - a.shape[0]
     if short <= 0:
         return a
-    return jnp.concatenate([a, jnp.broadcast_to(a[-1:], (short,) + a.shape[1:])])
+    return np.concatenate([a, np.broadcast_to(a[-1:], (short,) + a.shape[1:])])
 
 
 def _freeze(x: Any) -> Any:

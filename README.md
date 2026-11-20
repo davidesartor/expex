@@ -340,6 +340,9 @@ for n in (5, 64, 1000):
 print(run.traces)                  # 1
 ```
 
+The chunking itself runs in NumPy on the host, so nothing is compiled per
+batch size; the price is a host round-trip for inputs and outputs.
+
 `batched(sizes=(8, 64, 512))` compiles one version per size and uses the
 largest that fits, wasting less work on small batches.
 
