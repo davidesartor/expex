@@ -15,7 +15,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from . import _rng
+from . import _flow, _rng
 from ._convert import NotConverted, convert as _convert
 from ._errors import Mismatch, RetraceWarning, ShapeError, StageError
 from ._expr import Expr
@@ -145,6 +145,7 @@ class Fn(Generic[P, R]):
             except Exception as e:  # never let conversion break a working function
                 self.convert_note = f"conversion failed: {type(e).__name__}: {e}"
         self.converted = self._impl is not raw
+        self._has_locals = bool(getattr(self._impl, "__barnacle_locals__", 0))
         self.name: str = getattr(raw, "__qualname__", getattr(raw, "__name__", repr(raw)))
         self.checked = checked
         self.prove = prove
@@ -340,9 +341,16 @@ class Fn(Generic[P, R]):
         if self.where:
             self._check_where(env, final=False)
         try:
-            out = self._impl(*args, **kwargs)
+            if self._has_locals:
+                _flow.CALLS.stack.append((env, self))
+                try:
+                    out = self._impl(*args, **kwargs)
+                finally:
+                    _flow.CALLS.stack.pop()
+            else:
+                out = self._impl(*args, **kwargs)
         except Exception as e:
-            if config.notes:
+            if config.notes and not getattr(e, "_barnacle_local", None) is self:
                 self._annotate(e, bound, env)
             raise
         if self._check_ret:
@@ -401,8 +409,25 @@ class Fn(Generic[P, R]):
         except AttributeError:
             return "<unknown>"
 
-    def _error(self, m: Mismatch, role: str, env: Env) -> Exception:
-        if role == "argument":
+    def _check_local(self, spec: Spec, value: Any, name: str, site: str, env: Env) -> None:
+        """Match an annotated local variable against this call's dimensions."""
+        __tracebackhide__ = True
+        try:
+            spec.match(value, name, env)
+            if env.deferred:
+                resolve(env)
+        except Mismatch as m:
+            e = self._error(m, "local", env, site)
+            setattr(e, "_barnacle_local", self)
+            raise e from None
+
+    def _error(self, m: Mismatch, role: str, env: Env, site: str = "") -> Exception:
+        if role == "local":
+            top = m.path.split(".")[0].split("[")[0]
+            head = f"{self.name}(): local variable `{top}` does not match its annotation."
+            declared = f"{m.path}: {m.spec}"
+            got = "assigned"
+        elif role == "argument":
             top = m.path.split(".")[0].split("[")[0]
             head = f"{self.name}(): argument `{top}` does not match its annotation."
             declared = f"{m.path}: {m.spec}"
@@ -422,8 +447,11 @@ class Fn(Generic[P, R]):
             f"    {m.reason}",
         ]
         binds = env.summary()
-        if binds and role == "return":
+        if binds and role != "argument":
             lines.append(f"    Bound so far: {binds}.")
+        if site:
+            text = linecache.getline(*_split_site(site)).strip()
+            lines += ["", f"    at {site}" + (f"\n    > {text}" if text else "")]
         lines += ["", f"    {self.signature}", f"    defined at {self.location}"]
         cls = StageError if getattr(m, "stage", False) else ShapeError
         return cls("\n".join(lines))
@@ -707,6 +735,14 @@ class BoundFn(Generic[P, R]):
 
     def __repr__(self) -> str:
         return f"<bound {self.fn!r} of {type(self.obj).__name__}>"
+
+
+def _split_site(site: str) -> tuple[str, int]:
+    fname, _, line = site.rpartition(":")
+    try:
+        return fname, int(line)
+    except ValueError:
+        return site, 0
 
 
 def _is_one(s: Any) -> bool:

@@ -15,6 +15,7 @@ Every helper receives the variables the statement assigns as a tuple
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Sequence
 from typing import Any, Callable
 
@@ -30,7 +31,7 @@ from ._errors import StageError
 
 __all__ = [
     "if_", "ifexp", "while_", "for_", "and_", "or_", "not_", "ld",
-    "range_", "enumerate_", "zip_", "append_", "Stacked", "UNDEF", "LOG",
+    "range_", "enumerate_", "zip_", "append_", "local_", "Stacked", "UNDEF", "LOG",
 ]  # fmt: skip
 
 #: site ("file:line") -> how the statement there was last executed.
@@ -56,6 +57,40 @@ def ld(thunk: Callable[[], Any]) -> Any:
         return thunk()
     except NameError:
         return UNDEF
+
+
+# ------------------------------------------------------------ checked locals
+
+
+class _Calls(threading.local):
+    def __init__(self) -> None:
+        self.stack: list[tuple[Any, Any]] = []  # (Env, Fn) of the running @fn calls
+
+
+CALLS = _Calls()
+_LOCAL_SPECS: dict[str, Any] = {}
+
+
+def local_(value: Any, ann: Callable[[], Any], name: str, site: str) -> Any:
+    """Check ``name: <annotation> = value`` against the enclosing call's dimensions."""
+    if not CALLS.stack:
+        return value
+    spec = _LOCAL_SPECS.get(site, _LOCAL_SPECS)
+    if spec is _LOCAL_SPECS:
+        from ._spec import parse
+
+        try:
+            spec = parse(ann())
+            if not spec.leafy:
+                spec = None
+        except Exception:  # not a barnacle annotation, or names not available here
+            spec = None
+        _LOCAL_SPECS[site] = spec
+    if spec is None:
+        return value
+    env, fn = CALLS.stack[-1]
+    fn._check_local(spec, value, name, site, env)
+    return value
 
 
 # ------------------------------------------------------------------ values

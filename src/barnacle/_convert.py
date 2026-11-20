@@ -132,6 +132,15 @@ def _returns_via_ifs(stmts: list[ast.stmt]) -> bool:
     )
 
 
+def _is_local_annotation(m: ast.AST) -> bool:
+    return (
+        isinstance(m, ast.AnnAssign)
+        and m.value is not None
+        and isinstance(m.target, ast.Name)
+        and not isinstance(m.annotation, ast.Constant)
+    )
+
+
 def _target_names(t: ast.AST) -> list[str] | None:
     """Names bound by a simple assignment target, or None if it is not simple."""
     if isinstance(t, ast.Name):
@@ -388,6 +397,29 @@ class _Converter:
                             s,
                         )
 
+    def rewrite_annotations(self, stmts: list[ast.stmt]) -> int:
+        """``h: f32[B, T] = v`` -> ``h = local_(v, lambda: f32[B, T], ...)`` (a checked local)."""
+        count = 0
+        holder = ast.Module(body=stmts, type_ignores=[])
+        for m in [holder, *_walk_all(stmts)]:
+            if isinstance(m, _SCOPES):
+                continue
+            for fld in ("body", "orelse", "finalbody"):
+                seq = getattr(m, fld, None)
+                if not isinstance(seq, list):
+                    continue
+                for i, s in enumerate(seq):
+                    if _is_local_annotation(s) and s.target.id in self.locals:
+                        call = _call(
+                            "local_", s.value, _thunk(s.annotation),
+                            ast.Constant(s.target.id), self.site(s),
+                        )  # fmt: skip
+                        seq[i] = _locate(
+                            ast.Assign(targets=[_name(s.target.id, store=True)], value=call), s
+                        )
+                        count += 1
+        return count
+
     def lower_returns(self, stmts: list[ast.stmt]) -> tuple[list[ast.stmt], bool]:
         """Rewrite early returns inside ``if`` so that the function has a single exit."""
         out: list[ast.stmt] = []
@@ -548,7 +580,9 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
     if not isinstance(fdef, ast.FunctionDef) or fdef.name != raw.__name__:
         raise NotConverted("could not locate the function definition in its source")
     if not any(
-        isinstance(m, _INTERESTING) or (isinstance(m, ast.UnaryOp) and isinstance(m.op, ast.Not))
+        isinstance(m, _INTERESTING)
+        or (isinstance(m, ast.UnaryOp) and isinstance(m.op, ast.Not))
+        or _is_local_annotation(m)
         for m in _walk_all(fdef.body)
     ):
         raise NotConverted("no control flow to convert")
@@ -558,6 +592,7 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
     ast.increment_lineno(tree, code.co_firstlineno - 1)
     conv = _Converter(fdef, code.co_filename, set(raw.__globals__))
     conv.rewrite_appends(fdef.body)
+    n_locals = conv.rewrite_annotations(fdef.body)
     exprs = _Exprs(conv.site, conv.first_param)
     fdef.body = [exprs.visit(s) for s in fdef.body]
     if any(
@@ -584,6 +619,9 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
     orig_name = fdef.name
     fdef.name = "__bn_fn__"
     cells = dict(zip(code.co_freevars, raw.__closure__ or ()))
+    if n_locals:  # local annotations may name the function's type parameters
+        for tp in getattr(raw, "__type_params__", ()):
+            cells.setdefault(tp.__name__, types.CellType(tp))
     pre: list[ast.stmt] = [
         ast.Assign(targets=[_name(v, store=True)], value=ast.Constant(None)) for v in cells
     ]
@@ -617,6 +655,7 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
     new.__doc__ = raw.__doc__
     new.__dict__.update(raw.__dict__)
     new.__barnacle_converted__ = conv.count  # type: ignore[attr-defined]
+    new.__barnacle_locals__ = n_locals  # type: ignore[attr-defined]
     return new
 
 
@@ -629,6 +668,7 @@ def source(raw: Callable[..., Any]) -> str:
     ast.increment_lineno(tree, raw.__code__.co_firstlineno - 1)
     conv = _Converter(fdef, raw.__code__.co_filename, set(getattr(raw, "__globals__", {})))
     conv.rewrite_appends(fdef.body)
+    conv.rewrite_annotations(fdef.body)
     fdef.body = [_Exprs(conv.site, conv.first_param).visit(s) for s in fdef.body]
     if any(
         isinstance(s, ast.If) and (_returns_via_ifs(s.body) or _returns_via_ifs(s.orelse))
