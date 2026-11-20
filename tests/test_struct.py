@@ -102,3 +102,50 @@ def test_struct_options_apply_to_methods():
     assert s.replace(k=3.0).apply(jnp.ones(3)).tolist() == [4.0, 4.0, 4.0]
     assert len(Scaled.apply.traces) == 2  # k is static
     assert not Scaled.eager.jit
+
+
+@tx.struct
+class Block[D]:
+    w: f32[D, D]
+    b: f32[D]
+
+    def __call__(self, x: f32[D]) -> f32[D]:
+        return x + jnp.tanh(self.w @ x + self.b)
+
+
+@tx.struct
+class Deep[D]:
+    blocks: list[Block[D]]
+
+    def __call__(self, x: f32[D]) -> f32[D]:
+        for block in self.blocks:
+            x = block(x)
+        return x
+
+
+def test_loops_over_identical_layers_are_scanned():
+    keys = jax.random.split(jax.random.key(0), 24)
+    deep = Deep([Block(0.3 * jax.random.normal(k, (8, 8)), jnp.zeros(8)) for k in keys])
+    x = jnp.ones(8)
+
+    def unrolled(m, x):
+        for block in m.blocks:
+            x = block(x)
+        return x
+
+    assert jnp.allclose(jax.jit(lambda m, x: m(x))(deep, x), unrolled(deep, x), atol=1e-5)
+    assert any("lax.scan" in how for how in Deep.__call__.flow.values())
+    staged = tx.debug.summary(lambda m, x: m(x), deep, x).ops
+    plain = tx.debug.summary(unrolled, deep, x).ops
+    assert staged * 5 < plain
+    g = jax.grad(lambda m: m(x).sum())(deep)
+    g_ref = jax.grad(lambda m: unrolled(m, x).sum())(deep)
+    for a, b in zip(jax.tree.leaves(g), jax.tree.leaves(g_ref)):
+        assert jnp.allclose(a, b, atol=1e-5)
+    assert isinstance(g.blocks, list) and len(g.blocks) == 24
+
+
+def test_lists_of_different_layers_still_unroll():
+    k1, k2 = jax.random.split(jax.random.key(0))
+    mlp = MLP((Linear.init(k1, 3, 8), Linear.init(k2, 8, 2)))
+    assert jax.jit(lambda m, x: m(x))(mlp, jnp.ones((4, 3))).shape == (4, 2)

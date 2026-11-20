@@ -386,7 +386,7 @@ def test_nested_loops():
     assert n_eqns(f, x) < 12
 
 
-def test_python_iterables_unroll():
+def test_python_lists_scan_when_alike_and_unroll_otherwise():
     @fn
     def f[D](x: f32[D], ws: list[f32[D]]) -> f32[D]:
         for w in ws:
@@ -394,7 +394,16 @@ def test_python_iterables_unroll():
         return x
 
     assert both(f, jnp.ones(2), [jnp.ones(2) * 2, jnp.ones(2) * 3]).tolist() == [6.0, 6.0]
-    assert "unrolled (iterating over a list)" in "".join(f.flow.values())
+    assert "lax.scan" in "".join(f.flow.values())
+
+    @fn
+    def g(x, ws):
+        for w in ws:
+            x = x * w.sum()
+        return x
+
+    assert both(g, jnp.float32(1.0), [jnp.ones(2), jnp.ones(3)]) == 6.0
+    assert "unrolled (iterating over a list)" in "".join(g.flow.values())
 
 
 def test_falls_back_when_index_must_be_a_python_int():

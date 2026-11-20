@@ -1014,7 +1014,27 @@ def _as_iter(it: Any) -> _Iter | None:
         return _Iter(len(it), it.array, lambda x, i: x, lambda: it)
     if isinstance(it, rows):
         return _Iter(len(it), it.tree, lambda x, i: x, lambda: it, it.chunk)
+    if isinstance(it, (list, tuple)) and len(it) >= 2:
+        stacked = _stack_alike(it)
+        if stacked is not None:  # e.g. a list of identical layers: one scan, not n copies
+            return _Iter(len(it), stacked, lambda x, i: x, lambda: it)
     return None
+
+
+def _stack_alike(items: Any) -> Any:
+    """Stack a list of pytrees with identical structure, shapes and dtypes, or None."""
+    first_tree: Any
+    first_leaves, first_tree = jax.tree.flatten(items[0])
+    if not first_leaves or not all(isinstance(x, jax.Array) for x in first_leaves):
+        return None
+    sig = [(x.shape, x.dtype) for x in first_leaves]
+    for item in items[1:]:
+        leaves, tree = jax.tree.flatten(item)
+        if tree != first_tree or len(leaves) != len(sig):
+            return None
+        if any(not isinstance(x, jax.Array) or (x.shape, x.dtype) != s for x, s in zip(leaves, sig)):
+            return None
+    return jax.tree.map(lambda *xs: jnp.stack(xs), *items)
 
 
 class rows:

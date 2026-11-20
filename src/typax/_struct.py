@@ -46,10 +46,12 @@ def struct(cls: Any = None, /, *, jit: bool = False, **options: Any) -> Any:
     """
 
     def build(cls: Any) -> Any:
-        if not (dataclasses.is_dataclass(cls) and cls.__dataclass_params__.frozen):
+        params = getattr(cls, "__dataclass_params__", None)
+        if not (dataclasses.is_dataclass(cls) and params is not None and params.frozen):
             cls = dataclasses.dataclass(frozen=True)(cls)
         anns = _class_annotations(cls)
-        data, meta = [], []
+        data: list[str] = []
+        meta: list[str] = []
         for f in dataclasses.fields(cls):
             (meta if static_type(anns.get(f.name, Any)) else data).append(f.name)
         jax.tree_util.register_dataclass(cls, data_fields=data, meta_fields=meta)
