@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "barnacle"
+version = "0.1.0"
+description = "Shape-typed functions for JAX: annotations that are proved, checked and used."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = ["jax>=0.4.30", "numpy"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pyright", "mypy"]
+
+[project.scripts]
+barnacle = "barnacle.__main__:main"
+
+[project.entry-points.pytest11]
+barnacle = "barnacle.pytest_plugin"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/barnacle"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.pyright]
+include = ["src", "tests/typing"]
+pythonVersion = "3.12"
