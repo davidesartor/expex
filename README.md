@@ -134,7 +134,11 @@ def encode[B, T, D](x: f32[B, T], table: f32[T, D]) -> f32[B, D]:
 
 Error messages add a hint for the usual causes (a batch passed where one
 example is expected, permuted axes, a float64 NumPy array), and `f.info()`
-prints everything typax knows about a function.
+prints everything typax knows about a function. `tx.show(tree)` prints a
+pytree with each array replaced by its dtype and shape, and
+`with tx.config(checked=False): ...` changes a setting for one block. A NumPy
+array is accepted where JAX would convert it to the declared dtype (a
+float64 NumPy array for `f32`, with 64-bit mode off).
 
 Checks are shape and dtype comparisons, so under `jit` they run once per
 trace and cost nothing in the compiled function. Under `vmap` and `grad` they

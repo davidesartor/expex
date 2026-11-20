@@ -60,6 +60,31 @@ class Config:
         self.retrace_warn: int = int(os.environ.get("TYPAX_RETRACE_WARN", "4"))
 
 
+    def __call__(self, **changes: Any) -> "_Scoped":
+        """``with tx.config(checked=False): ...`` changes settings inside the block."""
+        for k in changes:
+            if k not in vars(self):
+                raise AttributeError(f"typax.config has no setting {k!r}")
+        return _Scoped(self, changes)
+
+    def __repr__(self) -> str:
+        return "typax.config(" + ", ".join(f"{k}={v!r}" for k, v in vars(self).items()) + ")"
+
+
+class _Scoped:
+    def __init__(self, cfg: Config, changes: dict[str, Any]):
+        self.cfg, self.changes = cfg, changes
+        self.saved: dict[str, Any] = {}
+
+    def __enter__(self) -> Config:
+        self.saved = {k: getattr(self.cfg, k) for k in self.changes}
+        vars(self.cfg).update(self.changes)
+        return self.cfg
+
+    def __exit__(self, *exc: Any) -> None:
+        vars(self.cfg).update(self.saved)
+
+
 config = Config()
 
 

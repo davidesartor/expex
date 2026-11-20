@@ -322,6 +322,22 @@ def describe(value: Any) -> str:
         return t.__name__
 
 
+def show(tree: Any) -> str:
+    """A pytree with every array replaced by its dtype and shape.
+
+    ``show(params)`` -> ``Params(w=f32[3, 3], b=f32[3])``.
+    """
+    return repr(jax.tree.map(_Shown, tree)).replace("'", "")
+
+
+class _Shown:
+    def __init__(self, value: Any):
+        self.text = describe(value)
+
+    def __repr__(self) -> str:
+        return self.text
+
+
 def _match_shape(
     dims: tuple[Any, ...],
     var_index: int | None,
@@ -459,7 +475,11 @@ class ArraySpec(Spec):
                 raise Mismatch(
                     path, self, value, f"expected an array, got {t.__name__}."
                 ) from None
-            if not self.dtype.accepts(dtype):
+            if not self.dtype.accepts(dtype) and not (
+                # a NumPy array is judged by the dtype JAX will give it
+                isinstance(value, (np.ndarray, np.generic))
+                and self.dtype.accepts(jax.dtypes.canonicalize_dtype(dtype))
+            ):
                 raise Mismatch(
                     path, self, value,
                     f"expected dtype {self.dtype.name}, got {short_dtype(dtype)}.",

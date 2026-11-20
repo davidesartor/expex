@@ -128,8 +128,9 @@ def test_numpy_arrays_accepted():
         return jnp.asarray(x)
 
     f(np.ones(3, np.float32))
-    with pytest.raises(ShapeError, match="got f64"):
-        f(np.ones(3))
+    f(np.ones(3))  # float64 in NumPy, but JAX will make it float32
+    with pytest.raises(ShapeError, match="expected dtype f32, got i64"):
+        f(np.ones(3, np.int64))
 
 
 class RGB(Dim, size=3): ...
@@ -518,7 +519,7 @@ def test_hints():
     a = jnp.ones((2, 3))
     assert "Hint: `y` has 1 extra leading axis. To map over it, call" in hint(a, jnp.ones((5, 2, 3)))
     assert "Hint: the axes look permuted: this has the layout [T, B]." in hint(a, a.T)
-    assert "Hint: NumPy and Python default to 64 bits; convert with jnp.asarray(x, jnp.float32)" in hint(a, np.ones((2, 3)))
+    assert "Hint: convert with x.astype(jnp.float32), or declare the wider dtype" in hint(a, jnp.ones((2, 3), jnp.float16))
     assert "Hint: this is an integer array; convert with x.astype(jnp.float32)" in hint(a, jnp.ones((2, 3), jnp.int32))
     assert "Hint" not in hint(a, jnp.ones((2, 4)))
 
@@ -535,3 +536,26 @@ def test_info():
     assert "U = T + 1" in text and "where T >= 2" in text and "options: jit" in text
     assert "traced 2 time(s)" in text and "x: f32[2, 3]  ->  f32[2, 4]" in text
     assert "not converted (no control flow to convert)" in text
+
+
+def test_show_and_scoped_config():
+    import typax as tx
+
+    class P(NamedTuple):
+        w: Any
+        b: Any
+
+    tree = {"p": P(jnp.ones((3, 3)), jnp.zeros(3, jnp.int32)), "k": jax.random.key(0), "n": 2.0}
+    assert tx.show(tree) == "{k: Key[()], n: Python float, p: P(w=f32[3, 3], b=i32[3])}"
+
+    @fn
+    def bad[T](x: f32[T]) -> f32[T]:
+        return x[1:]
+
+    with tx.config(checked=False):
+        assert bad(jnp.ones(3)).shape == (2,)
+    with pytest.raises(ShapeError):
+        bad(jnp.ones(3))
+    with pytest.raises(AttributeError):
+        tx.config(nope=1)
+    assert "checked=True" in repr(tx.config)
