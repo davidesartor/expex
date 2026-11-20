@@ -286,6 +286,8 @@ def bounce(p: Particle, dt: f32) -> Particle:
 - A traced `assert` is checked when the compiled code runs, and only where
   the surrounding branch or loop iteration was really reached. Under `jit` a
   failure surfaces as JAX's runtime error carrying the assertion message.
+- `raise` in a traced branch is likewise raised when the compiled code
+  reaches it, not while tracing.
 - `max` / `min` with a JAX array among several arguments use `jnp.maximum` /
   `jnp.minimum` in every mode (so NaN propagates and dtypes promote, unlike
   the builtins).
@@ -331,13 +333,15 @@ Rules and limits:
   ones after the break masked out.
 - Some statements are deliberately left as plain Python (so they need
   concrete conditions, and loops are unrolled): loops with an `else` clause
-  or with a jump inside `try` / `with`; anything inside `try` or `with`;
+  anything inside `try` or `with` (loops there keep their real jumps);
   statements that update something other than a local variable in place
   (`self.buf[i] = v`, `d[k][j] = v`, `xs.sort()`); and statements assigning
   a variable that a nested function or lambda also uses.
 - A variable assigned in only one branch of a traced `if`, or first assigned
   inside a traced loop, gets a zero placeholder on the other path. Reading it
-  there would be an error in Python; under tracing it is not detected.
+  there would be an error in Python; under tracing it is not detected. The
+  same goes for a function that returns an array on one traced path and
+  falls off its end on another: the compiled function returns zeros there.
 - After a staged loop, a collected list is a read-only sequence until the
   function returns it (it is returned as a real list). Another name bound to
   the same list before the loop does not see the collected values.

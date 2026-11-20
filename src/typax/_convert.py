@@ -41,6 +41,9 @@ RETF = "__bn_returned__"
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
 _COMPS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 _LOOPS = (ast.For, ast.AsyncFor, ast.While)
+_UNTOUCHED = (ast.Try, ast.TryStar, ast.With, ast.AsyncWith)  # never converted, nor their contents
+_JUMPS = (ast.Break, ast.Continue, ast.Return)
+SKIP = "__bn_skip__"
 
 
 class NotConverted(Exception):
@@ -126,6 +129,22 @@ def _has_jump(nodes: Iterable[ast.AST]) -> bool:
 
 
 _DECL = (ast.Global, ast.Nonlocal, ast.Delete, ast.Yield, ast.YieldFrom, ast.Await)
+
+
+def _rebuild_if(s: ast.If, then: list[ast.stmt], other: list[ast.stmt]) -> ast.If:
+    new = ast.copy_location(ast.If(test=s.test, body=then or [ast.Pass()], orelse=other), s)
+    if hasattr(s, "_bn_site"):
+        new._bn_site = s._bn_site  # type: ignore[attr-defined]
+    return new
+
+
+def _always(stmts: list[ast.stmt], kinds: tuple[type, ...]) -> bool:
+    """Does this block always end in one of ``kinds`` (looking through ``if`` / ``else``)?"""
+    return any(
+        isinstance(s, kinds)
+        or (isinstance(s, ast.If) and _always(s.body, kinds) and _always(s.orelse, kinds))
+        for s in stmts
+    )
 
 
 def _count_via_ifs(stmts: list[ast.stmt]) -> int:
@@ -540,7 +559,8 @@ class _Converter:
             if m is not fdef and isinstance(m, _SCOPES[:3] + (ast.GeneratorExp,)):
                 self.captured |= _free_names(m)
         #: names whose values may be traced: locals and enclosing-function variables
-        self.readable = (self.locals | self.freevars) - declared
+        # (not those a nested function also uses: it may change them at any time)
+        self.readable = (self.locals | self.freevars) - declared - self.captured
         self.builtins_ok = {
             b for b in ("range", "enumerate", "zip", "reversed", "print", "max", "min") if b not in self.locals and b not in shadowed
         }
@@ -635,6 +655,24 @@ class _Converter:
             args = [_name(base.id), where, _thunk(s.value), ast.Constant(op)]
         return ast.Assign(targets=[_name(base.id, store=True)], value=_call(helper, *args))
 
+    def rewrite_raises(self, stmts: list[ast.stmt]) -> None:
+        """``raise X`` -> ``raise_(lambda: X)``: raised at once in plain Python, and
+        when the compiled code reaches it if it sits in a traced branch."""
+        for i, s in enumerate(stmts):
+            if isinstance(s, _SCOPES + _UNTOUCHED):
+                continue
+            if isinstance(s, ast.Raise) and s.exc is not None and not _has_walrus(s):
+                cause = _thunk(s.cause) if s.cause is not None else ast.Constant(None)
+                call = _call("raise_", _thunk(s.exc), cause, self.site(s))
+                stmts[i] = _locate(ast.Expr(value=call), s)
+                continue
+            for fld in ("body", "orelse"):
+                seq = getattr(s, fld, None)
+                if isinstance(seq, list) and seq and isinstance(seq[0], ast.stmt):
+                    self.rewrite_raises(seq)
+            for c in getattr(s, "cases", []) or []:
+                self.rewrite_raises(c.body)
+
     def rewrite_annotations(self, stmts: list[ast.stmt]) -> int:
         """``h: f32[B, T] = v`` -> ``h = local_(v, lambda: f32[B, T], ...)`` (a checked local)."""
         count = 0
@@ -670,6 +708,9 @@ class _Converter:
         """
         out: list[ast.stmt] = []
         for s in stmts:
+            if isinstance(s, _UNTOUCHED):
+                out.append(s)  # left exactly as written, real jumps included
+                continue
             if not isinstance(s, _SCOPES):
                 for fld in ("body", "orelse", "finalbody"):
                     seq = getattr(s, fld, None)
@@ -705,8 +746,11 @@ class _Converter:
 
         self.n += 1
         brk = f"__bn_break_{self.n}__"
-        state = {"break": False, "return": False}
+        state = {"break": False, "return": False, "skip": False}
         new_body, _ = self._skip(body, brk, state)
+        if state["skip"]:  # reset at the start of every iteration
+            self.locals.add(SKIP)
+            new_body.insert(0, ast.Assign(targets=[_name(SKIP, store=True)], value=ast.Constant(False)))
         pre: list[ast.stmt] = []
         post: list[ast.stmt] = []
         if state["break"]:
@@ -727,20 +771,32 @@ class _Converter:
         if state["return"]:
             self.uses_return_flag = True
             self.locals |= {RET, RETF}
-            post.append(
-                ast.If(test=_name(RETF), body=[ast.Return(value=_name(RET))], orelse=[])
-            )
+            leave = ast.If(test=_name(RETF), body=[ast.Return(value=_name(RET))], orelse=[])
+            leave._bn_site = "#return"  # type: ignore[attr-defined]
+            post.append(leave)
         final: list[ast.stmt] = list(new_body) or [ast.Pass()]
         s.body = final
         return [_locate(n, s) for n in [*pre, s, *post]]
 
     def _skip(
-        self, stmts: list[ast.stmt], brk: str, state: dict[str, bool]
+        self, stmts: list[ast.stmt], brk: str, state: dict[str, bool], flagged: bool = False
     ) -> tuple[list[ast.stmt], bool]:
-        """Replace the jumps in a loop body; returns the new block and "always jumps"."""
+        """Replace the jumps in a loop body; returns the new block and "always jumps".
+
+        Where possible the rest of a block simply moves into the branch that
+        does not jump. Where both branches may or may not jump, a per-iteration
+        flag is set instead and the rest is guarded by it (``flagged``), which
+        keeps the generated code linear in the size of the original.
+        """
         out: list[ast.stmt] = []
+
+        def set_flag(name: str, at: ast.stmt) -> ast.stmt:
+            return _locate(ast.Assign(targets=[_name(name, store=True)], value=ast.Constant(True)), at)
+
         for i, s in enumerate(stmts):
             if isinstance(s, ast.Continue):
+                if flagged:
+                    out.append(set_flag(SKIP, s))
                 return out, True
             if isinstance(s, (ast.Break, ast.Return)):
                 state["break"] = True
@@ -748,41 +804,67 @@ class _Converter:
                     state["return"] = True
                     value = s.value or ast.Constant(None)
                     out.append(_locate(ast.Assign(targets=[_name(RET, store=True)], value=value), s))
-                    out.append(
-                        _locate(ast.Assign(targets=[_name(RETF, store=True)], value=ast.Constant(True)), s)
-                    )
-                out.append(_locate(ast.Assign(targets=[_name(brk, store=True)], value=ast.Constant(True)), s))
+                    out.append(set_flag(RETF, s))
+                out.append(set_flag(brk, s))
+                if flagged:
+                    out.append(set_flag(SKIP, s))
                 return out, True
             if isinstance(s, ast.If) and (_count_via_ifs(s.body) or _count_via_ifs(s.orelse)):
                 rest = stmts[i + 1 :]
-                then, a = self._skip(s.body + copy.deepcopy(rest), brk, state)
-                other, b = self._skip(s.orelse + rest, brk, state)
-                out.append(ast.copy_location(ast.If(test=s.test, body=then or [ast.Pass()], orelse=other), s))
-                return out, a and b
+                ja, jb = _always(s.body, _JUMPS), _always(s.orelse, _JUMPS)
+                if flagged or not (ja or jb):
+                    state["skip"] = True
+                    then, _ = self._skip(s.body, brk, state, True)
+                    other, _ = self._skip(s.orelse, brk, state, True)
+                    out.append(_rebuild_if(s, then, other))
+                    if rest:
+                        tail, _ = self._skip(rest, brk, state, flagged)
+                        guard = ast.If(test=_call("not_", _name(SKIP)), body=tail or [ast.Pass()], orelse=[])
+                        guard._bn_site = "#skip guard"  # type: ignore[attr-defined]
+                        out.append(_locate(guard, s))
+                    return out, False
+                # exactly the branches that fall through continue with the rest
+                then, a = self._skip(s.body if ja else s.body + rest, brk, state)
+                other, b2 = self._skip(s.orelse if jb else s.orelse + rest, brk, state)
+                out.append(_rebuild_if(s, then, other))
+                return out, a and b2
             out.append(s)
         return out, False
 
-    def lower_returns(self, stmts: list[ast.stmt]) -> tuple[list[ast.stmt], bool]:
-        """Rewrite early returns inside ``if`` so that the function has a single exit."""
+    def lower_returns(self, stmts: list[ast.stmt], flagged: bool = False) -> tuple[list[ast.stmt], bool]:
+        """Rewrite early returns inside ``if`` so that the function has a single exit.
+
+        Same scheme as ``_skip``: the rest of a block moves into the branch that
+        does not return, or, where both may or may not, is guarded by a flag.
+        """
         out: list[ast.stmt] = []
         for i, s in enumerate(stmts):
             if isinstance(s, ast.Return):
-                out.append(
-                    ast.copy_location(
-                        ast.Assign(
-                            targets=[_name(RET, store=True)], value=s.value or ast.Constant(None)
-                        ),
-                        s,
-                    )
-                )
+                value = s.value or ast.Constant(None)
+                out.append(ast.copy_location(ast.Assign(targets=[_name(RET, store=True)], value=value), s))
+                if flagged:
+                    self.uses_return_flag = True
+                    out.append(_locate(ast.Assign(targets=[_name(RETF, store=True)], value=ast.Constant(True)), s))
                 return out, True
             if isinstance(s, ast.If) and (_returns_via_ifs(s.body) or _returns_via_ifs(s.orelse)):
                 rest = stmts[i + 1 :]
-                body, rb = self.lower_returns(s.body + copy.deepcopy(rest))
-                orelse, ro = self.lower_returns(s.orelse + rest)
-                new = ast.copy_location(ast.If(test=s.test, body=body, orelse=orelse), s)
-                out.append(new)
-                return out, rb and ro
+                ja, jb = _always(s.body, (ast.Return,)), _always(s.orelse, (ast.Return,))
+                if flagged or not (ja or jb):
+                    self.uses_return_flag = True
+                    self.locals.add(RETF)
+                    then, _ = self.lower_returns(s.body, True)
+                    other, _ = self.lower_returns(s.orelse, True)
+                    out.append(_rebuild_if(s, then, other))
+                    if rest:
+                        tail, _ = self.lower_returns(rest, flagged)
+                        guard = ast.If(test=_call("not_", _name(RETF)), body=tail or [ast.Pass()], orelse=[])
+                        guard._bn_site = "#return guard"  # type: ignore[attr-defined]
+                        out.append(_locate(guard, s))
+                    return out, False
+                then, a = self.lower_returns(s.body if ja else s.body + rest)
+                other, b2 = self.lower_returns(s.orelse if jb else s.orelse + rest)
+                out.append(_rebuild_if(s, then, other))
+                return out, a and b2
             out.append(s)
         return out, False
 
@@ -806,7 +888,7 @@ class _Converter:
             return self.for_(s, live)
         if isinstance(s, _SCOPES):
             return [s]
-        if isinstance(s, (ast.Try, ast.TryStar, ast.With, ast.AsyncWith)):
+        if isinstance(s, _UNTOUCHED):
             # An exception caught here must see the assignments made before it
             # was raised, which a converted statement only writes back at its end.
             return [s]
@@ -858,7 +940,7 @@ class _Converter:
         ret = _state(names)
         # Variables the branches only read are passed in too, so that the helper
         # can cut their gradients where a branch is not taken (see `_guard`).
-        reads = sorted(((reads_body | reads_else) & self.readable) - set(names))
+        reads = sorted(((reads_body | reads_else) & self.readable) - set(names) - self.captured)
         both = names + reads
         call = _call(
             "if_", s.test, _name(t), _name(f), _state(names), _strs(names), self.site(s),
@@ -961,22 +1043,22 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
     )
     conv.rewrite_appends(fdef.body)
     conv.rewrite_inplace(fdef.body)
+    conv.rewrite_raises(fdef.body)
     n_locals = conv.rewrite_annotations(fdef.body)
     exprs = _Exprs(conv.site, conv.first_param, conv.builtins_ok, conv.readable)
     fdef.body = [exprs.visit(s) for s in fdef.body]
     fdef.body = conv.lower_jumps(fdef.body)
-    if conv.uses_return_flag:
-        fdef.body.insert(0, ast.Assign(targets=[_name(RETF, store=True)], value=ast.Constant(False)))
     if any(
         isinstance(s, ast.If) and (_returns_via_ifs(s.body) or _returns_via_ifs(s.orelse))
         for s in fdef.body
     ):
-        body, always = conv.lower_returns(fdef.body)
-        if not always:
-            body.insert(0, ast.Assign(targets=[_name(RET, store=True)], value=ast.Constant(None)))
-        body.append(ast.Return(value=_name(RET)))
+        body, _ = conv.lower_returns(fdef.body)
+        # a path that falls off the end leaves the variable unset: that is `None`
+        body.append(ast.Return(value=_call("ret_", _thunk(_name(RET)))))
         fdef.body = body
         conv.locals.add(RET)
+    if conv.uses_return_flag:
+        fdef.body.insert(0, ast.Assign(targets=[_name(RETF, store=True)], value=ast.Constant(False)))
     fdef.body = conv.block(fdef.body, set())
 
     # Re-create the function: same globals, defaults and closure cells, new code.
@@ -1043,21 +1125,21 @@ def source(raw: Callable[..., Any]) -> str:
     )
     conv.rewrite_appends(fdef.body)
     conv.rewrite_inplace(fdef.body)
+    conv.rewrite_raises(fdef.body)
     conv.rewrite_annotations(fdef.body)
     fdef.body = [_Exprs(conv.site, conv.first_param, conv.builtins_ok, conv.readable).visit(s) for s in fdef.body]
     fdef.body = conv.lower_jumps(fdef.body)
-    if conv.uses_return_flag:
-        fdef.body.insert(0, ast.Assign(targets=[_name(RETF, store=True)], value=ast.Constant(False)))
     if any(
         isinstance(s, ast.If) and (_returns_via_ifs(s.body) or _returns_via_ifs(s.orelse))
         for s in fdef.body
     ):
-        body, always = conv.lower_returns(fdef.body)
-        if not always:
-            body.insert(0, ast.Assign(targets=[_name(RET, store=True)], value=ast.Constant(None)))
-        body.append(ast.Return(value=_name(RET)))
+        body, _ = conv.lower_returns(fdef.body)
+        # a path that falls off the end leaves the variable unset: that is `None`
+        body.append(ast.Return(value=_call("ret_", _thunk(_name(RET)))))
         fdef.body = body
         conv.locals.add(RET)
+    if conv.uses_return_flag:
+        fdef.body.insert(0, ast.Assign(targets=[_name(RETF, store=True)], value=ast.Constant(False)))
     fdef.body = conv.block(fdef.body, set())
     fdef.decorator_list = []
     ast.fix_missing_locations(tree)

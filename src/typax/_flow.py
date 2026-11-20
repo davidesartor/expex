@@ -31,9 +31,9 @@ from . import _rng
 from ._errors import StageError
 
 __all__ = [
-    "if_", "ifexp", "while_", "for_", "and_", "or_", "not_", "cmp_", "ld",
+    "if_", "ifexp", "while_", "for_", "and_", "or_", "not_", "cmp_", "ld", "ret_",
     "range_", "enumerate_", "zip_", "reversed_", "rows", "stack", "append_",
-    "setitem_", "augitem_", "setattr_", "augattr_", "print_", "max_", "min_", "assert_", "slice_", "local_", "Stacked", "UNDEF", "LOG",
+    "setitem_", "augitem_", "setattr_", "augattr_", "print_", "max_", "min_", "assert_", "raise_", "slice_", "local_", "Stacked", "UNDEF", "LOG",
 ]  # fmt: skip
 
 #: site ("file:line") -> how the statement there was last executed.
@@ -51,6 +51,15 @@ class _Undefined:
 
 
 UNDEF = _Undefined()
+
+
+def ret_(thunk: Callable[[], Any]) -> Any:
+    """The function's return value; ``None`` if no ``return`` statement set it."""
+    try:
+        value = thunk()
+    except NameError:
+        return None
+    return None if value is UNDEF else value
 
 
 def ld(thunk: Callable[[], Any]) -> Any:
@@ -286,7 +295,9 @@ def _cond(
         elif _same_static(m0[1], m1[1]):
             out.append(m0[1])
         elif m0[1] is UNDEF or m1[1] is UNDEF:
-            out.append(UNDEF)
+            # set on one path only: the value from that path (like the zero
+            # placeholder arrays get), since the other path must not read it
+            out.append(m1[1] if m0[1] is UNDEF else m0[1])
         else:
             raise StageError(
                 f"`{names[i]}` is set to different non-array values in the two branches of "
@@ -344,19 +355,28 @@ def _shapes(tree: Any) -> Any:
     return jax.tree.map(lambda a: jax.ShapeDtypeStruct(jnp.shape(a), jnp.result_type(a)), tree)
 
 
-def _probe(run: Callable[[], tuple[Any, ...]], idxs: list[int]) -> dict[int, Any]:
-    """Zero placeholders for the variables ``idxs`` that ``run`` (a loop body) assigns.
+def _probe(
+    body: Callable[..., tuple[Any, ...]], state: tuple[Any, ...], idxs: list[int]
+) -> dict[int, Any]:
+    """Zero placeholders for the variables ``idxs`` that a loop body assigns.
 
     A variable first assigned inside a traced loop needs a value of the right
-    shape before the loop starts; the body is traced once, abstractly, to learn it.
+    shape before the loop starts. The body is traced once, abstractly, to learn
+    it, with every array or number in ``state`` traced as it will be in the loop
+    (a Python counter must not make a branch look untaken).
     """
+    dyn = [i for i, v in enumerate(state) if _dyn(v)]
 
-    def f() -> dict[int, Any]:
-        out = run()
+    def f(*values: Any) -> dict[int, Any]:
+        full = list(state)
+        for i, v in zip(dyn, values):
+            full[i] = v
+        with _staged():
+            out = body(*full)
         return {i: out[i] for i in idxs if _dyn(out[i])}
 
     try:
-        shapes = jax.eval_shape(f)
+        shapes = jax.eval_shape(f, *[state[i] for i in dyn])
     except Exception:
         return {}
     return {i: jax.tree.map(lambda s: jnp.zeros(s.shape, s.dtype), sh) for i, sh in shapes.items()}
@@ -719,6 +739,31 @@ def print_(*args: Any, **kwargs: Any) -> None:
     jax.debug.callback(show, *[args[i] for i in idx])
 
 
+def raise_(exc: Callable[[], Any], cause: Callable[[], Any] | None, site: str) -> None:
+    """``raise exc() from cause()``.
+
+    In a traced branch the exception cannot be raised while tracing (both
+    branches are traced); it is raised when the compiled code reaches it.
+    """
+    if not _PATH.preds:
+        e = exc()
+        if cause is None:
+            raise e
+        raise e from cause()
+    e = exc()
+    if isinstance(e, type):
+        e = e()
+    reached = jnp.asarray(True)
+    for pred in _PATH.preds:
+        reached = jnp.logical_and(reached, pred())
+
+    def check(hit: Any) -> None:
+        if np.any(hit):
+            raise e
+
+    jax.debug.callback(check, reached)
+
+
 def _extreme(args: tuple[Any, ...], kwargs: dict[str, Any], builtin: Any, pair: Any) -> Any:
     # With a JAX array among several arguments, use the array function in every
     # mode, so that eager and compiled runs agree on dtype and on NaN handling.
@@ -792,7 +837,7 @@ def while_(
         raise StageError(f"{e} at {site}: the number of iterations depends on data.") from None
     need = [i for i, v in enumerate(state) if v is UNDEF and names[i] in live]
     if need:
-        zeros = _probe(lambda: body_fn(*state), need)
+        zeros = _probe(body_fn, state, need)
         state = tuple(zeros.get(i, v) for i, v in enumerate(state))
     dyn = [i for i, v in enumerate(state) if _dyn(v)]
     init = tuple(state[i] for i in dyn)
@@ -1156,13 +1201,12 @@ def _lower_for(
     ]  # fmt: skip
     if need:
 
-        def first_iteration() -> tuple[Any, ...]:
-            args = [_Collector() if j in coll else v for j, v in enumerate(state)]
+        def first_iteration(*args: Any) -> tuple[Any, ...]:
+            full = [_Collector() if j in coll else v for j, v in enumerate(args)]
             x0 = jax.tree.map(lambda a: a[0], it.xs)
-            with _staged():
-                return body_fn(it.make(x0, jnp.zeros((), jnp.int32)), *args)
+            return body_fn(it.make(x0, jnp.zeros((), jnp.int32)), *full)
 
-        zeros = _probe(first_iteration, need)
+        zeros = _probe(first_iteration, state, need)
         if set(zeros) != set(need):
             missing = next(i for i in need if i not in zeros)
             raise _CannotLower(f"`{names[missing]}` may be undefined after the loop")
@@ -1253,6 +1297,12 @@ def _fori(
                 f"    Preallocate an array and fill it with {names[i]}.at[i].set(...), or "
                 f"make the trip count Static."
             )
+    need = [i for i, v in enumerate(state) if v is UNDEF and names[i] in live]
+    if need:
+        zeros = _probe(
+            lambda *args: body_fn(it.make((), jnp.zeros((), jnp.int32)), *args), state, need
+        )
+        state = tuple(zeros.get(i, v) for i, v in enumerate(state))
     dyn = [i for i, v in enumerate(state) if _dyn(v)]
 
     def merge(carry: tuple[Any, ...]) -> list[Any]:
