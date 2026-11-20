@@ -1,5 +1,7 @@
 """find_nan, summary and timing."""
 
+import pytest
+
 import jax
 import jax.numpy as jnp
 from jax import lax
@@ -190,3 +192,41 @@ def test_shapes_concrete_and_symbolic():
         return y
 
     assert "# y: f32[5]" in str(debug.shapes(plain, jnp.ones((4, 5))))
+
+
+def test_remat_saves_memory_and_keeps_gradients():
+    import typax as tx
+
+    def make(remat):
+        @tx.struct
+        class Layer[D]:
+            w: f32[D, D]
+
+            @fn(remat=remat)
+            def __call__[B](self, x: f32[B, D]) -> f32[B, D]:
+                h = jnp.tanh(x @ self.w)
+                h = jnp.tanh(h @ self.w) * h
+                return jnp.tanh(h @ self.w) + x
+
+        return Layer
+
+    x = jnp.ones((128, 64))
+
+    def loss(layers, x):
+        for layer in layers:
+            x = layer(x)
+        return (x**2).mean()
+
+    results = {}
+    for remat in (False, True, "dots"):
+        Layer = make(remat)
+        layers = [Layer(jnp.eye(64) * 0.5 + 0.01 * i) for i in range(8)]
+        grads = jax.jit(jax.grad(loss))(layers, x)
+        results[remat] = (debug.memory(jax.grad(loss), layers, x), grads)
+    plain, (low, _), _ = results[False], results[True], results["dots"]
+    assert low.live_peak < plain[0].live_peak / 2
+    for a, b in zip(jax.tree.leaves(plain[1]), jax.tree.leaves(results[True][1])):
+        assert jnp.allclose(a, b, atol=1e-6)
+    assert "compiled:" in str(low) and "alive at once" in str(low)
+    with pytest.raises(ValueError, match="remat must be"):
+        fn(remat="sometimes")(lambda x: x)

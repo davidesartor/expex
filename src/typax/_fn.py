@@ -97,6 +97,12 @@ class _Scoped:
 
 config = Config()
 
+_REMAT_POLICIES = {
+    "nothing": jax.checkpoint_policies.nothing_saveable,
+    "dots": jax.checkpoint_policies.dots_saveable,
+    "dots_no_batch": jax.checkpoint_policies.dots_with_no_batch_dims_saveable,
+}
+
 
 def compile_cache(path: str = "~/.cache/typax", min_compile_seconds: float = 1.0) -> str:
     """Keep compiled functions on disk, so later runs of a program skip compilation.
@@ -180,6 +186,7 @@ class Fn(Generic[P, R]):
         convert: bool = True,
         random: bool = False,
         lift: bool = False,
+        remat: Any = False,
         examples: dict[str, Any] | None = None,
         where: str | list[str] | tuple[str, ...] = (),
         defs: dict[str, str] | None = None,
@@ -187,6 +194,10 @@ class Fn(Generic[P, R]):
         functools.update_wrapper(self, raw)
         self.raw = raw
         self.random = random
+        if isinstance(remat, str) and remat not in _REMAT_POLICIES:
+            raise ValueError(f"remat must be True, a policy or one of {sorted(_REMAT_POLICIES)}")
+        #: Recompute this function's intermediates in the backward pass (``jax.checkpoint``)
+        self.remat = remat
         #: With ``lift=True``, a plain call maps over extra leading axes by itself.
         self.auto_lift = lift
         #: The function that actually runs: ``raw`` with its control flow converted.
@@ -488,11 +499,11 @@ class Fn(Generic[P, R]):
             if self._has_locals:
                 _flow.CALLS.stack.append((env, self))
                 try:
-                    out = self._impl(*args, **kwargs)
+                    out = self._call_impl(args, kwargs)
                 finally:
                     _flow.CALLS.stack.pop()
             else:
-                out = self._impl(*args, **kwargs)
+                out = self._call_impl(args, kwargs)
         except Exception as e:
             _flow._STAGE.depth = depth
             if config.notes and not getattr(e, "_typax_local", None) is self:
@@ -511,6 +522,28 @@ class Fn(Generic[P, R]):
             if self.where:
                 self._check_where(env, final=True)
         return out
+
+    def _call_impl(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+        """Run the function body, under ``jax.checkpoint`` if ``remat`` was asked for."""
+        if not self.remat:
+            return self._impl(*args, **kwargs)
+        policy = _REMAT_POLICIES.get(self.remat) if isinstance(self.remat, str) else (
+            None if self.remat is True else self.remat
+        )
+        bound = self._sig.bind(*args, **kwargs)
+        frozen, dyn = _Frozen.split(self, bound.arguments)
+        box: dict[str, Any] = {}
+
+        def body(dyn: tuple[Any, ...]) -> tuple[Any, ...]:
+            a, k = frozen.rebuild(self, dyn)
+            leaves, tree = jax.tree.flatten(self._impl(*a, **k))
+            box["tree"] = tree
+            box["static"] = tuple(_Frozen if _is_traced_leaf(x) else x for x in leaves)
+            return tuple(x for x in leaves if _is_traced_leaf(x))
+
+        out = jax.checkpoint(body, policy=policy)(dyn)
+        it = iter(out)
+        return box["tree"].unflatten([next(it) if x is _Frozen else x for x in box["static"]])
 
     def _check_where(self, env: Env, final: bool) -> None:
         for w in self.where:
@@ -1241,6 +1274,7 @@ def fn(
     convert: bool = True,
     random: bool = False,
     lift: bool = False,
+    remat: Any = False,
     examples: dict[str, Any] | None = None,
     where: str | list[str] | tuple[str, ...] = (),
     **dims: str,
@@ -1255,6 +1289,7 @@ def fn(
     convert: bool = True,
     random: bool = False,
     lift: bool = False,
+    remat: Any = False,
     examples: dict[str, Any] | None = None,
     where: str | list[str] | tuple[str, ...] = (),
     **dims: str,
@@ -1285,6 +1320,12 @@ def fn(
     ``lift``
         Map over extra leading axes on a plain call, as ``f.lift(...)`` does. For
         functions written for one element that should also accept batches.
+    ``remat``
+        Gradient checkpointing: in the backward pass, recompute this function's
+        intermediates instead of storing them. ``True`` saves nothing,
+        ``"dots"`` keeps matrix-multiply results, ``"dots_no_batch"`` keeps
+        those without batch dimensions; or pass a ``jax.checkpoint_policies``
+        policy. Trades compute for memory, usually per layer.
     ``examples``
         Values the prover should use for ``Static`` or unannotated parameters,
         as ``{"name": [value, ...]}``.
@@ -1300,7 +1341,7 @@ def fn(
             raw = raw.raw
         return Fn(
             raw, jit=jit, checked=checked, prove=prove, convert=convert, random=random,
-            lift=lift, examples=examples, where=where, defs=dims,
+            lift=lift, remat=remat, examples=examples, where=where, defs=dims,
         )  # fmt: skip
 
     if f is not None:

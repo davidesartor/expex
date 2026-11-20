@@ -40,7 +40,10 @@ from ._fn import BoundFn, Fn
 from ._jaxpr import iter_eqns, source_key, source_of, sub_jaxprs
 from ._spec import describe
 
-__all__ = ["find_nan", "shapes", "summary", "timing", "NanReport", "ShapeTrace", "Summary", "Timing"]
+__all__ = [
+    "find_nan", "shapes", "summary", "timing", "memory",
+    "NanReport", "ShapeTrace", "Summary", "Timing", "Memory",
+]  # fmt: skip
 
 
 def _plain(
@@ -645,3 +648,94 @@ def _symbolic_run(f: Fn[Any, Any], check: Any) -> str:
     sizes = ", ".join(sorted(n for n in f.input_names if not n.startswith("*")))
     label = ", ".join(f"{k}={v!r}" for k, v in fixed.items())
     return f"{f.signature}   [symbolic {sizes}{'; ' + label if label else ''}]"
+
+
+# -------------------------------------------------------------------- memory
+
+
+@dataclass
+class Memory:
+    """Memory use of a compiled function. ``str()`` gives a readable report."""
+
+    arguments: int
+    outputs: int
+    temporaries: int
+    live_peak: int
+    live_at_peak: list[tuple[int, str, str]]  # (bytes, value, created at)
+    peak_after: str
+
+    @property
+    def total(self) -> int:
+        """XLA's figure: arguments + outputs + temporaries."""
+        return self.arguments + self.outputs + self.temporaries
+
+    def __str__(self) -> str:
+        out = [
+            f"compiled: {_mb(self.total)} = arguments {_mb(self.arguments)} + outputs "
+            f"{_mb(self.outputs)} + temporaries {_mb(self.temporaries)}",
+            f"before optimisation, at most {_mb(self.live_peak)} is alive at once, after "
+            f"{self.peak_after}; the largest values then:",
+        ]
+        for size, desc, where in self.live_at_peak[:6]:
+            out.append(f"    {_mb(size):>9}  {desc:<24} {where}")
+        return "\n".join(out)
+
+    __repr__ = __str__
+
+
+def _aval_bytes(v: Any) -> int:
+    aval = getattr(v, "aval", None)
+    return _nbytes(aval) if aval is not None and hasattr(aval, "dtype") else 0
+
+
+def memory(f: Callable[..., Any], *args: Any, **kwargs: Any) -> Memory:
+    """Estimate how much memory ``jit(f)(*args)`` needs, and what holds it.
+
+    Reports XLA's own numbers for the compiled program, and a simple liveness
+    analysis of the traced program (before XLA's optimisations): the largest
+    amount of data alive at once and which values, created on which source
+    lines, make it up. Pass ``jax.grad(f)`` to see the cost of a backward pass;
+    ``@fn(remat=...)`` reduces it.
+    """
+    g, args, kwargs = _plain(f, args, kwargs)
+    key = jax.random.key(0)
+
+    def run(key: Any, *a: Any, **k: Any) -> Any:
+        with _rng.rng(key):
+            return g(*a, **k)
+
+    traced = jax.jit(run).trace(key, *args, **kwargs)
+    stats = traced.lower().compile().memory_analysis()
+    arg_b = int(getattr(stats, "argument_size_in_bytes", 0) or 0)
+    out_b = int(getattr(stats, "output_size_in_bytes", 0) or 0)
+    tmp_b = int(getattr(stats, "temp_size_in_bytes", 0) or 0)
+
+    jaxpr = traced.jaxpr.jaxpr
+    last_use: dict[Any, int] = {}
+    for i, eqn in enumerate(jaxpr.eqns):
+        for v in eqn.invars:
+            if not hasattr(v, "val"):
+                last_use[v] = i
+    for v in jaxpr.outvars:
+        if not hasattr(v, "val"):
+            last_use[v] = len(jaxpr.eqns)
+    origin: dict[Any, str] = {v: "an input" for v in list(jaxpr.invars) + list(jaxpr.constvars)}
+    live = {v: _aval_bytes(v) for v in origin if v in last_use}
+    peak, peak_set, peak_after = sum(live.values()), dict(live), "the start"
+    for i, eqn in enumerate(jaxpr.eqns):
+        for v in eqn.outvars:
+            if v in last_use:
+                live[v] = _aval_bytes(v)
+                origin[v] = source_of(eqn)
+        total = sum(live.values())
+        if total > peak:
+            peak, peak_set = total, dict(live)
+            peak_after = f"{eqn.primitive.name} at {source_of(eqn)}"
+        for v in eqn.invars:
+            if not hasattr(v, "val") and last_use.get(v) == i:
+                live.pop(v, None)
+    largest = sorted(
+        ((b, str(v.aval), origin.get(v, "?")) for v, b in peak_set.items() if b),
+        key=lambda t: -t[0],
+    )
+    return Memory(arg_b, out_b, tmp_b, peak, largest, peak_after)

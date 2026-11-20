@@ -21,6 +21,9 @@ That signature then does four jobs:
 - **Vectorises**: `attend.lift(...)` maps over any extra leading axes.
 - **Compiles** with `@fn(jit=True)`, with no `static_argnames`.
 
+`@tx.struct` does the same for classes: typed, immutable modules that JAX can
+trace.
+
 Inside `@fn`, plain Python works on traced values: `if`, `for`, `while` (with
 `break` / `continue` / `return`), `x[i] += 1`, `assert`, `print`, `min` / `max`.
 
@@ -80,6 +83,45 @@ def split_heads[T, D, H, K](x: f32[T, D], heads: int) -> f32[H, T, K]:
 
 To pyright and mypy, `f32[B, T]` is `jax.Array`, so annotated code type-checks
 without plugins.
+
+## Modules
+
+```python
+from typing import Callable
+
+@tx.struct
+class Block[D]:
+    w: f32[D, D]
+    b: f32[D]
+    act: Callable = jax.nn.gelu          # plain Python types are static fields
+
+    def __call__[B](self, x: f32[B, D]) -> f32[B, D]:
+        return x + self.act(x @ self.w + self.b)
+
+@tx.struct
+class Stack[D]:
+    blocks: list[Block[D]]
+
+    def __call__[B](self, x: f32[B, D]) -> f32[B, D]:
+        for block in self.blocks:      # identical blocks: one lax.scan, not 24 copies
+            x = block(x)
+        return x
+
+keys = jax.random.split(jax.random.key(0), 24)
+model = Stack([Block(0.1 * jax.random.normal(k, (16, 16)), jnp.zeros(16)) for k in keys])
+y = jax.jit(lambda m, x: m(x))(model, jnp.ones((4, 16)))
+grads = jax.grad(lambda m: m(jnp.ones((4, 16))).sum())(model)   # a Stack too
+```
+
+A struct is a frozen dataclass registered as a pytree. Fields with array
+annotations are traced; fields with plain Python types are static. Every method
+is an `@fn` that checks `self`'s fields and shares the class's sizes, so
+`tx.prove(Block.__call__)` works without an instance. Use `.replace(w=...)` for
+modified copies; `@tx.struct(jit=True)` compiles every method.
+
+A `for` loop over a list of pytrees with identical structure and shapes, such
+as layers, is stacked and lowered to `lax.scan`. Deep models therefore compile
+in the time one layer takes.
 
 ## Checks and proofs
 
@@ -208,6 +250,10 @@ Compile time does not grow with batch size (measured from 1 to 4096) as long as
 loops are staged. `tx.compile_cache(path)` keeps compiled functions on disk
 across runs.
 
+`@fn(remat=True)` recomputes a function's intermediates in the backward pass
+instead of storing them (`remat="dots"` keeps matrix products). Put it on a
+layer: with the layer scan, a 12-layer backward pass went from 57 MB to 22 MB.
+
 ## Random keys
 
 ```python
@@ -247,7 +293,27 @@ NaN first appears at model.py:4 (entropy)
 ```
 
 `find_nan` replays the program one operation at a time, reporting the loop
-iteration or branch too. `tx.debug.summary(f, ...)` counts operations by kind
+iteration or branch too.
+
+```python
+@fn
+def attention[B, T, D](q: f32[B, T, D], k: f32[B, T, D]) -> f32[B, T, T]:
+    scores = q @ k.swapaxes(-1, -2)
+    return jax.nn.softmax(scores, axis=-1)
+
+print(tx.debug.shapes(attention))     # no arguments: symbolic sizes
+```
+
+```
+   ... | def attention[B, T, D](q: f32[B, T, D], k: f32[B, T, D]) -> f32[B, T, T]:
+   ... |     scores = q @ k.swapaxes(-1, -2)            # scores: f32[B, T, T]
+   ... |     return jax.nn.softmax(scores, axis=-1)     # -> f32[B, T, T]
+```
+
+`tx.debug.shapes(f, *args)` does the same on concrete arguments, for any
+function. `tx.debug.memory(jax.grad(loss), params, x)` reports XLA's memory
+numbers for the compiled program and which values, created on which lines,
+make up the peak. `tx.debug.summary(f, ...)` counts operations by kind
 and source line and flags unrolled loops and large constants;
 `tx.debug.timing(f, ...)` splits trace, compile and run time. `f.info()` shows
 everything typax knows about a function, and `tx.show(tree)` prints a pytree as
