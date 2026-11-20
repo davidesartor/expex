@@ -82,6 +82,25 @@ def split_heads[T, D, H, K](x: f32[T, D], heads: Static[int]) -> f32[H, T, K]:
     return x.reshape(t, heads, d // heads).transpose(1, 0, 2)
 ```
 
+Methods work too. If the class is a dataclass or NamedTuple with annotated
+fields, `self` is checked and the class's dimensions are shared with the
+method, which also lets the prover check it without an instance:
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class Linear[I, O]:
+    w: f32[O, I]
+    b: f32[O]
+
+    @fn
+    def __call__[B](self, x: f32[B, I]) -> f32[B, O]:
+        return x @ self.w.T + self.b
+
+assert bn.prove(Linear.__call__).ok
+```
+
 ## Checked calls
 
 ```python
@@ -320,6 +339,9 @@ print(debug.summary(entropy, jnp.ones(4)))   # op counts by kind and source line
                                              # captured constants, stray 64-bit values)
 print(debug.timing(entropy, jnp.ones(4)))    # trace | compile | run, separately
 ```
+
+`bn.compile_cache("~/.cache/myproject")` turns on JAX's on-disk compilation
+cache, so that later runs of the same program skip compilation.
 
 With `@fn(jit=True)`, `Static` parameters become static jit arguments and
 every trace is recorded:

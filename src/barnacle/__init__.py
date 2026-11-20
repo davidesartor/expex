@@ -8,7 +8,7 @@ from . import debug
 from ._check import Report, collect, format_reports, prove
 from ._errors import RetraceWarning, ShapeError, StageError
 from ._flow import Stacked
-from ._fn import BoundFn, Fn, config, fn
+from ._fn import BoundFn, Fn, compile_cache, config, fn
 from ._rng import key, keys, rng, seed
 from ._types import (
     Arr, Bool, Complex, Dim, Etc, Float, Inexact, Int, Key, Num, Static, UInt,
@@ -16,7 +16,7 @@ from ._types import (
 )  # fmt: skip
 
 __all__ = [
-    "fn", "Fn", "BoundFn", "config",
+    "fn", "Fn", "BoundFn", "config", "compile_cache",
     "prove", "collect", "Report", "format_reports",
     "key", "keys", "rng", "seed", "Stacked", "debug",
     "ShapeError", "StageError", "RetraceWarning",

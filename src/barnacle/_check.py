@@ -184,6 +184,16 @@ class _Unchecked(Exception):
 _ABSTRACT = object()
 
 
+class _Template:
+    """An example object to keep, except for its annotated arrays."""
+
+    def __init__(self, obj: Any):
+        self.obj = obj
+
+    def __repr__(self) -> str:
+        return f"<{type(self.obj).__name__} instance>"
+
+
 def _choices(f: Fn[Any, Any], examples: dict[str, Any]) -> dict[str, list[Any]]:
     """For each parameter: ``[_ABSTRACT]`` or the list of concrete values to try."""
     for k in examples:
@@ -229,8 +239,16 @@ def _trace(
     (and nested) annotation checks.
     """
     arguments: dict[str, Any] = dict(fixed)
+    abstract = list(abstract)
     for name in abstract:
         arguments[name] = f.params[name].spec.abstract(ctx, name)
+    for name, v in fixed.items():
+        if isinstance(v, _Template):
+            # a real object whose annotated arrays are replaced by abstract ones
+            arguments[name] = f.params[name].spec.walk(
+                v.obj, name, lambda s, x, p: s.abstract(ctx, p)
+            )
+            abstract.append(name)
 
     leaves: list[Any] = []
 
@@ -367,11 +385,12 @@ def prove(target: Any, examples: dict[str, Any] | None = None) -> Any:
     ``@fn`` defined inside it).
     """
     if isinstance(target, BoundFn):
-        ex = {"self": [target.obj], **(examples or {})}
-        first = next(iter(target.fn.params), None)
-        if first and first != "self":
-            ex[first] = ex.pop("self")
-        return _prove_fn(target.fn, ex)
+        f = target.fn
+        if f._owner is not None:
+            f._resolve_owner()
+        first = next(iter(f.params))
+        obj = _Template(target.obj) if f.params[first].spec.leafy else target.obj
+        return _prove_fn(f, {first: [obj], **(examples or {})})
     if isinstance(target, Fn):
         return _prove_fn(target, examples)
     return [_prove_fn(f, None) for f in collect(target)]
@@ -410,6 +429,8 @@ def _lineno(f: Fn[Any, Any]) -> int:
 
 
 def _prove_fn(f: Fn[Any, Any], examples: dict[str, Any] | None) -> Report:
+    if f._owner is not None:
+        f._resolve_owner()
     ex = {**f.examples, **(examples or {})}
     try:
         choices = _choices(f, ex)

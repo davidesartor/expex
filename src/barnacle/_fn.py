@@ -31,6 +31,7 @@ from ._spec import (
     describe,
     is_symbolic,
     parse,
+    parse_owner,
     resolve,
 )
 
@@ -60,6 +61,20 @@ class Config:
 
 
 config = Config()
+
+
+def compile_cache(path: str = "~/.cache/barnacle", min_compile_seconds: float = 1.0) -> str:
+    """Keep compiled functions on disk, so later runs of a program skip compilation.
+
+    Turns on JAX's persistent compilation cache in ``path``. Only functions that
+    took at least ``min_compile_seconds`` to compile are stored. Returns the
+    directory used.
+    """
+    path = os.path.abspath(os.path.expanduser(path))
+    os.makedirs(path, exist_ok=True)
+    jax.config.update("jax_compilation_cache_dir", path)
+    jax.config.update("jax_persistent_cache_min_compile_time_secs", float(min_compile_seconds))
+    return path
 
 #: Every live ``Fn``; used by the prover to find functions to check.
 REGISTRY: "weakref.WeakSet[Fn[Any, Any]]" = weakref.WeakSet()
@@ -176,10 +191,31 @@ class Fn(Generic[P, R]):
                     f"in the signature."
                 )
 
+        self._owner: type | None = None  # set by __set_name__ when defined in a class
+        self.static_names = [n for n, p in self.params.items() if isinstance(p.spec, StaticSpec)]
+        self._declared = declared
+        self._index()
+
+        #: One entry per trace of the jitted function (``jit=True`` only).
+        self.traces: list[dict[str, str]] = []
+        self._jitted: Callable[..., Any] | None = None
+        if jit:
+
+            @functools.wraps(raw)
+            def traced(*args: Any, __bn_key__: Any = None, **kwargs: Any) -> Any:
+                self._record_trace(args, kwargs)
+                return self._run(args, kwargs, key=__bn_key__)
+
+            self._jitted = jax.jit(traced, static_argnames=tuple(self.static_names) or None)
+
+        REGISTRY.add(self)
+
+    def _index(self) -> None:
+        """Derive lookup tables from ``self.params`` (re-run if a spec changes)."""
+        declared = self._declared
         self.input_names: set[str] = set()
         for prm in self.params.values():
             prm.spec.names(self.input_names)
-        self.static_names = [n for n, p in self.params.items() if isinstance(p.spec, StaticSpec)]
         # Static int parameters may be used by name in derived sizes and constraints,
         # e.g. @fn(H="heads", where="D % heads == 0").
         used: set[str] = set()
@@ -187,7 +223,9 @@ class Fn(Generic[P, R]):
             used |= expr.names
         self.static_refs = [n for n in self.static_names if n in used]
         unknown = used - declared - set(self.static_names)
-        if unknown:
+        first = next(iter(self.params), None)
+        maybe_method = self._owner is None and first in ("self", "cls")
+        if unknown and not (maybe_method and not getattr(self, "_resolved", False)):
             raise TypeError(
                 f"{self.name}: {', '.join(sorted(unknown))} used in a derived size or `where` "
                 f"constraint is neither a dimension in the signature nor a Static parameter."
@@ -204,19 +242,26 @@ class Fn(Generic[P, R]):
             if p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
         }
 
-        #: One entry per trace of the jitted function (``jit=True`` only).
-        self.traces: list[dict[str, str]] = []
-        self._jitted: Callable[..., Any] | None = None
-        if jit:
+    def __set_name__(self, owner: type, name: str) -> None:
+        self._owner = owner
 
-            @functools.wraps(raw)
-            def traced(*args: Any, __bn_key__: Any = None, **kwargs: Any) -> Any:
-                self._record_trace(args, kwargs)
-                return self._run(args, kwargs, key=__bn_key__)
+    def _resolve_owner(self) -> None:
+        """For a method: check ``self``'s annotated fields, binding the class's dims.
 
-            self._jitted = jax.jit(traced, static_argnames=tuple(self.static_names) or None)
-
-        REGISTRY.add(self)
+        Done lazily because the class is not finished (not yet a dataclass)
+        when its methods are decorated.
+        """
+        owner, self._owner = self._owner, None
+        if owner is None or not self.params:
+            return
+        first = next(iter(self.params.values()))
+        if isinstance(first.spec, OpaqueSpec) and first.spec.ann is inspect.Parameter.empty:
+            spec = parse_owner(owner)
+            if spec.leafy:
+                first.spec = spec
+                spec.names(self._declared)
+        self._resolved = True
+        self._index()
 
     # ------------------------------------------------------------------ call
 
@@ -263,6 +308,8 @@ class Fn(Generic[P, R]):
         __tracebackhide__ = True
         if not force and not (self.checked and config.checked):
             return self._impl(*args, **kwargs)
+        if self._owner is not None:
+            self._resolve_owner()
         if env is None:
             env = Env()
         try:
@@ -508,6 +555,8 @@ class Fn(Generic[P, R]):
         self, arguments: Any, what: str
     ) -> tuple[list[tuple[Spec, Any, str]], list[tuple[Any, ...]], tuple[Any, ...]]:
         """Split each array argument's shape into batch axes + declared axes."""
+        if self._owner is not None:
+            self._resolve_owner()
         leaves: list[tuple[Spec, Any, str]] = []
 
         def collect(spec: Spec, v: Any, path: str) -> Any:

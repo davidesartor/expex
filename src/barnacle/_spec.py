@@ -830,6 +830,29 @@ def _class_annotations(cls: type) -> dict[str, Any]:
     return out
 
 
+def parse_owner(cls: type) -> Spec:
+    """Spec for ``self`` inside a method of ``cls``.
+
+    The class's own type parameters keep their plain names, so that a method
+    can use them: ``class Linear[I, O]`` with ``def __call__(self, x: f32[I])``.
+    """
+    names = _struct_fields(cls)
+    if names is None:
+        return OpaqueSpec()
+    params = getattr(cls, "__type_params__", ()) or getattr(cls, "__parameters__", ())
+    inner = {p: DName(p.__name__) for p in params if isinstance(p, typing.TypeVar)}
+    anns = _class_annotations(cls)
+    fields: dict[str, Spec] = {}
+    for n in names:
+        try:
+            fields[n] = parse(anns.get(n, inspect.Parameter.empty), inner, (cls,))
+        except TypeError:
+            fields[n] = OpaqueSpec(anns.get(n))
+    if any(s.leafy for s in fields.values()):
+        return StructSpec(cls, fields, cls.__name__)
+    return OpaqueSpec()
+
+
 def parse(ann: Any, subst: dict[Any, Any] | None = None, _stack: tuple[type, ...] = ()) -> Spec:
     """Turn an annotation into a :class:`Spec`."""
     subst = subst or {}
