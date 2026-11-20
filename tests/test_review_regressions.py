@@ -384,3 +384,20 @@ def test_jit_only_crashes():
 
     a, b = jax.jit(pair)(jnp.float32(-1.0))
     assert a == -1.0 and b == 2.5
+
+
+def test_nested_function_parameters_do_not_block_conversion():
+    # `v` is a parameter of the nested function, not a captured variable
+    @fn(checked=False)
+    def f(xs):
+        def double(v):
+            return v * 2
+
+        out = []
+        for v in xs:
+            out.append(double(v) + (lambda t: t + 1)(v))
+        return jnp.asarray(out)
+
+    x = jnp.arange(4.0)
+    assert jnp.allclose(jax.jit(f)(x), 3 * x + 1)
+    assert "vmap" in "".join(f.flow.values())

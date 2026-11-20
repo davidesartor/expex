@@ -834,19 +834,28 @@ def _struct_fields(cls: type) -> list[str] | None:
 
 
 def _class_annotations(cls: type) -> dict[str, Any]:
+    """Field annotations of a class and its bases, with strings evaluated."""
+    import sys
+
     out: dict[str, Any] = {}
     for c in reversed(cls.__mro__):
         if c is object:
             continue
         try:
-            out.update(inspect.get_annotations(c, eval_str=True))
+            anns = dict(inspect.get_annotations(c))
         except Exception:
-            try:
-                out.update(
-                    {k: v for k, v in inspect.get_annotations(c).items() if not isinstance(v, str)}
-                )
-            except Exception:
-                pass
+            continue
+        glb = getattr(sys.modules.get(c.__module__), "__dict__", {})
+        scope = {p.__name__: p for p in getattr(c, "__type_params__", ())}
+        scope[c.__name__] = c
+        for k, v in anns.items():
+            text = v if isinstance(v, str) else getattr(v, "__forward_arg__", None)
+            if isinstance(text, str):  # a string, or the ForwardRef NamedTuple makes of one
+                try:
+                    v = eval(text, glb, scope)  # noqa: S307 - as typing.get_type_hints
+                except Exception:
+                    continue
+            out[k] = v
     return out
 
 

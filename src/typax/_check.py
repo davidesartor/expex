@@ -386,7 +386,7 @@ def prove(target: Any, examples: dict[str, Any] | None = None) -> Any:
     """
     if isinstance(target, BoundFn):
         f = target.fn
-        if f._owner is not None:
+        if f._lazy:
             f._resolve_owner()
         first = next(iter(f.params))
         obj = _Template(target.obj) if f.params[first].spec.leafy else target.obj
@@ -429,7 +429,7 @@ def _lineno(f: Fn[Any, Any]) -> int:
 
 
 def _prove_fn(f: Fn[Any, Any], examples: dict[str, Any] | None) -> Report:
-    if f._owner is not None:
+    if f._lazy:
         f._resolve_owner()
     ex = {**f.examples, **(examples or {})}
     try:

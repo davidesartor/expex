@@ -136,6 +136,44 @@ def _returns_via_ifs(stmts: list[ast.stmt]) -> bool:
     )
 
 
+def _free_names(scope: ast.AST) -> set[str]:
+    """Names a nested function / lambda / generator takes from the enclosing scope."""
+    bound: set[str] = set()
+    used: set[str] = set()
+    declared: set[str] = set()
+    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        a = scope.args
+        for arg in a.posonlyargs + a.args + a.kwonlyargs + [x for x in (a.vararg, a.kwarg) if x]:
+            bound.add(arg.arg)
+        # defaults and decorators are evaluated outside, so they count as uses
+        outer = list(a.defaults) + [d for d in a.kw_defaults if d is not None]
+        outer += list(getattr(scope, "decorator_list", []))
+        for default in outer:
+            node: ast.AST = default
+            used |= {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+        body: list[ast.AST] = list(scope.body) if isinstance(scope.body, list) else [scope.body]
+    elif isinstance(scope, ast.ClassDef):
+        return {n.id for n in ast.walk(scope) if isinstance(n, ast.Name)}
+    else:  # generator expression: targets are its own
+        body = [scope]
+        for gen in scope.generators:  # type: ignore[attr-defined]
+            bound |= set(_target_names(gen.target) or ())
+    for node in body:
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Name):
+                if isinstance(sub.ctx, ast.Store):
+                    bound.add(sub.id)
+                used.add(sub.id)
+            elif isinstance(sub, (ast.Nonlocal, ast.Global)):
+                declared |= set(sub.names)
+            elif isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                bound.add(sub.name)
+            elif isinstance(sub, ast.arg):
+                # parameters of functions nested deeper: bound there, not free here
+                bound.add(sub.arg)
+    return (used - bound) | declared
+
+
 def _index_expr(node: ast.expr) -> ast.expr:
     """A subscript's index as an ordinary expression (``1:3`` -> ``slice(1, 3)``)."""
     if isinstance(node, ast.Slice):
@@ -473,11 +511,7 @@ class _Converter:
         self.captured: set[str] = set()
         for m in ast.walk(fdef):
             if m is not fdef and isinstance(m, _SCOPES[:3] + (ast.GeneratorExp,)):
-                for sub in ast.walk(m):
-                    if isinstance(sub, ast.Name):
-                        self.captured.add(sub.id)
-                    elif isinstance(sub, ast.Nonlocal):
-                        self.captured |= set(sub.names)
+                self.captured |= _free_names(m)
         #: names whose values may be traced: locals and enclosing-function variables
         self.readable = (self.locals | self.freevars) - declared
         self.builtins_ok = {

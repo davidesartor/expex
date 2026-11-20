@@ -115,6 +115,24 @@ class Param:
         self.default = default
 
 
+def _raw_annotations(raw: Callable[..., Any]) -> dict[str, Any]:
+    try:
+        return inspect.get_annotations(raw)
+    except Exception:
+        return {}
+
+
+def _enclosing_class(raw: Callable[..., Any]) -> type | None:
+    """The class a function was defined in, found through its qualified name."""
+    parts = getattr(raw, "__qualname__", "").split(".")[:-1]
+    if not parts or "<locals>" in parts:
+        return None
+    obj: Any = getattr(raw, "__globals__", {}).get(parts[0])
+    for name in parts[1:]:
+        obj = getattr(obj, name, None)
+    return obj if isinstance(obj, type) else None
+
+
 def _annotations(raw: Callable[..., Any]) -> dict[str, Any]:
     try:
         return inspect.get_annotations(raw, eval_str=True)
@@ -151,6 +169,7 @@ class Fn(Generic[P, R]):
         prove: bool = True,
         convert: bool = True,
         random: bool = False,
+        lift: bool = False,
         examples: dict[str, Any] | None = None,
         where: str | list[str] | tuple[str, ...] = (),
         defs: dict[str, str] | None = None,
@@ -158,6 +177,8 @@ class Fn(Generic[P, R]):
         functools.update_wrapper(self, raw)
         self.raw = raw
         self.random = random
+        #: With ``lift=True``, a plain call maps over extra leading axes by itself.
+        self.auto_lift = lift
         #: The function that actually runs: ``raw`` with its control flow converted.
         self._impl: Callable[..., Any] = raw
         #: Why the control flow was not converted ("" if it was).
@@ -190,6 +211,14 @@ class Fn(Generic[P, R]):
             return d
 
         anns = _annotations(raw)
+        # Annotations that could not be evaluated yet (a forward reference to the
+        # class being defined, say) are retried at the first call.
+        self._pending = {
+            k for k, v in _raw_annotations(raw).items()
+            if isinstance(v, str) and anns.get(k, inspect.Parameter.empty) is inspect.Parameter.empty
+        }  # fmt: skip
+        self._lazy = bool(self._pending)
+        self._derive = derive
         self.params: dict[str, Param] = {}
         for name, p in self._sig.parameters.items():
             try:
@@ -211,7 +240,7 @@ class Fn(Generic[P, R]):
             parse(anns.get(name, inspect.Parameter.empty)).names(declared)
         parse(anns.get("return", inspect.Parameter.empty)).names(declared)
         for k in self.defs:
-            if k not in declared:
+            if k not in declared and not self._pending:
                 raise TypeError(
                     f"{self.name}: `{k}=...` was given to @fn, but `{k}` does not appear "
                     f"in the signature."
@@ -272,6 +301,7 @@ class Fn(Generic[P, R]):
 
     def __set_name__(self, owner: type, name: str) -> None:
         self._owner = owner
+        self._lazy = True
 
     def _resolve_owner(self) -> None:
         """For a method: check ``self``'s annotated fields, binding the class's dims.
@@ -280,10 +310,38 @@ class Fn(Generic[P, R]):
         when its methods are decorated.
         """
         owner, self._owner = self._owner, None
-        if owner is None or not self.params:
-            return
-        first = next(iter(self.params.values()))
-        if isinstance(first.spec, OpaqueSpec) and first.spec.ann is inspect.Parameter.empty:
+        self._lazy = False
+        if owner is None:
+            owner = _enclosing_class(self.raw)
+        if self._pending:
+            scope = {p.__name__: p for p in getattr(self.raw, "__type_params__", ())}
+            if owner is not None:
+                scope.update({p.__name__: p for p in getattr(owner, "__type_params__", ())})
+                scope[owner.__name__] = owner
+            glb = getattr(self.raw, "__globals__", {})
+            for k, text in _raw_annotations(self.raw).items():
+                if k not in self._pending:
+                    continue
+                try:
+                    spec = parse(eval(text, glb, scope))  # noqa: S307 - as typing.get_type_hints
+                except Exception:
+                    continue
+                spec.names(self._declared)
+                if self.defs:
+                    spec = spec.replace_dims(self._derive)
+                if k == "return":
+                    self.ret = spec
+                elif k in self.params:
+                    self.params[k].spec = spec
+            self._pending = set()
+        first = next(iter(self.params.values()), None)
+        if (
+            owner is not None
+            and first is not None
+            and first.name == "self"
+            and isinstance(first.spec, OpaqueSpec)
+            and first.spec.ann is inspect.Parameter.empty
+        ):
             spec = parse_owner(owner)
             if spec.leafy:
                 first.spec = spec
@@ -294,6 +352,12 @@ class Fn(Generic[P, R]):
     # ------------------------------------------------------------------ call
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
+        __tracebackhide__ = True
+        if self.auto_lift:
+            return self.lift(*args, **kwargs)
+        return self._direct(args, kwargs)
+
+    def _direct(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
         __tracebackhide__ = True
         if self._jitted is not None:
             # The key is drawn out here and passed in as a real argument, so the
@@ -311,7 +375,7 @@ class Fn(Generic[P, R]):
         """
         __tracebackhide__ = True
         assert self._jitted is not None
-        if self._owner is not None:
+        if self._lazy:
             self._resolve_owner()
         try:
             bound = self._sig.bind(*args, **kwargs)
@@ -351,7 +415,7 @@ class Fn(Generic[P, R]):
         if not force and not (self.checked and config.checked):
             out = self._impl(*args, **kwargs)
             return _flow.unstack(out) if self.converted else out
-        if self._owner is not None:
+        if self._lazy:
             self._resolve_owner()
         if env is None:
             env = Env()
@@ -432,6 +496,8 @@ class Fn(Generic[P, R]):
     @property
     def signature(self) -> str:
         """The signature as typax understands it."""
+        if self._lazy:
+            self._resolve_owner()
         tps = getattr(self.raw, "__type_params__", ())
         head = getattr(self.raw, "__name__", self.name)
         if tps:
@@ -623,10 +689,18 @@ class Fn(Generic[P, R]):
         do not share randomness.
         """
         __tracebackhide__ = True
-        ba = self._sig.bind(*args, **kwargs)
-        leaves, batches, bshape = self._batch_plan(ba.arguments, "lift")
+        try:
+            ba = self._sig.bind(*args, **kwargs)
+        except TypeError:
+            return self._direct(args, kwargs)  # let Python raise its own error
+        try:
+            leaves, batches, bshape = self._batch_plan(ba.arguments, "lift")
+        except TypeError:
+            if not self.auto_lift:
+                raise
+            return self._direct(args, kwargs)  # variadic shapes: nothing to infer
         if not bshape:
-            return self(*args, **kwargs)
+            return self._direct(args, kwargs)
 
         n = len(bshape)
         prepared: list[Any] = []
@@ -671,7 +745,7 @@ class Fn(Generic[P, R]):
         self, arguments: Any, what: str
     ) -> tuple[list[tuple[Spec, Any, str]], list[tuple[Any, ...]], tuple[Any, ...]]:
         """Split each array argument's shape into batch axes + declared axes."""
-        if self._owner is not None:
+        if self._lazy:
             self._resolve_owner()
         leaves: list[tuple[Spec, Any, str]] = []
 
@@ -1085,6 +1159,7 @@ def fn(
     prove: bool = True,
     convert: bool = True,
     random: bool = False,
+    lift: bool = False,
     examples: dict[str, Any] | None = None,
     where: str | list[str] | tuple[str, ...] = (),
     **dims: str,
@@ -1098,6 +1173,7 @@ def fn(
     prove: bool = True,
     convert: bool = True,
     random: bool = False,
+    lift: bool = False,
     examples: dict[str, Any] | None = None,
     where: str | list[str] | tuple[str, ...] = (),
     **dims: str,
@@ -1125,6 +1201,9 @@ def fn(
     ``random``
         Give the function an implicit PRNG key: ``typax.key()`` inside it
         returns a fresh key on every call.
+    ``lift``
+        Map over extra leading axes on a plain call, as ``f.lift(...)`` does. For
+        functions written for one element that should also accept batches.
     ``examples``
         Values the prover should use for ``Static`` or unannotated parameters,
         as ``{"name": [value, ...]}``.
@@ -1140,7 +1219,7 @@ def fn(
             raw = raw.raw
         return Fn(
             raw, jit=jit, checked=checked, prove=prove, convert=convert, random=random,
-            examples=examples, where=where, defs=dims,
+            lift=lift, examples=examples, where=where, defs=dims,
         )  # fmt: skip
 
     if f is not None:

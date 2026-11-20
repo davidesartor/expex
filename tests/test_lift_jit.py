@@ -230,3 +230,54 @@ def test_rows_chunk_runs_like_lax_map():
     assert "lax.map in chunks of 1" in "".join(f.flow.values())
     assert jnp.allclose(jax.jit(lambda v: f(v, 3))(xs), ref, atol=1e-6)
     assert "lax.map in chunks of 3" in "".join(f.flow.values())
+
+
+def test_lift_option_and_forward_references():
+    from typing import NamedTuple
+
+    @fn(lift=True)
+    def safe_sqrt(x: f32) -> f32:
+        if x > 0:
+            return jnp.sqrt(x)
+        return 0.0
+
+    assert safe_sqrt(4.0) == 2.0
+    assert safe_sqrt(jnp.array([[4.0, -1.0], [0.0, 9.0]])).tolist() == [[2.0, 0.0], [0.0, 3.0]]
+    g = jax.grad(lambda v: safe_sqrt(v).sum())(jnp.array([4.0, 0.0, -1.0]))
+    assert g.tolist() == [0.25, 0.0, 0.0]
+
+    @fn(lift=True)
+    def dot[D](a: f32[D], b: f32[D]) -> f32:
+        return a @ b
+
+    assert dot(jnp.ones((5, 1, 3)), jnp.ones((4, 3))).shape == (5, 4)
+    assert tx.prove(dot).status == "proved"
+
+
+class Poly[*B, K](__import__("typing").NamedTuple):
+    c: "f32[*B, K]"
+
+    @fn(M="m")
+    def pad_to[M](self, m: Static[int]) -> "Poly[*B, M]":
+        extra = jnp.zeros(self.c.shape[:-1] + (m - self.c.shape[-1],))
+        return Poly(jnp.concatenate([self.c, extra], -1))
+
+    @staticmethod
+    @fn
+    def zeros[N](like: f32[N]) -> "Poly[N]":
+        return Poly(jnp.zeros_like(like))
+
+    @fn
+    def bad(self) -> "Poly[*B, K]":
+        return Poly(self.c[..., 1:])
+
+
+def test_methods_can_name_their_own_class():
+    p = Poly(jnp.ones((2, 3)))
+    assert p.pad_to(5).c.shape == (2, 5)
+    assert "-> Poly[*B, M]" in repr(Poly.pad_to)
+    assert str(Poly.pad_to.ret.fields["c"]) == "f32[*B, m]"  # M is tied to the argument
+    assert Poly.zeros(jnp.ones(4)).c.shape == (4,)
+    with pytest.raises(ShapeError, match=r"declared  return.c: f32\[\*B, K\]"):
+        p.bad()
+    assert tx.prove(Poly.zeros).status == "proved"
