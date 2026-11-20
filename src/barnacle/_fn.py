@@ -10,6 +10,8 @@ import warnings
 import weakref
 from typing import TYPE_CHECKING, Any, Callable, Concatenate, Generic, ParamSpec, TypeVar, overload
 
+import numpy as np
+
 import jax
 import jax.numpy as jnp
 
@@ -178,6 +180,20 @@ class Fn(Generic[P, R]):
         for prm in self.params.values():
             prm.spec.names(self.input_names)
         self.static_names = [n for n, p in self.params.items() if isinstance(p.spec, StaticSpec)]
+        # Static int parameters may be used by name in derived sizes and constraints,
+        # e.g. @fn(H="heads", where="D % heads == 0").
+        used: set[str] = set()
+        for expr in [*self.defs.values(), *self.where]:
+            used |= expr.names
+        self.static_refs = [n for n in self.static_names if n in used]
+        unknown = used - declared - set(self.static_names)
+        if unknown:
+            raise TypeError(
+                f"{self.name}: {', '.join(sorted(unknown))} used in a derived size or `where` "
+                f"constraint is neither a dimension in the signature nor a Static parameter."
+            )
+        self.input_names -= set(self.static_refs)
+        self._avail = self.input_names | set(self.static_refs)
         self._check_inputs = [
             (n, p.spec) for n, p in self.params.items() if p.spec.leafy
         ]
@@ -253,6 +269,11 @@ class Fn(Generic[P, R]):
             bound = self._sig.bind(*args, **kwargs).arguments
         except TypeError:
             return self._impl(*args, **kwargs)  # let Python raise its own error
+        for name in self.static_refs:
+            v = bound[name] if name in bound else self.params[name].default
+            if isinstance(v, (int, np.integer)) and not isinstance(v, bool):
+                env.dims[name] = int(v)
+                env.origin[name] = f"the argument `{name}`"
         try:
             for name, spec in self._check_inputs:
                 if name in bound:
@@ -292,7 +313,7 @@ class Fn(Generic[P, R]):
         for w in self.where:
             if not w.names <= env.dims.keys():
                 continue
-            if final == (w.names <= self.input_names):
+            if final == (w.names <= self._avail):
                 continue  # input-only constraints are checked before the call
             try:
                 ok = bool(w(env.dims))
@@ -775,7 +796,8 @@ def fn(
     ``where``
         Constraints on dimensions, e.g. ``where="T >= 2"``.
     ``**dims``
-        Derived dimensions, e.g. ``U="T + 1"``.
+        Derived dimensions, e.g. ``U="T + 1"``. Expressions (here and in ``where``)
+        may also use ``Static`` int parameters by name: ``H="heads"``.
     """
 
     def wrap(raw: Callable[..., Any]) -> Fn[Any, Any]:

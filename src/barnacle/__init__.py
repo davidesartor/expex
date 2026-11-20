@@ -4,6 +4,7 @@ Annotate with ``f32[B, T]`` and decorate with ``@fn``; the annotations are then
 checked on every call, provable for all sizes, and usable for vectorising.
 """
 
+from . import debug
 from ._check import Report, collect, format_reports, prove
 from ._errors import RetraceWarning, ShapeError, StageError
 from ._flow import Stacked
@@ -17,7 +18,7 @@ from ._types import (
 __all__ = [
     "fn", "Fn", "BoundFn", "config",
     "prove", "collect", "Report", "format_reports",
-    "key", "keys", "rng", "seed", "Stacked",
+    "key", "keys", "rng", "seed", "Stacked", "debug",
     "ShapeError", "StageError", "RetraceWarning",
     "Dim", "Etc", "Static", "Key",
     "Arr", "Bool", "Int", "UInt", "Float", "Complex", "Inexact", "Num",

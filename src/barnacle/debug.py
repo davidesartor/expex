@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import inspect
 import linecache
 import statistics
 import time
@@ -38,25 +39,46 @@ from ._spec import describe
 __all__ = ["find_nan", "summary", "timing", "NanReport", "Summary", "Timing"]
 
 
-def _plain(f: Callable[..., Any]) -> Callable[..., Any]:
-    """The un-jitted callable behind ``f`` (so that its operations are visible)."""
+def _plain(
+    f: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]
+) -> tuple[Callable[..., Any], tuple[Any, ...], dict[str, Any]]:
+    """The un-jitted callable behind ``f`` and the arguments to trace it with.
+
+    ``Static`` arguments of an ``@fn`` are closed over, so that tracing the
+    result does not turn them into traced values.
+    """
     if isinstance(f, BoundFn):
-        fn, obj = f.fn, f.obj
-        return lambda *a, **k: fn._run((obj, *a), k)
-    if isinstance(f, Fn):
-        return lambda *a, **k: f._run(a, k)
-    return f
+        fn, args = f.fn, (f.obj, *args)
+    elif isinstance(f, Fn):
+        fn = f
+    else:
+        return f, args, kwargs
+    try:
+        bound = fn._sig.bind(*args, **kwargs)
+    except TypeError:
+        return (lambda *a, **k: fn._run(a, k)), args, kwargs
+    static = {n: bound.arguments[n] for n in fn.static_names if n in bound.arguments}
+    if isinstance(f, BoundFn):
+        static[next(iter(fn.params))] = f.obj
+    dyn = {n: v for n, v in bound.arguments.items() if n not in static}
+
+    def run(dyn_args: dict[str, Any]) -> Any:
+        ba = inspect.BoundArguments(fn._sig, {n: (static[n] if n in static else dyn_args[n]) for n in bound.arguments})  # type: ignore[arg-type]
+        return fn._run(ba.args, ba.kwargs)
+
+    return run, (dyn,), {}
 
 
-def _trace(f: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-    g = _plain(f)
+def _trace(f: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[Any, list[Any]]:
+    """Trace ``f``; return the closed jaxpr and the flat list of traced inputs."""
+    g, args, kwargs = _plain(f, args, kwargs)
     key = _rng.current().next() if _rng.current() else jax.random.key(0)  # type: ignore[union-attr]
 
     def run(*a: Any, **k: Any) -> Any:
         with _rng.rng(key):
             return g(*a, **k)
 
-    return jax.make_jaxpr(run)(*args, **kwargs)
+    return jax.make_jaxpr(run)(*args, **kwargs), jax.tree.leaves((args, kwargs))
 
 
 # ------------------------------------------------------------------ find_nan
@@ -291,8 +313,7 @@ def find_nan(f: Callable[..., Any], *args: Any, **kwargs: Any) -> NanReport | No
     Returns ``None`` if the function's computation never produces a NaN for
     these arguments. Works on any JAX function, including ``jax.grad(f)``.
     """
-    closed = _trace(f, args, kwargs)
-    flat, _ = jax.tree.flatten((args, kwargs))
+    closed, flat = _trace(f, args, kwargs)
     bad = [f"argument leaf #{i}: {_stats(x)}" for i, x in enumerate(flat) if _has_nan([x])]
     if bad:
         return NanReport("input", "", "", "", [], bad, [])
@@ -347,7 +368,7 @@ class Summary:
 
 def summary(f: Callable[..., Any], *args: Any, **kwargs: Any) -> Summary:
     """Describe the program JAX traces for ``f(*args, **kwargs)``."""
-    closed = _trace(f, args, kwargs)
+    closed, _ = _trace(f, args, kwargs)
     top = closed.jaxpr.eqns
     by_op: Counter[str] = Counter()
     by_line: Counter[tuple[str, int, str]] = Counter()
@@ -441,7 +462,7 @@ class Timing:
 
 def timing(f: Callable[..., Any], *args: Any, repeat: int = 5, **kwargs: Any) -> Timing:
     """Time tracing, compilation and execution of ``jit(f)(*args, **kwargs)`` separately."""
-    g = _plain(f)
+    g, args, kwargs = _plain(f, args, kwargs)
     key = jax.random.key(0)
 
     def run(key: Any, *a: Any, **k: Any) -> Any:

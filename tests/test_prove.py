@@ -7,6 +7,7 @@ import pytest
 import jax
 import jax.numpy as jnp
 
+import barnacle as bn
 from barnacle import Dim, Etc, Key, Static, f32, f64, fn, format_reports, i32, prove
 
 
@@ -325,3 +326,38 @@ def test_format_reports():
     text = format_reports([prove(good), prove(bad)])
     assert "ok  " in text and "FAIL" in text
     assert "2 functions: 1 proved, 1 failed" in text
+
+
+def test_sizes_can_refer_to_static_arguments():
+    @fn(H="heads", K="D // heads", where="D % heads == 0", examples={"heads": [1, 2, 4]})
+    def split[T, D, H, K](x: f32[T, D], heads: Static[int]) -> f32[H, T, K]:
+        t, d = x.shape
+        return x.reshape(t, heads, d // heads).transpose(1, 0, 2)
+
+    assert split(jnp.ones((5, 8)), 4).shape == (4, 5, 2)
+    with pytest.raises(bn.ShapeError, match=r"constraint `D % heads == 0` is violated \(D=8, heads=3\)"):
+        split(jnp.ones((5, 8)), 3)
+    r = prove(split)
+    assert r.status == "proved" and r.cases == 3, r
+
+    @fn(N="n", examples={"n": [3]})
+    def wrong[T, N](x: f32[T], n: Static[int]) -> f32[N, T]:
+        return jnp.stack([x] * (n + 1))
+
+    with pytest.raises(bn.ShapeError, match=r"axis 0 should be n = 3 \(with n=3\), but is 4"):
+        wrong(jnp.ones(2), 3)
+    assert status(wrong) == "failed"
+
+    @fn(N="n")
+    def default[T, N](x: f32[T], n: Static[int] = 2) -> f32[N, T]:
+        return jnp.stack([x] * n)
+
+    assert default(jnp.ones(3)).shape == (2, 3)
+    assert status(default) == "proved"
+
+
+def test_unknown_name_in_expression_is_rejected():
+    with pytest.raises(TypeError, match="Q used in a derived size"):
+
+        @fn(U="Q + 1")
+        def f[T, U](x: f32[T]) -> f32[U]: ...

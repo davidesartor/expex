@@ -135,3 +135,26 @@ def test_timing():
         return x + jax.random.normal(bn.key(), x.shape)
 
     assert debug.timing(r, jnp.ones(8), repeat=1).ops >= 1
+
+
+def test_debug_tools_keep_static_arguments_static():
+    from barnacle import Static
+
+    @fn
+    def rep[T](x: f32[T], n: Static[int], mode: Static[str] = "log") -> f32:
+        for _ in range(n):  # a Python loop over a Static count
+            x = jnp.log(x) if mode == "log" else x
+        return x.sum()
+
+    assert debug.summary(rep, jnp.ones(3), 2).ops >= 2
+    assert debug.timing(rep, jnp.ones(3), n=2, repeat=1).ops >= 2
+    r = debug.find_nan(rep, jnp.full(3, 0.5), 2)
+    assert r is not None and r.op == "log"
+
+    class M:
+        @fn
+        def call[T](self, x: f32[T], n: Static[int]) -> f32[T]:
+            return jnp.sqrt(x - n)
+
+    assert debug.find_nan(M().call, jnp.ones(3), 5) is not None
+    assert debug.find_nan(M().call, jnp.ones(3), 0) is None

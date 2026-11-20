@@ -122,13 +122,13 @@ _JAX_OPS = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*"}
 _JAX_FUNCS = {ast.FloorDiv: "floordiv", ast.Mod: "mod"}
 
 
-def _to_jax(node: ast.AST) -> str:
+def _to_jax(node: ast.AST, consts: Mapping[str, int]) -> str:
     if isinstance(node, ast.Constant):
         return str(node.value)
     if isinstance(node, ast.Name):
-        return node.id
+        return str(consts[node.id]) if node.id in consts else node.id
     if isinstance(node, ast.BinOp):
-        l, r = _to_jax(node.left), _to_jax(node.right)
+        l, r = _to_jax(node.left, consts), _to_jax(node.right, consts)
         if type(node.op) in _JAX_OPS:
             return f"({l} {_JAX_OPS[type(node.op)]} {r})"
         if type(node.op) in _JAX_FUNCS:
@@ -137,20 +137,25 @@ def _to_jax(node: ast.AST) -> str:
             return f"{l}^{node.right.value!r}"
         raise ValueError
     if isinstance(node, ast.UnaryOp):
-        v = _to_jax(node.operand)
+        v = _to_jax(node.operand, consts)
         return f"(0 - {v})" if isinstance(node.op, ast.USub) else v
     if isinstance(node, ast.Call):
-        return f"{node.func.id}({', '.join(map(_to_jax, node.args))})"  # type: ignore[attr-defined]
+        args = ", ".join(_to_jax(a, consts) for a in node.args)
+        return f"{node.func.id}({args})"  # type: ignore[attr-defined]
     raise ValueError
 
 
-def to_jax_constraint(expr: Expr) -> str | None:
-    """Translate a constraint to ``jax.export`` syntax, or None if not expressible."""
+def to_jax_constraint(expr: Expr, consts: Mapping[str, int] | None = None) -> str | None:
+    """Translate a constraint to ``jax.export`` syntax, or None if not expressible.
+
+    ``consts`` are names to replace by known integer values.
+    """
+    consts = consts or {}
     tree = expr._tree
     if not isinstance(tree, ast.Compare):
         return None
     try:
-        l, r = _to_jax(tree.left), _to_jax(tree.comparators[0])
+        l, r = _to_jax(tree.left, consts), _to_jax(tree.comparators[0], consts)
     except ValueError:
         return None
     op = type(tree.ops[0])

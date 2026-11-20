@@ -30,7 +30,8 @@ pyright and mypy accept them without plugins.
 
 ```
 pip install -e .          # from a checkout
-python examples/tour.py   # see everything run
+python examples/tour.py                        # see everything run
+python -m barnacle examples/transformer.py     # prove a small transformer's shapes
 ```
 
 ## Annotations
@@ -73,6 +74,12 @@ def example[*Batch, H, W](
 @fn(U="T + 1", where="T >= 2")
 def pad[B, T, U](x: f32[B, T]) -> f32[B, U]:
     return jnp.pad(x, ((0, 0), (0, 1)))
+
+# Static int parameters can be used by name:
+@fn(H="heads", K="D // heads", where="D % heads == 0", examples={"heads": [1, 2]})
+def split_heads[T, D, H, K](x: f32[T, D], heads: Static[int]) -> f32[H, T, K]:
+    t, d = x.shape
+    return x.reshape(t, heads, d // heads).transpose(1, 0, 2)
 ```
 
 ## Checked calls

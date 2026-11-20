@@ -102,11 +102,17 @@ def _indent(s: str, by: str = "    ") -> str:
 class _Ctx:
     """Supplies sizes for abstract inputs: symbolic or concrete."""
 
-    def __init__(self, scope: Any | None, sizes: dict[str, int] | None, var_rank: dict[str, int]):
+    def __init__(
+        self,
+        scope: Any | None,
+        sizes: dict[str, int] | None,
+        var_rank: dict[str, int],
+        preset: dict[str, int] | None = None,
+    ):
         self.scope = scope
         self.sizes = sizes
         self.var_rank = var_rank
-        self.dims: dict[str, Any] = {}
+        self.dims: dict[str, Any] = dict(preset or {})
         self.origin: dict[str, str] = {}
         self.vars: dict[str, tuple[Any, ...]] = {}
         self._anon = 0
@@ -284,14 +290,26 @@ def _fmt(shape: tuple[Any, ...]) -> str:
     return "[" + ", ".join(map(str, shape)) + "]"
 
 
-def _jax_constraints(f: Fn[Any, Any]) -> tuple[list[str], list[str]]:
+def _statics(f: Fn[Any, Any], fixed: dict[str, Any]) -> dict[str, int]:
+    """Values of the Static int parameters that dimension expressions refer to."""
+    out = {}
+    for n in f.static_refs:
+        v = fixed[n] if n in fixed else f.params[n].default
+        if isinstance(v, (int, np.integer)) and not isinstance(v, bool):
+            out[n] = int(v)
+    return out
+
+
+def _jax_constraints(f: Fn[Any, Any], statics: dict[str, int]) -> tuple[list[str], list[str]]:
     """``where`` constraints in jax.export syntax, and those that cannot be expressed."""
     good, dropped = [], []
-    inputs = {n for n in f.input_names if not n.startswith("*")}
+    inputs = {n for n in f.input_names if not n.startswith("*")} | statics.keys()
     for w in f.where:
         if not w.names <= inputs:
             continue
-        j = to_jax_constraint(w)
+        if w.names <= statics.keys():
+            continue  # no free sizes: checked directly when the function is called
+        j = to_jax_constraint(w, statics)
         try:
             if j is None:
                 raise ValueError
@@ -302,7 +320,9 @@ def _jax_constraints(f: Fn[Any, Any]) -> tuple[list[str], list[str]]:
     return good, dropped
 
 
-def _concrete_sizes(f: Fn[Any, Any], attempt: int) -> dict[str, int] | None:
+def _concrete_sizes(
+    f: Fn[Any, Any], attempt: int, statics: dict[str, int]
+) -> dict[str, int] | None:
     names = sorted(n for n in f.input_names if not n.startswith("*"))
     rng = random.Random(attempt)
     for tries in range(400):
@@ -316,7 +336,8 @@ def _concrete_sizes(f: Fn[Any, Any], attempt: int) -> dict[str, int] | None:
         else:
             sizes = {n: rng.randint(1, 12) for n in names}
         try:
-            if all(bool(w(sizes)) for w in f.where if w.names <= sizes.keys()):
+            env = {**sizes, **statics}
+            if all(bool(w(env)) for w in f.where if w.names <= env.keys()):
                 return sizes
         except Exception:
             continue
@@ -401,13 +422,15 @@ def _prove_fn(f: Fn[Any, Any], examples: dict[str, Any] | None) -> Report:
     ranks: Iterable[tuple[int, ...]] = itertools.product(*[(0, 1, 2)] * len(var_names))
     combos = itertools.product(*[choices[n] for n in fixed_names])
     cases = list(itertools.islice(itertools.product(combos, ranks), _MAX_CASES))
-    constraints, dropped = _jax_constraints(f)
+    dropped: list[str] = []
 
     worst = Report(f, PROVED, cases=len(cases))
     for combo, rank in cases:
         fixed = dict(zip(fixed_names, combo))
         var_rank = dict(zip(var_names, rank))
-        r = _prove_case(f, fixed, abstract, var_rank, constraints)
+        statics = _statics(f, fixed)
+        constraints, dropped = _jax_constraints(f, statics)
+        r = _prove_case(f, fixed, abstract, var_rank, constraints, statics)
         label = _case_label(fixed, var_rank)
         if label and r.status != PROVED:
             r.detail = f"with {label}:\n{r.detail}"
@@ -470,11 +493,15 @@ def _prove_case(
     abstract: list[str],
     var_rank: dict[str, int],
     constraints: list[str],
+    statics: dict[str, int],
 ) -> Report:
     # 1. Symbolic sizes: a proof of the declared output, for all sizes at once.
     try:
         jaxpr, _, sym_err = _attempt(
-            f, fixed, abstract, lambda: _Ctx(export.SymbolicScope(constraints), None, var_rank)
+            f,
+            fixed,
+            abstract,
+            lambda: _Ctx(export.SymbolicScope(constraints), None, var_rank, statics),
         )
     except Unsynthesizable as u:
         return Report(
@@ -488,12 +515,12 @@ def _prove_case(
     #    cannot (JAX defers some checks when sizes are symbolic).
     used: list[dict[str, int]] = []
     for attempt in range(4):
-        sizes = _concrete_sizes(f, attempt)
+        sizes = _concrete_sizes(f, attempt, statics)
         if sizes is None:
             continue
         try:
             _, ctx, err = _attempt(
-                f, fixed, abstract, lambda s=sizes: _Ctx(None, dict(s), var_rank)
+                f, fixed, abstract, lambda s=sizes: _Ctx(None, dict(s), var_rank, statics)
             )
         except (_BadSizes, Unsynthesizable):
             continue
