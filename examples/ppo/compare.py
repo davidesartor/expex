@@ -1,9 +1,9 @@
-"""Check that examples/ppo.py reproduces PureJaxRL's ppo.py.
+"""Check that examples/ppo/ppo.py reproduces PureJaxRL's ppo.py.
 
     # 1. run the unmodified original (needs a PureJaxRL checkout and gymnax==0.0.8):
-    python examples/run_purejaxrl_original.py <purejaxrl> <gymnax-0.0.8 dir> orig.npz <updates>
+    python examples/ppo/run_original.py <purejaxrl> <gymnax-0.0.8 dir> orig.npz <updates>
     # 2. compare:
-    python examples/compare_ppo.py orig.npz
+    python examples/ppo/compare.py orig.npz
 """
 
 import sys

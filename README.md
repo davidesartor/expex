@@ -338,7 +338,7 @@ shapes.
 
 Two existing codebases rewritten in this style, checked against the originals:
 
-- **[PureJaxRL](https://github.com/luchris429/purejaxrl) PPO** (`examples/ppo.py`):
+- **[PureJaxRL](https://github.com/luchris429/purejaxrl) PPO** (`examples/ppo/`):
   plain loops instead of four nested `lax.scan`s, `if done:` for the
   auto-reset. Identical to the original for the first 21 of 976 updates, then
   drifting as float32 programs do; same speed; all shapes proved.

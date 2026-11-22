@@ -1,8 +1,8 @@
-"""The PPO port in examples/ppo.py reproduces PureJaxRL's ppo.py.
+"""The PPO port in examples/ppo/ppo.py reproduces PureJaxRL's ppo.py.
 
 ``tests/data/purejaxrl_ppo_3_updates.npz`` holds the initial parameters, final
 parameters and episode statistics produced by the unmodified original for 3
-updates (see examples/run_purejaxrl_original.py).
+updates (see examples/ppo/run_original.py).
 """
 
 import pathlib
@@ -18,8 +18,8 @@ import jax.random as jr
 import typax as tx
 
 pytest.importorskip("optax")
-ROOT = pathlib.Path(__file__).parent.parent
-sys.path.insert(0, str(ROOT / "examples"))
+ROOT = pathlib.Path(__file__).parent.parent.parent
+sys.path.insert(0, str(ROOT / "examples" / "ppo"))
 import ppo  # noqa: E402
 
 REF = np.load(ROOT / "tests" / "data" / "purejaxrl_ppo_3_updates.npz")

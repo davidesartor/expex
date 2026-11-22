@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 pytest.importorskip("vlse")
-ROOT = pathlib.Path(__file__).parent.parent
+ROOT = pathlib.Path(__file__).parent.parent.parent
 PORT = ROOT / "examples" / "bofus"
 
 

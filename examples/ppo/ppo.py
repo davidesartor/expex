@@ -8,10 +8,10 @@ random-number stream and the arithmetic identical, but writes it as:
   environment or one example and vectorised with `.lift`;
 * plain Python `for` loops and `if` statements, staged by `@fn`.
 
-`examples/compare_ppo.py` checks that it reproduces the original's numbers.
+`compare.py` (next to this file) checks that it reproduces the original's numbers.
 
-    python examples/ppo.py                  # train and print returns
-    python -m typax examples/ppo.py         # prove the shapes
+    python examples/ppo/ppo.py              # train and print returns
+    python -m typax examples/ppo/ppo.py     # prove the shapes
 """
 
 from typing import Literal, NamedTuple
