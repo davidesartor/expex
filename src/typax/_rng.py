@@ -21,7 +21,6 @@ import contextlib
 import threading
 from typing import Any, Iterator
 
-import jax
 import jax.random as jr
 
 from ._errors import StageError

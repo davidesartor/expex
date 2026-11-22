@@ -437,21 +437,6 @@ def _guard_lists(state: tuple[Any, ...], names: tuple[str, ...], what: str, site
     return check
 
 
-_JAX_GUARDS: bool | None = None
-
-
-def _jax_guards_branches() -> bool:
-    """Does this JAX already cut gradients into untaken branches of a vmapped cond?"""
-    global _JAX_GUARDS
-    if _JAX_GUARDS is None:
-        try:
-            probe = jax.make_jaxpr(jax.vmap(lambda v: lax.cond(v > 0, lambda: v, lambda: -v)))
-            _JAX_GUARDS = "stop_gradient" in str(probe(np.ones(2, np.float32)))
-        except Exception:
-            _JAX_GUARDS = False
-    return _JAX_GUARDS
-
-
 class _Path(threading.local):
     def __init__(self) -> None:
         self.preds: list[Callable[[], Any]] = []  # conditions under which the code being traced runs
@@ -473,67 +458,6 @@ class _on_path:
         _PATH.preds.pop()
 
 
-def _guard(values: tuple[Any, ...], taken: Any, which: Any = None) -> tuple[Any, ...]:
-    """Cut the gradient of the float arrays in ``values`` where ``taken`` is false.
-
-    Under ``vmap`` a traced ``if`` evaluates both branches for every element and
-    selects. The branch that is not taken may hit a singularity (``sqrt`` of a
-    negative, ``log(0)``), and although its *value* is discarded, reverse-mode
-    differentiation would still multiply its infinite derivative by zero and
-    produce NaN. ``where(taken, x, stop_gradient(x))`` has the value ``x``
-    either way, but lets no derivative flow back through a branch that was not
-    taken, which is exactly the zero it should contribute.
-
-    (An identity with a custom derivative would avoid the forward-pass
-    operations, but JAX mis-batches it when a jitted, vmapped function is
-    differentiated from outside, so the plain formulation is used.)
-
-    ``which`` selects the positions to guard (those the branch reads).
-    """
-    if _jax_guards_branches():
-        return values
-    flat: list[Any] = []
-    plans: list[Any] = []
-    for pos, v in enumerate(values):
-        if (
-            (which is not None and pos not in which)
-            or v is UNDEF
-            or v is None
-            or isinstance(v, (list, _Collector, Stacked))
-            or _function(v)
-        ):
-            plans.append(None)
-            continue
-        try:
-            leaves, tree = jax.tree.flatten(v)
-        except Exception:
-            plans.append(None)
-            continue
-        idx = [
-            i for i, a in enumerate(leaves)
-            if isinstance(a, jax.Array) and jnp.issubdtype(a.dtype, jnp.inexact)
-        ]  # fmt: skip
-        if not idx:
-            plans.append(None)
-            continue
-        plans.append((leaves, tree, idx, len(flat)))
-        flat.extend(leaves[i] for i in idx)
-    if not flat:
-        return values
-    gated = [jnp.where(taken, a, lax.stop_gradient(a)) for a in flat]
-    out = []
-    for v, plan in zip(values, plans):
-        if plan is None:
-            out.append(v)
-            continue
-        leaves, tree, idx, start = plan
-        leaves = list(leaves)
-        for k, i in enumerate(idx):
-            leaves[i] = gated[start + k]
-        out.append(tree.unflatten(leaves))
-    return tuple(out)
-
-
 def _truth(pred: Any) -> Any:
     return pred if _boolean(pred) else pred != 0
 
@@ -545,52 +469,34 @@ def if_(
     state: tuple[Any, ...],
     names: tuple[str, ...],
     site: str,
-    reads: tuple[Any, ...] = (),
-    read_by: tuple[tuple[int, ...] | None, tuple[int, ...] | None] = (None, None),
 ) -> tuple[Any, ...]:
-    """``read_by`` lists, per branch, which positions of ``state + reads`` it reads."""
     k = _rng.sub()
     if not isinstance(pred, Tracer):
         with _rng.child(k):
-            return (true_fn if pred else false_fn)(*state, *reads)
+            return (true_fn if pred else false_fn)(*state)
     _check_pred(pred, "if", site)
     check = _guard_lists(state, names, "if", site)
     taken = _truth(pred)
 
-    def run(
-        fn: Callable[..., tuple[Any, ...]], on: Any, which: Any
-    ) -> Callable[[], tuple[Any, ...]]:
-        args = _guard(state + reads, on, which)
-
+    def run(fn: Callable[..., tuple[Any, ...]], on: Any) -> Callable[[], tuple[Any, ...]]:
         def r() -> tuple[Any, ...]:
             with _rng.child(k), _on_path(on):
-                out = fn(*args)
+                out = fn(*state)
             check(out)
             return out
 
         return r
 
     LOG[site] = "if -> lax.cond"
-    branches = (run(true_fn, taken, read_by[0]), run(false_fn, ~taken, read_by[1]))
-    return _cond(pred, branches, names, site)
+    return _cond(pred, (run(true_fn, taken), run(false_fn, ~taken)), names, site)
 
 
-def ifexp(
-    pred: Any,
-    a: Callable[..., Any],
-    b: Callable[..., Any],
-    site: str,
-    reads: tuple[Any, ...] = (),
-    read_by: tuple[tuple[int, ...] | None, tuple[int, ...] | None] = (None, None),
-) -> Any:
+def ifexp(pred: Any, a: Callable[[], Any], b: Callable[[], Any], site: str) -> Any:
     if not isinstance(pred, Tracer):
         k = _rng.sub()
         with _rng.child(k):
-            return a(*reads) if pred else b(*reads)
-    _check_pred(pred, "... if ... else ...", site)
-    taken = _truth(pred)
-    ra, rb = _guard(reads, taken, read_by[0]), _guard(reads, ~taken, read_by[1])
-    return _select_expr(pred, lambda: a(*ra), lambda: b(*rb), site)
+            return a() if pred else b()
+    return _select_expr(pred, a, b, site)
 
 
 def _select_expr(pred: Any, a: Callable[[], Any], b: Callable[[], Any], site: str) -> Any:

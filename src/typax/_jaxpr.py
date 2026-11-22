@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 from typing import Any, Iterator
 
-import jax
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 

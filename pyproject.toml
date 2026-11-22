@@ -19,7 +19,7 @@ classifiers = [
     "Topic :: Scientific/Engineering",
     "Typing :: Typed",
 ]
-dependencies = ["jax>=0.4.30", "numpy"]
+dependencies = ["jax>=0.12", "numpy"]
 
 [project.optional-dependencies]
 dev = ["pytest", "pyright", "mypy", "optax"]
