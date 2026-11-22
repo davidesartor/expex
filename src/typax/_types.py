@@ -9,10 +9,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar
 
-import numpy as np
-
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 __all__ = [
     "Dim", "Etc", "DType", "ArrayAnn", "StaticAnn", "KeyAnn",

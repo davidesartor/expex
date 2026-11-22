@@ -29,9 +29,10 @@ from typing import Any, Callable, TypeVar, overload
 
 import jax
 
-from ._fn import Fn, fn
+from ._dims import Env, resolve
 from ._errors import Mismatch, ShapeError
-from ._spec import Env, _class_annotations, parse_owner, rebuild, resolve, static_type
+from ._fn import Fn, fn
+from ._spec import _class_annotations, parse_owner, rebuild, static_type
 
 T = TypeVar("T", bound=type)
 
@@ -188,7 +189,7 @@ def _check_new(cls: Any, obj: Any) -> None:
         if env.deferred:
             resolve(env)
     except Mismatch as m:
-        from ._spec import describe
+        from ._dims import describe
 
         raise ShapeError(
             f"{cls.__name__}(): the constructed object does not match its annotations.\n\n"

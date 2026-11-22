@@ -13,6 +13,7 @@ sizes and says so: that is a spot check, not a proof.
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
 import inspect
 import itertools
@@ -22,33 +23,21 @@ import random
 import sys
 import types
 import typing
-import dataclasses
 from dataclasses import dataclass, field
 from typing import Any, Iterable, overload
 
-import numpy as np
-
 import jax
 import jax.random as jr
+import numpy as np
 from jax import export
 
 from . import _rng
+from ._dims import DAny, DConst, DEtc, DExpr, DName, DVar, Env
 from ._errors import ShapeError, StageError
 from ._expr import to_jax_constraint
 from ._fn import REGISTRY, BoundFn, Fn
 from ._jaxpr import iter_eqns, source_of
-from ._spec import (
-    DAny,
-    DConst,
-    DEtc,
-    DExpr,
-    DName,
-    DVar,
-    Env,
-    Spec,
-    StaticSpec,
-    Unsynthesizable,
-)
+from ._spec import Spec, StaticSpec, Unsynthesizable
 
 PROVED = "proved"
 SPOT = "spot-checked"

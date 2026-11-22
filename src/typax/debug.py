@@ -28,18 +28,17 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-import numpy as np
-
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from jax import lax
 from jax.core import eval_jaxpr
 
 from . import _rng
+from ._dims import describe
 from ._fn import BoundFn, Fn
 from ._jaxpr import iter_eqns, source_key, source_of, sub_jaxprs
-from ._spec import describe
 
 __all__ = [
     "find_nan", "shapes", "summary", "timing", "memory",
@@ -526,7 +525,7 @@ class ShapeTrace:
 
 def _shape_of(v: Any) -> str | None:
     """A short description of an array-carrying value, or None for anything else."""
-    from ._spec import show
+    from ._dims import show
 
     if isinstance(v, (jax.Array, np.ndarray, jax.ShapeDtypeStruct)) or hasattr(v, "aval"):
         try:

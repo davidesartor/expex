@@ -1,7 +1,7 @@
 """Source conversion: plain ``if`` / ``while`` / ``for`` into staged control flow.
 
 ``convert(f)`` re-compiles a function so that its control-flow statements call
-the helpers in ``_flow.py``. The converted function behaves exactly like the
+the helpers in ``_runtime.py``. The converted function behaves exactly like the
 original when conditions and iterables are ordinary Python values, and uses
 ``lax.cond`` / ``lax.while_loop`` / ``lax.scan`` / ``vmap`` when they are
 traced.
@@ -32,7 +32,7 @@ import textwrap
 import types
 from typing import Any, Callable, Iterable
 
-from . import _flow
+from . import _runtime
 
 FLOW = "__typax_flow__"
 RET = "__bn_ret__"
@@ -1041,7 +1041,7 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
         closure = tuple(cells[v] for v in inner.co_freevars)
     except KeyError as e:
         raise NotConverted(f"free variable {e} could not be resolved") from None
-    raw.__globals__.setdefault(FLOW, _flow)
+    raw.__globals__.setdefault(FLOW, _runtime)
     inner = inner.replace(co_name=orig_name, co_qualname=raw.__qualname__)
     new = types.FunctionType(inner, raw.__globals__, raw.__name__, raw.__defaults__, closure or None)
     new.__kwdefaults__ = raw.__kwdefaults__
