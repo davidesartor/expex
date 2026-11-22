@@ -9,6 +9,7 @@ import pytest
 
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 
 import typax as tx
 from typax import StageError, Static, f32, fn
@@ -23,11 +24,11 @@ def scoped(f, key, *args):
 def test_keys_agree_in_ternaries_and_boolean_operators():
     @fn(random=True)
     def f(x):
-        a = jax.random.uniform(tx.key()) if x > 0 else -jax.random.uniform(tx.key())
-        b = (x > 100) or (jax.random.uniform(tx.key()) > 2)
-        return a, jax.random.uniform(tx.key()), b
+        a = jr.uniform(tx.key()) if x > 0 else -jr.uniform(tx.key())
+        b = (x > 100) or (jr.uniform(tx.key()) > 2)
+        return a, jr.uniform(tx.key()), b
 
-    k = jax.random.key(7)
+    k = jr.key(7)
     eager = scoped(f, k, jnp.float32(1.0))
     staged = jax.jit(lambda k, x: scoped(f, k, x))(k, jnp.float32(1.0))
     assert jnp.allclose(eager[0], staged[0]) and jnp.allclose(eager[1], staged[1])
@@ -37,7 +38,7 @@ def test_while_test_and_body_draw_different_numbers():
     seen = []
 
     def draw():
-        v = float(jax.random.uniform(tx.key()))
+        v = float(jr.uniform(tx.key()))
         seen.append(v)
         return v
 
@@ -56,7 +57,7 @@ def test_while_test_and_body_draw_different_numbers():
 
 @fn(random=True)
 def noise(x: f32) -> f32:
-    return x + jax.random.uniform(tx.key())
+    return x + jr.uniform(tx.key())
 
 
 def test_vmap_with_a_shared_key_is_refused():

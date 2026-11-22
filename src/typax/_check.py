@@ -29,6 +29,7 @@ from typing import Any, Iterable, overload
 import numpy as np
 
 import jax
+import jax.random as jr
 from jax import export
 
 from . import _rng
@@ -172,7 +173,7 @@ class _Ctx:
     def key(self, shape: tuple[Any, ...]) -> Any:
         if self.legacy_keys:
             return jax.ShapeDtypeStruct(shape + (2,), np.uint32)
-        return jax.ShapeDtypeStruct(shape, jax.random.key(0).dtype)
+        return jax.ShapeDtypeStruct(shape, jr.key(0).dtype)
 
 
 class _BadSizes(Exception):
@@ -347,6 +348,20 @@ def _statics(f: Fn[Any, Any], fixed: dict[str, Any]) -> dict[str, int]:
         v = fixed[n] if n in fixed else f.params[n].default
         if isinstance(v, (int, np.integer)) and not isinstance(v, bool):
             out[n] = int(v)
+    if f.field_refs:  # int fields of `self`: from the example instance, or the class default
+        first = next(iter(f.params))
+        obj = fixed.get(first)
+        obj = getattr(obj, "obj", obj)
+        owner: Any = getattr(f, "_owner_cls", None)
+        defaults = (
+            {fl.name: fl.default for fl in dataclasses.fields(owner)}
+            if dataclasses.is_dataclass(owner)
+            else {}
+        )
+        for n in f.field_refs:
+            v = getattr(obj, n, defaults.get(n))
+            if isinstance(v, (int, np.integer)) and not isinstance(v, bool):
+                out[n] = int(v)
     return out
 
 
@@ -354,7 +369,7 @@ def _jax_constraints(f: Fn[Any, Any], statics: dict[str, int]) -> tuple[list[str
     """``where`` constraints in jax.export syntax, and those that cannot be expressed."""
     good, dropped = [], []
     inputs = {n for n in f.input_names if not n.startswith("*")} | statics.keys()
-    for w in f.where:
+    for w in [*f.where, *f.assumed]:
         if not w.names <= inputs:
             continue
         if w.names <= statics.keys():
@@ -387,7 +402,7 @@ def _concrete_sizes(
             sizes = {n: rng.randint(1, 12) for n in names}
         try:
             env = {**sizes, **statics}
-            if all(bool(w(env)) for w in f.where if w.names <= env.keys()):
+            if all(bool(w(env)) for w in [*f.where, *f.assumed] if w.names <= env.keys()):
                 return sizes
         except Exception:
             continue

@@ -13,6 +13,7 @@ import numpy as np
 
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from ppo import Config, Layer, Net, train  # noqa: E402
@@ -30,7 +31,7 @@ def net_from(prefix: str) -> Net:
 
 cfg = Config(num_updates=updates)
 t = time.time()
-net, info = jax.jit(lambda k, n: train(k, cfg, n))(jax.random.PRNGKey(30), net_from("init"))
+net, info = jax.jit(lambda k, n: train(k, cfg, n))(jr.PRNGKey(30), net_from("init"))
 jax.block_until_ready(net)
 print(f"typax port: {time.time() - t:.1f}s for {updates} updates (trace + compile + run)")
 

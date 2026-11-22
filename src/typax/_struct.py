@@ -16,6 +16,8 @@ array annotations are traced leaves, fields with plain Python types (numbers,
 strings, callables, tuples of those, ...) are static metadata. Every method
 is an ``@fn``, so its arguments, its result and ``self``'s fields are
 checked against the annotations, with the class's own dimensions shared.
+``module.lift(x)`` maps ``__call__`` over extra leading axes of ``x``, and
+``module.replace(field=...)`` returns a modified copy.
 """
 
 from __future__ import annotations
@@ -37,13 +39,30 @@ _SKIP = {"__init__", "__post_init__", "__repr__", "__eq__", "__hash__", "__init_
 @overload
 def struct(cls: T, /) -> T: ...
 @overload
-def struct(*, jit: bool = False, **options: Any) -> Callable[[T], T]: ...
-def struct(cls: Any = None, /, *, jit: bool = False, **options: Any) -> Any:
+def struct(
+    *, where: str | list[str] | tuple[str, ...] = (), jit: bool = False, **options: Any
+) -> Callable[[T], T]: ...
+def struct(
+    cls: Any = None,
+    /,
+    *,
+    where: str | list[str] | tuple[str, ...] = (),
+    jit: bool = False,
+    **options: Any,
+) -> Any:
     """Turn a class into a typed module. See the module docstring.
 
-    Options (``jit=True``, ``random=True``, ...) are passed to every method's
-    ``@fn``. A method already decorated with ``@fn(...)`` keeps its own.
+    ``where`` states invariants over the class's dimensions and int fields,
+    e.g. ``where="D % heads == 0"``. They are checked whenever an instance is
+    passed to an ``@fn``, and every function that receives an instance, however
+    deeply nested, may assume them (the prover does).
+
+    Other options (``jit=True``, ``random=True``, ...) are passed to every
+    method's ``@fn``. A method already decorated with ``@fn(...)`` keeps its own.
     """
+    from ._expr import Expr
+
+    invariants = tuple(Expr(w, constraint=True) for w in ([where] if isinstance(where, str) else where))
 
     def build(original: Any) -> Any:
         cls: Any = original
@@ -69,6 +88,14 @@ def struct(cls: Any = None, /, *, jit: bool = False, **options: Any) -> Any:
             method.__set_name__(cls, name)
             setattr(cls, name, wrapper(method) if wrapper else method)
 
+        if isinstance(vars(cls).get("__call__"), Fn) and "lift" not in vars(cls):
+
+            def lift(self: Any, *args: Any, **kwargs: Any) -> Any:
+                """Call the module on inputs with extra leading batch axes."""
+                method: Any = vars(type(self))["__call__"]
+                return method.__get__(self).lift(*args, **kwargs)
+
+            cls.lift = lift
         if "replace" not in vars(cls):
 
             def replace(self: Any, **changes: Any) -> Any:
@@ -77,6 +104,7 @@ def struct(cls: Any = None, /, *, jit: bool = False, **options: Any) -> Any:
 
             cls.replace = replace
         cls.__typax_struct__ = True
+        cls.__typax_where__ = invariants
         return cls
 
     return build(cls) if cls is not None else build

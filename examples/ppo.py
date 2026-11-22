@@ -18,6 +18,7 @@ from typing import Literal, NamedTuple
 
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 import optax
 
 import typax as tx
@@ -103,7 +104,7 @@ def terminal(c: Cart) -> Bool:
 
 @fn
 def new_cart(key: Key) -> Cart:
-    s = jax.random.uniform(key, minval=-0.05, maxval=0.05, shape=(4,))
+    s = jr.uniform(key, minval=-0.05, maxval=0.05, shape=(4,))
     return Cart(s[0], s[1], s[2], s[3], jnp.int32(0))
 
 
@@ -137,7 +138,7 @@ def step(
     key: Key, s: EnvState, action: i32
 ) -> tuple[f32[Obs], EnvState, f32, Bool, Info]:
     """One environment step, starting a new episode when the current one ends."""
-    _, reset_key = jax.random.split(key)
+    _, reset_key = jr.split(key)
     reward = 1.0 - terminal(s.cart)  # based on the state before the step
     cart = physics(s.cart, action)
     done = terminal(cart)
@@ -182,7 +183,7 @@ def policy[H](net: Net[H], obs: f32[Obs]) -> tuple[f32[Actions], f32]:
 
 def init_net(key, hidden: int = 64) -> Net:
     ortho = jax.nn.initializers.orthogonal
-    keys = iter(jax.random.split(key, 6))
+    keys = iter(jr.split(key, 6))
 
     def layer(i, o, scale):
         return Layer(ortho(scale)(next(keys), (i, o)), jnp.zeros(o))
@@ -264,27 +265,27 @@ def time_major(x):
 def train[H, T, N](key: Key, cfg: Config, net: Net[H] | None = None):
     """Train PPO. Returns the final network and per-step episode statistics."""
     optimizer = make_optimizer(cfg)
-    key, init_key = jax.random.split(key)
+    key, init_key = jr.split(key)
     if net is None:
         net = init_net(init_key)
     opt_state = optimizer.init(net)
 
-    key, reset_key = jax.random.split(key)
-    obs, env = reset.lift(jax.random.split(reset_key, cfg.num_envs))
-    _, key = jax.random.split(key)
+    key, reset_key = jr.split(key)
+    obs, env = reset.lift(jr.split(reset_key, cfg.num_envs))
+    _, key = jr.split(key)
 
     metrics = []
     for _update in range(cfg.num_updates):
         # Collect a trajectory from every environment.
         trajectory = []
         for _t in range(cfg.num_steps):
-            key, act_key = jax.random.split(key)
+            key, act_key = jr.split(key)
             logp, value = policy.lift(net, obs)
-            action = jax.random.categorical(act_key, logp, shape=(1, cfg.num_envs))[0]
+            action = jr.categorical(act_key, logp, shape=(1, cfg.num_envs))[0]
             log_prob = jnp.sum(logp * jax.nn.one_hot(action, 2), axis=-1)
 
-            key, step_key = jax.random.split(key)
-            step_keys = jax.random.split(step_key, cfg.num_envs)
+            key, step_key = jr.split(key)
+            step_keys = jr.split(step_key, cfg.num_envs)
             next_obs, env, reward, done, info = step.lift(step_keys, env, action)
             trajectory.append(Transition(done, action, value, reward, log_prob, obs, info))
             obs = next_obs
@@ -303,8 +304,8 @@ def train[H, T, N](key: Key, cfg: Config, net: Net[H] | None = None):
         # Several epochs of minibatch updates.
         batch_size = cfg.num_steps * cfg.num_envs
         for _epoch in range(cfg.update_epochs):
-            key, perm_key = jax.random.split(key)
-            order = jax.random.permutation(perm_key, batch_size)
+            key, perm_key = jr.split(key)
+            order = jr.permutation(perm_key, batch_size)
             data = take(flatten_time((traj, advantages, targets), batch_size), order)
             for batch, adv, target in tx.rows(split_rows(data, cfg.num_minibatches)):
                 grads, _aux = jax.grad(ppo_loss, has_aux=True)(net, batch, adv, target, cfg)
@@ -317,7 +318,7 @@ def train[H, T, N](key: Key, cfg: Config, net: Net[H] | None = None):
 
 if __name__ == "__main__":
     cfg = Config(num_updates=200)
-    net, info = jax.jit(lambda k: train(k, cfg))(jax.random.key(30))
+    net, info = jax.jit(lambda k: train(k, cfg))(jr.key(30))
     finished = info.returned_episode
     returns = jnp.where(finished, info.returned_return, jnp.nan)
     for lo in range(0, cfg.num_updates, 40):

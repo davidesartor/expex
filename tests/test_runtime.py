@@ -8,6 +8,7 @@ import pytest
 
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 
 from typax import (
     Arr, Bool, Dim, Etc, Float, Int, Key, ShapeError, StageError, Static, config, f32, fn, i32,
@@ -362,20 +363,20 @@ def test_static():
 def test_key():
     @fn
     def noise[D](x: f32[D], key: Key) -> f32[D]:
-        return x + jax.random.normal(key, x.shape)
+        return x + jr.normal(key, x.shape)
 
-    noise(jnp.zeros(3), jax.random.key(0))
-    noise(jnp.zeros(3), jax.random.PRNGKey(0))
+    noise(jnp.zeros(3), jr.key(0))
+    noise(jnp.zeros(3), jr.PRNGKey(0))
     with pytest.raises(ShapeError, match="expected a PRNG key"):
         noise(jnp.zeros(3), jnp.zeros(3))
     with pytest.raises(ShapeError, match="expected 0 axes, got 1"):
-        noise(jnp.zeros(3), jax.random.split(jax.random.key(0), 4))
+        noise(jnp.zeros(3), jr.split(jr.key(0), 4))
 
     @fn
     def many[N](keys: Key[N]) -> f32[N]:
-        return jax.vmap(jax.random.normal)(keys)
+        return jax.vmap(jr.normal)(keys)
 
-    assert many(jax.random.split(jax.random.key(0), 4)).shape == (4,)
+    assert many(jr.split(jr.key(0), 4)).shape == (4,)
 
 
 def test_methods():
@@ -503,7 +504,7 @@ def test_batch_annotation():
     def total[T, N](traj: Batch[Step, T, N], last: Batch[f32[Literal[4]], N]) -> f32[N]:
         return traj.reward.sum(0) + last.sum(-1)
 
-    keys = jax.random.split(jax.random.key(0), (6, 3))
+    keys = jr.split(jr.key(0), (6, 3))
     traj = Step(jnp.ones((6, 3, 4)), jnp.ones((6, 3)), keys)
     assert total(traj, jnp.ones((3, 4))).shape == (3,)
     assert "traj: Batch[Step, T, N]" in repr(total)
@@ -553,7 +554,7 @@ def test_show_and_scoped_config():
         w: Any
         b: Any
 
-    tree = {"p": P(jnp.ones((3, 3)), jnp.zeros(3, jnp.int32)), "k": jax.random.key(0), "n": 2.0}
+    tree = {"p": P(jnp.ones((3, 3)), jnp.zeros(3, jnp.int32)), "k": jr.key(0), "n": 2.0}
     assert tx.show(tree) == "{k: Key[()], n: Python float, p: P(w=f32[3, 3], b=i32[3])}"
 
     @fn

@@ -305,8 +305,21 @@ def short_dtype(dtype: Any) -> str:
     return str(dtype)
 
 
+_FUNC = __import__("re").compile(r"\b(floordiv|mod)\(([^(),]+), ([^(),]+)\)")
+
+
+def fmt_dim(d: Any) -> str:
+    """A size as text: ``floordiv(D, 4)`` from JAX's symbolic sizes reads ``D // 4``."""
+    text = str(d)
+    while True:
+        new = _FUNC.sub(lambda m: f"{m[2]} {'//' if m[1] == 'floordiv' else '%'} {m[3]}", text)
+        if new == text:
+            return text
+        text = new
+
+
 def fmt_shape(shape: Any) -> str:
-    return "[" + ", ".join(map(str, shape)) + "]" if len(shape) else "[()]"
+    return "[" + ", ".join(map(fmt_dim, shape)) + "]" if len(shape) else "[()]"
 
 
 def describe(value: Any) -> str:
@@ -774,13 +787,85 @@ class UnionSpec(Spec):
         return UnionSpec(tuple(o.replace_dims(f) for o in self.options))
 
 
+def _ident(name: str) -> str:
+    return name.replace(".", "__")
+
+
+def _rename(expr: Expr, mapping: dict[str, str]) -> Expr:
+    """``expr`` with the names in ``mapping`` replaced by other source text."""
+    import ast
+
+    tree = ast.parse(expr.src, mode="eval")
+
+    class Sub(ast.NodeTransformer):
+        def visit_Name(self, node: ast.Name) -> Any:
+            if node.id in mapping:
+                return ast.parse(f"({mapping[node.id]})", mode="eval").body
+            return node
+
+    return Expr(ast.unparse(Sub().visit(tree)), constraint=expr.is_constraint)
+
+
 class StructSpec(Spec):
     """A NamedTuple or dataclass whose fields carry annotations."""
 
-    def __init__(self, cls: type, fields: dict[str, Spec], label: str):
+    def __init__(
+        self,
+        cls: type,
+        fields: dict[str, Spec],
+        label: str,
+        subst: dict[Any, Any] | None = None,
+        invariants: list[tuple[Expr, dict[str, str]]] | None = None,
+    ):
         self.cls = cls
         self.fields = fields
         self.label = label
+        #: The class's `where` invariants, over the dimensions of this use of it,
+        #: each with a map from the safe names used in it to environment keys.
+        self.invariants = invariants if invariants is not None else self._translate(subst or {})
+
+    def _translate(self, subst: dict[Any, Any]) -> list[tuple[Expr, dict[str, str]]]:
+        out = []
+        params = getattr(self.cls, "__type_params__", ()) or getattr(self.cls, "__parameters__", ())
+        for inv in getattr(self.cls, "__typax_where__", ()):
+            mapping: dict[str, str] = {}
+            back: dict[str, str] = {}
+            ok = True
+            for p in params:
+                if p.__name__ not in inv.names:
+                    continue
+                d = subst.get(p)
+                if isinstance(d, DName):
+                    mapping[p.__name__] = _ident(d.name)
+                    back[_ident(d.name)] = d.name
+                elif isinstance(d, DConst):
+                    mapping[p.__name__] = str(d.value)
+                else:
+                    ok = False  # a variadic or computed size: not expressible
+            if ok:
+                out.append((_rename(inv, mapping), back))
+        return out
+
+    def assumptions(self) -> list[Expr]:
+        """The invariants with field names replaced by the class's defaults (for the prover)."""
+        out = []
+        defaults: dict[str, Any] = {}
+        if dataclasses.is_dataclass(self.cls):
+            defaults = {f.name: f.default for f in dataclasses.fields(self.cls)}
+        else:
+            defaults = dict(getattr(self.cls, "_field_defaults", {}))
+        for inv, back in self.invariants:
+            mapping = {}
+            for n in inv.names:
+                if n in back:
+                    mapping[n] = back[n]
+                elif isinstance(defaults.get(n), int) and not isinstance(defaults.get(n), bool):
+                    mapping[n] = str(defaults[n])
+            if len(mapping) == len(inv.names) and all(v.isidentifier() or v.isdigit() for v in mapping.values()):
+                out.append(_rename(inv, mapping))
+        for s in self.fields.values():
+            out += _assumptions_of(s)
+        return out
 
     def __str__(self) -> str:
         return self.label
@@ -793,6 +878,25 @@ class StructSpec(Spec):
         for name, s in self.fields.items():
             if s.leafy:
                 s.match(getattr(value, name), f"{path}.{name}", env)
+        for inv, back in self.invariants:
+            vals: dict[str, Any] = {}
+            for n in inv.names:
+                if n in back and back[n] in env.dims:
+                    vals[n] = env.dims[back[n]]
+                elif n not in back and isinstance(getattr(value, n, None), (int, np.integer)):
+                    vals[n] = int(getattr(value, n))
+            if len(vals) != len(inv.names) or any(is_symbolic(v) for v in vals.values()):
+                continue
+            try:
+                ok = bool(inv(vals))
+            except Exception:
+                continue
+            if not ok:
+                shown = ", ".join(f"{back.get(k, k)}={v}" for k, v in sorted(vals.items()))
+                raise Mismatch(
+                    path, self, value,
+                    f"{self.cls.__name__} requires `{inv}`, which does not hold ({shown}).",
+                )  # fmt: skip
 
     def walk(self, value: Any, path: str, visit: Visit) -> Any:
         if not isinstance(value, self.cls):
@@ -828,7 +932,10 @@ class StructSpec(Spec):
 
     def replace_dims(self, f: Callable[[Any], Any]) -> "Spec":
         return StructSpec(
-            self.cls, {n: s.replace_dims(f) for n, s in self.fields.items()}, self.label
+            self.cls,
+            {n: s.replace_dims(f) for n, s in self.fields.items()},
+            self.label,
+            invariants=self.invariants,
         )
 
 
@@ -925,7 +1032,8 @@ def _prepend(spec: Spec, lead: tuple[Any, ...]) -> Spec:
         return UnionSpec(tuple(_prepend(s, lead) for s in spec.options))
     if isinstance(spec, StructSpec):
         label = f"Batch[{spec.label}, {', '.join(map(str, lead))}]"
-        return StructSpec(spec.cls, {n: _prepend(s, lead) for n, s in spec.fields.items()}, label)
+        fields = {n: _prepend(s, lead) for n, s in spec.fields.items()}
+        return StructSpec(spec.cls, fields, label, invariants=spec.invariants)
     return spec
 
 
@@ -993,7 +1101,7 @@ def parse_owner(cls: type) -> Spec:
         except TypeError:
             fields[n] = OpaqueSpec(anns.get(n))
     if any(s.leafy for s in fields.values()):
-        return StructSpec(cls, fields, cls.__name__)
+        return StructSpec(cls, fields, cls.__name__, inner)
     return OpaqueSpec()
 
 
@@ -1074,5 +1182,20 @@ def parse(ann: Any, subst: dict[Any, Any] | None = None, _stack: tuple[type, ...
                 except TypeError:
                     fields[n] = OpaqueSpec(anns.get(n))
             if any(s.leafy for s in fields.values()):
-                return StructSpec(cls, fields, label)
+                return StructSpec(cls, fields, label, inner)
     return OpaqueSpec(ann)
+
+
+def _assumptions_of(spec: Spec) -> list[Expr]:
+    """Struct invariants anywhere inside ``spec``, over its dimensions."""
+    if isinstance(spec, StructSpec):
+        return spec.assumptions()
+    out: list[Expr] = []
+    for attr in ("elems", "options"):
+        for s in getattr(spec, attr, ()):
+            out += _assumptions_of(s)
+    for attr in ("elem", "value"):
+        s = getattr(spec, attr, None)
+        if isinstance(s, Spec):
+            out += _assumptions_of(s)
+    return out

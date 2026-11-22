@@ -4,6 +4,7 @@ import pytest
 
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 from jax import lax
 
 import typax as tx
@@ -134,7 +135,7 @@ def test_timing():
 
     @fn(jit=True, random=True)
     def r[D](x: f32[D]) -> f32[D]:
-        return x + jax.random.normal(tx.key(), x.shape)
+        return x + jr.normal(tx.key(), x.shape)
 
     assert debug.timing(r, jnp.ones(8), repeat=1).ops >= 1
 

@@ -5,6 +5,7 @@ from typing import Any, Literal, NamedTuple, assert_type
 
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 
 import typax as tx
 from typax import Dim, Etc, Float, Int, Key, Static, f32, fn, i32
@@ -38,7 +39,7 @@ def pad[B, T, U](x: f32[B, T]) -> f32[B, U]:
 
 @fn(jit=True, random=True, examples={"n": [1, 2]})
 def step[B](x: f32[B], lr: f32, n: int, key: Key, mode: str = "a") -> f32[B]:
-    return x * lr * n + jax.random.normal(tx.key(), x.shape)
+    return x * lr * n + jr.normal(tx.key(), x.shape)
 
 
 @fn
@@ -65,7 +66,7 @@ x = jnp.ones((2, 3, 4))
 assert_type(attend(x, x), jax.Array)
 assert_type(attend.lift(x, x), jax.Array)
 assert_type(pad(x[0]), jax.Array)
-assert_type(step(x[0, 0], jnp.float32(0.1), 2, jax.random.key(0)), jax.Array)
+assert_type(step(x[0, 0], jnp.float32(0.1), 2, jr.key(0)), jax.Array)
 assert_type(Model().call(x[0, 0]), jax.Array)
 assert_type(Model().call.lift(x[0], scale=2.0), jax.Array)
 
@@ -80,5 +81,5 @@ with tx.rng(0):
 
 # Errors a type checker should catch:
 attend(x)  # E: missing argument
-step(x[0, 0], jnp.float32(0.1), "two", jax.random.key(0))  # E: n must be an int
+step(x[0, 0], jnp.float32(0.1), "two", jr.key(0))  # E: n must be an int
 Model().call(x[0, 0], scale="big")  # E: scale must be a float

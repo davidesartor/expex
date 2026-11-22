@@ -15,6 +15,7 @@ import numpy as np
 
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 
 from . import _flow, _rng
 from ._convert import NotConverted, convert as _convert
@@ -31,6 +32,7 @@ from ._spec import (
     StaticSpec,
     describe,
     is_symbolic,
+    _assumptions_of,
     parse,
     parse_owner,
     static_type,
@@ -312,7 +314,10 @@ class Fn(Generic[P, R]):
         for expr in [*self.defs.values(), *self.where]:
             used |= expr.names
         self.static_refs = [n for n in self.static_names if n in used]
-        unknown = used - declared - set(self.static_names)
+        # ... and so may a method's int fields of `self`: @fn(H="heads") for self.heads
+        fields = _field_names(getattr(self, "_owner_cls", None))
+        self.field_refs = sorted((used - declared - set(self.static_names)) & fields)
+        unknown = used - declared - set(self.static_names) - set(self.field_refs)
         first = next(iter(self.params), None)
         maybe_method = self._owner is None and first in ("self", "cls")
         if unknown and not (maybe_method and not getattr(self, "_resolved", False)):
@@ -321,7 +326,13 @@ class Fn(Generic[P, R]):
                 f"constraint is neither a dimension in the signature nor a Static parameter."
             )
         self.input_names -= set(self.static_refs)
-        self._avail = self.input_names | set(self.static_refs)
+        self._avail = self.input_names | set(self.static_refs) | set(self.field_refs)
+        #: Invariants of the structs among the inputs: the prover may assume them.
+        self.assumed: list[Any] = []
+        for prm in self.params.values():
+            for e in _assumptions_of(prm.spec):
+                if e.names <= self.input_names and e not in self.assumed:
+                    self.assumed.append(e)
         self._check_inputs = [
             (n, p.spec) for n, p in self.params.items() if p.spec.leafy
         ]
@@ -346,6 +357,7 @@ class Fn(Generic[P, R]):
         self._lazy = False
         if owner is None:
             owner = _enclosing_class(self.raw)
+        self._owner_cls = owner
         if self._pending:
             scope = {p.__name__: p for p in getattr(self.raw, "__type_params__", ())}
             if owner is not None:
@@ -474,6 +486,13 @@ class Fn(Generic[P, R]):
             if isinstance(v, (int, np.integer)) and not isinstance(v, bool):
                 env.dims[name] = int(v)
                 env.origin[name] = f"the argument `{name}`"
+        if self.field_refs:
+            obj = bound.get(next(iter(self.params)))
+            for name in self.field_refs:
+                v = getattr(obj, name, None)
+                if isinstance(v, (int, np.integer)) and not isinstance(v, bool):
+                    env.dims[name] = int(v)
+                    env.origin[name] = f"`self.{name}`"
         try:
             for name, spec in self._check_inputs:
                 if name in bound:
@@ -780,11 +799,11 @@ class Fn(Generic[P, R]):
         prepared: list[Any] = []
         levels: list[set[int]] = []
         if self.random:  # one key per example
-            prepared.append(jax.random.split(_rng.fresh(f"{self.name}.lift()"), bshape))
+            prepared.append(jr.split(_rng.fresh(f"{self.name}.lift()"), bshape))
             levels.append(set(range(n)))
         for (spec, v, path), b in zip(leaves, batches):
             if isinstance(spec, KeySpec) and not b:
-                split: Callable[[Any], Any] = lambda k: jax.random.split(k, bshape)  # noqa: E731
+                split: Callable[[Any], Any] = lambda k: jr.split(k, bshape)  # noqa: E731
                 for _ in range(spec.core_rank or 0):
                     split = jax.vmap(split, out_axes=n)
                 prepared.append(split(v))
@@ -1173,6 +1192,14 @@ def _is_np(dtype: Any) -> bool:
     except TypeError:
         return False
     return True
+
+
+def _field_names(cls: Any) -> set[str]:
+    if cls is None:
+        return set()
+    if dataclasses.is_dataclass(cls):
+        return {f.name for f in dataclasses.fields(cls)}
+    return set(getattr(cls, "_fields", ()))
 
 
 def _split_site(site: str) -> tuple[str, int]:

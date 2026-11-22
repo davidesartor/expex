@@ -22,6 +22,7 @@ import threading
 from typing import Any, Iterator
 
 import jax
+import jax.random as jr
 
 from ._errors import StageError
 
@@ -52,11 +53,11 @@ class KeyCtx:
     @property
     def key(self) -> Any:
         if self._key is None:
-            self._key = jax.random.fold_in(self._base, self._salt)
+            self._key = jr.fold_in(self._base, self._salt)
         return self._key
 
     def next(self) -> Any:
-        k = jax.random.fold_in(self.key, self.n)
+        k = jr.fold_in(self.key, self.n)
         self.n += 1
         return k
 
@@ -77,7 +78,7 @@ def seed(n: int | Any = 0) -> None:
 
 def _as_key(k: Any) -> Any:
     if isinstance(k, int):
-        return jax.random.key(k)
+        return jr.key(k)
     return k
 
 
@@ -102,7 +103,7 @@ def fresh(what: str = "typax.key()") -> Any:
             f"argument of the jitted function)"
         )
     if _state.root is None:
-        _state.root = KeyCtx(jax.random.key(0))
+        _state.root = KeyCtx(jr.key(0))
     return _state.root.next()
 
 

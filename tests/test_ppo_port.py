@@ -13,6 +13,7 @@ import pytest
 
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 
 import typax as tx
 
@@ -36,7 +37,7 @@ def net_from(prefix):
 
 def test_matches_the_original():
     cfg = ppo.Config(num_updates=3)
-    net, info = jax.jit(lambda k, n: ppo.train(k, cfg, n))(jax.random.PRNGKey(30), net_from("init"))
+    net, info = jax.jit(lambda k, n: ppo.train(k, cfg, n))(jr.PRNGKey(30), net_from("init"))
     for got, want in zip(jax.tree.leaves(net), jax.tree.leaves(net_from("param"))):
         assert jnp.allclose(got, want, atol=1e-6)
     assert np.array_equal(np.asarray(info.returned_episode), REF["episode"])
@@ -47,27 +48,27 @@ def test_matches_the_original():
 
 def test_every_loop_was_staged_and_the_program_is_small():
     cfg = ppo.Config(num_updates=3)
-    jax.jit(lambda k: ppo.train(k, cfg))(jax.random.key(0))
+    jax.jit(lambda k: ppo.train(k, cfg))(jr.key(0))
     flow = list(ppo.train.flow.values())
     assert len(flow) == 4 and all("lax.scan" in how for how in flow), flow
-    small = tx.debug.summary(ppo.train, jax.random.key(0), cfg)
+    small = tx.debug.summary(ppo.train, jr.key(0), cfg)
     assert small.top_level_ops < 200
 
 
 def test_eager_and_compiled_agree():
     cfg = ppo.Config(num_envs=2, num_steps=4, num_updates=1, num_minibatches=2, update_epochs=1)
-    eager_net, eager_info = ppo.train(jax.random.key(1), cfg)
-    jit_net, jit_info = jax.jit(lambda k: ppo.train(k, cfg))(jax.random.key(1))
+    eager_net, eager_info = ppo.train(jr.key(1), cfg)
+    jit_net, jit_info = jax.jit(lambda k: ppo.train(k, cfg))(jr.key(1))
     for a, b in zip(jax.tree.leaves((eager_net, eager_info)), jax.tree.leaves((jit_net, jit_info))):
         assert jnp.allclose(a, b, atol=1e-5)
 
 
 def test_environment_step_matches_a_reference_rollout():
     # plain `if done:` inside step(), lifted over environments
-    keys = jax.random.split(jax.random.key(0), 5)
+    keys = jr.split(jr.key(0), 5)
     obs, env = ppo.reset.lift(keys)
     for t in range(60):
-        step_keys = jax.random.split(jax.random.key(t), 5)
+        step_keys = jr.split(jr.key(t), 5)
         obs, env, reward, done, info = ppo.step.lift(step_keys, env, jnp.ones(5, jnp.int32))
         assert obs.shape == (5, 4) and reward.shape == (5,)
     assert int(info.timestep[0]) == 60

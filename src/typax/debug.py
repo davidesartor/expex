@@ -32,6 +32,7 @@ import numpy as np
 
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 from jax import lax
 from jax.core import eval_jaxpr
 
@@ -79,7 +80,7 @@ def _plain(
 def _trace(f: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[Any, list[Any]]:
     """Trace ``f``; return the closed jaxpr and the flat list of traced inputs."""
     g, args, kwargs = _plain(f, args, kwargs)
-    key = _rng.current().next() if _rng.current() else jax.random.key(0)  # type: ignore[union-attr]
+    key = _rng.current().next() if _rng.current() else jr.key(0)  # type: ignore[union-attr]
 
     def run(*a: Any, **k: Any) -> Any:
         with _rng.rng(key):
@@ -475,7 +476,7 @@ class Timing:
 def timing(f: Callable[..., Any], *args: Any, repeat: int = 5, **kwargs: Any) -> Timing:
     """Time tracing, compilation and execution of ``jit(f)(*args, **kwargs)`` separately."""
     g, args, kwargs = _plain(f, args, kwargs)
-    key = jax.random.key(0)
+    key = jr.key(0)
 
     def run(key: Any, *a: Any, **k: Any) -> Any:
         with _rng.rng(key):
@@ -612,7 +613,7 @@ def shapes(f: Callable[..., Any], *args: Any, **kwargs: Any) -> ShapeTrace:
     try:
         if args or kwargs or not isinstance(target, Fn):
             g, a, k = _plain(f, args, kwargs)
-            with _rng.rng(jax.random.key(0)):
+            with _rng.rng(jr.key(0)):
                 jax.eval_shape(lambda *x, **y: g(*x, **y), *a, **k)
             title = f"{getattr(raw, '__qualname__', raw.__name__)} at {fname}:{start}"
         else:
@@ -698,7 +699,7 @@ def memory(f: Callable[..., Any], *args: Any, **kwargs: Any) -> Memory:
     ``@fn(remat=...)`` reduces it.
     """
     g, args, kwargs = _plain(f, args, kwargs)
-    key = jax.random.key(0)
+    key = jr.key(0)
 
     def run(key: Any, *a: Any, **k: Any) -> Any:
         with _rng.rng(key):

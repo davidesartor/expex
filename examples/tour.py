@@ -4,6 +4,7 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 
 import typax as tx
 from typax import debug, f32, fn, i32
@@ -44,18 +45,18 @@ def loss[T, D, H](p: Params[D, H], xs: f32[T, D], ys: f32[T, D]) -> f32:
 
 
 def init(key, d: int, h: int) -> Params:
-    k1, k2, k3 = jax.random.split(key, 3)
+    k1, k2, k3 = jr.split(key, 3)
     s = 0.3
     return Params(
-        s * jax.random.normal(k1, (h, d)),
-        s * jax.random.normal(k2, (h, h)),
-        s * jax.random.normal(k3, (d, h)),
+        s * jr.normal(k1, (h, d)),
+        s * jr.normal(k2, (h, h)),
+        s * jr.normal(k3, (d, h)),
     )
 
 
 if __name__ == "__main__":
-    p = init(jax.random.key(0), d=3, h=8)
-    xs = jax.random.normal(jax.random.key(1), (20, 3))
+    p = init(jr.key(0), d=3, h=8)
+    xs = jr.normal(jr.key(1), (20, 3))
 
     section("1. A call that breaks the contract")
     try:
@@ -95,14 +96,14 @@ if __name__ == "__main__":
     print("collatz, vectorised over traced ints:", jax.vmap(collatz)(jnp.array([6, 7, 27])))
 
     section("4. Vectorising from the signature")
-    batch = jax.random.normal(jax.random.key(2), (32, 20, 3))
+    batch = jr.normal(jr.key(2), (32, 20, 3))
     print("rnn.lift on a batch:", rnn.lift(p, batch).shape)
 
     section("5. Implicit random keys")
 
     @fn(random=True)
     def dropout[D](x: f32[D], rate: float = 0.5) -> f32[D]:
-        keep = jax.random.bernoulli(tx.key(), 1 - rate, x.shape)
+        keep = jr.bernoulli(tx.key(), 1 - rate, x.shape)
         return jnp.where(keep, x / (1 - rate), 0.0)
 
     tx.seed(0)

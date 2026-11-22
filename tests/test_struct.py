@@ -6,6 +6,7 @@ import pytest
 
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 
 import typax as tx
 from typax import ShapeError, f32, fn
@@ -26,7 +27,7 @@ class Linear[I, O]:
 
     @staticmethod
     def init(key, i: int, o: int) -> "Linear":
-        return Linear(jax.random.normal(key, (o, i)), jnp.zeros(o))
+        return Linear(jr.normal(key, (o, i)), jnp.zeros(o))
 
 
 @tx.struct
@@ -41,7 +42,7 @@ class MLP[I, H, O]:
 
 
 def test_struct_is_a_checked_pytree():
-    lin = Linear.init(jax.random.key(0), 3, 5)
+    lin = Linear.init(jr.key(0), 3, 5)
     assert lin(jnp.ones((2, 3))).shape == (2, 5)
     leaves, tree = jax.tree.flatten(lin)
     assert len(leaves) == 2  # w and b; act and name are static
@@ -53,7 +54,7 @@ def test_struct_is_a_checked_pytree():
 
 
 def test_struct_is_immutable_with_replace():
-    lin = Linear.init(jax.random.key(0), 3, 5)
+    lin = Linear.init(jr.key(0), 3, 5)
     with pytest.raises(Exception):
         lin.w = jnp.zeros((5, 3))  # type: ignore[misc]
     lin2 = lin.replace(b=jnp.ones(5))
@@ -61,18 +62,18 @@ def test_struct_is_immutable_with_replace():
 
 
 def test_struct_through_jit_grad_and_vmap():
-    lin = Linear.init(jax.random.key(0), 3, 5)
+    lin = Linear.init(jr.key(0), 3, 5)
     x = jnp.ones((2, 3))
     assert jnp.allclose(jax.jit(lambda m, x: m(x))(lin, x), lin(x))
     g = jax.grad(lambda m: m(x).sum())(lin)
     assert isinstance(g, Linear) and g.w.shape == (5, 3) and g.name == "linear"
-    stacked = jax.vmap(lambda k: Linear.init(k, 3, 5))(jax.random.split(jax.random.key(1), 4))
+    stacked = jax.vmap(lambda k: Linear.init(k, 3, 5))(jr.split(jr.key(1), 4))
     assert stacked.w.shape == (4, 5, 3)
     assert jax.vmap(lambda m: m(x))(stacked).shape == (4, 2, 5)
 
 
 def test_nested_structs_and_proofs():
-    k1, k2 = jax.random.split(jax.random.key(0))
+    k1, k2 = jr.split(jr.key(0))
     mlp = MLP((Linear.init(k1, 3, 8), Linear.init(k2, 8, 2)))
     assert mlp(jnp.ones((4, 3))).shape == (4, 2)
     with pytest.raises(ShapeError, match="H is 8"):
@@ -124,8 +125,8 @@ class Deep[D]:
 
 
 def test_loops_over_identical_layers_are_scanned():
-    keys = jax.random.split(jax.random.key(0), 24)
-    deep = Deep([Block(0.3 * jax.random.normal(k, (8, 8)), jnp.zeros(8)) for k in keys])
+    keys = jr.split(jr.key(0), 24)
+    deep = Deep([Block(0.3 * jr.normal(k, (8, 8)), jnp.zeros(8)) for k in keys])
     x = jnp.ones(8)
 
     def unrolled(m, x):
@@ -146,6 +147,49 @@ def test_loops_over_identical_layers_are_scanned():
 
 
 def test_lists_of_different_layers_still_unroll():
-    k1, k2 = jax.random.split(jax.random.key(0))
+    k1, k2 = jr.split(jr.key(0))
     mlp = MLP((Linear.init(k1, 3, 8), Linear.init(k2, 8, 2)))
     assert jax.jit(lambda m, x: m(x))(mlp, jnp.ones((4, 3))).shape == (4, 2)
+
+
+@tx.struct(where="D % heads == 0")
+class Heads[D]:
+    w: f32[D, D]
+    heads: int = 2
+
+    @fn(H="heads", K="D // heads")
+    def split[T, H, K](self, x: f32[T, D]) -> f32[H, T, K]:
+        t, d = x.shape
+        return x.reshape(t, self.heads, d // self.heads).transpose(1, 0, 2)
+
+    def __call__(self, x: f32[D]) -> f32[D]:
+        return self.w @ x
+
+
+@tx.struct
+class UsesHeads[D]:
+    inner: Heads[D]
+
+    def __call__[T](self, x: f32[T, D]) -> f32[T, D]:
+        h = self.inner.split(x)
+        return h.transpose(1, 0, 2).reshape(x.shape)
+
+
+def test_invariants_are_checked_and_assumed():
+    good = Heads(jnp.eye(4), heads=2)
+    assert good.split(jnp.ones((3, 4))).shape == (2, 3, 2)
+    with pytest.raises(ShapeError, match="Heads requires `D % heads == 0`, which does not hold \\(D=5, heads=2\\)"):
+        Heads(jnp.eye(5), heads=2).split(jnp.ones((3, 5)))
+    with pytest.raises(ShapeError, match="requires `D % heads == 0`"):
+        UsesHeads(Heads(jnp.eye(5), heads=2))(jnp.ones((3, 5)))
+    # the caller never states the constraint: it is assumed from the struct
+    assert tx.prove(UsesHeads.__call__).status == "proved"
+    assert tx.prove(Heads.split).status == "proved"
+    # field values can be used by name in a method's derived sizes
+    assert "-> f32[heads, T, D // heads]" in repr(Heads.split)
+
+
+def test_module_lift():
+    m = Heads(jnp.eye(4) * 2, heads=2)
+    assert m.lift(jnp.ones((5, 4))).shape == (5, 4)
+    assert jnp.allclose(m.lift(jnp.ones((5, 4))), 2.0)

@@ -7,6 +7,7 @@ import pytest
 
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 
 import typax as tx
 from typax import Key, RetraceWarning, ShapeError, Static, config, f32, fn
@@ -18,7 +19,7 @@ def score[T, D](x: f32[T, D], w: f32[D]) -> f32[T]:
 
 
 def test_lift_matches_vmap():
-    xs = jax.random.normal(jax.random.key(0), (32, 5, 3))
+    xs = jr.normal(jr.key(0), (32, 5, 3))
     w = jnp.arange(3.0)
     out = score.lift(xs, w)
     assert out.shape == (32, 5)
@@ -30,8 +31,8 @@ def test_lift_without_batch_is_a_plain_call():
 
 
 def test_lift_broadcasts_batch_axes():
-    xs = jax.random.normal(jax.random.key(0), (8, 1, 5, 3))
-    ws = jax.random.normal(jax.random.key(1), (7, 3))
+    xs = jr.normal(jr.key(0), (8, 1, 5, 3))
+    ws = jr.normal(jr.key(1), (7, 3))
     out = score.lift(xs, ws)
     assert out.shape == (8, 7, 5)
     assert jnp.allclose(out, jnp.einsum("bitd,jd->bjt", xs, ws), atol=1e-5)
@@ -61,15 +62,15 @@ def test_lift_errors():
 def test_lift_splits_a_single_key():
     @fn
     def noise[D](x: f32[D], key: Key) -> f32[D]:
-        return x + jax.random.normal(key, x.shape)
+        return x + jr.normal(key, x.shape)
 
-    out = noise.lift(jnp.zeros((4, 3)), jax.random.key(0))
+    out = noise.lift(jnp.zeros((4, 3)), jr.key(0))
     assert out.shape == (4, 3)
     assert len({tuple(r.tolist()) for r in out}) == 4  # no shared randomness
     # legacy keys work too
-    assert noise.lift(jnp.zeros((4, 3)), jax.random.PRNGKey(0)).shape == (4, 3)
+    assert noise.lift(jnp.zeros((4, 3)), jr.PRNGKey(0)).shape == (4, 3)
     # a batch of keys is mapped over, not split
-    keys = jax.random.split(jax.random.key(1), 4)
+    keys = jr.split(jr.key(1), 4)
     out2 = noise.lift(jnp.zeros((4, 3)), keys)
     assert jnp.allclose(out2[2], noise(jnp.zeros(3), keys[2]))
     # a batch of keys alone defines the batch
@@ -226,7 +227,7 @@ def test_rows_chunk_runs_like_lax_map():
             out.append(jnp.tanh(x).sum())
         return jnp.asarray(out)
 
-    xs = jax.random.normal(jax.random.key(0), (7, 3))
+    xs = jr.normal(jr.key(0), (7, 3))
     ref = jnp.tanh(xs).sum(-1)
     assert jnp.allclose(f(xs, 1), ref)
     assert jnp.allclose(jax.jit(lambda v: f(v, 1))(xs), ref)

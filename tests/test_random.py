@@ -4,6 +4,7 @@ import pytest
 
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 
 import typax as tx
 from typax import Key, StageError, Static, f32, fn
@@ -11,7 +12,7 @@ from typax import Key, StageError, Static, f32, fn
 
 @fn(random=True)
 def noise[D](x: f32[D]) -> f32[D]:
-    return x + jax.random.normal(tx.key(), x.shape)
+    return x + jr.normal(tx.key(), x.shape)
 
 
 def test_fresh_key_each_call_and_reproducible_with_seed():
@@ -26,7 +27,7 @@ def test_fresh_key_each_call_and_reproducible_with_seed():
 def test_several_draws_inside_one_call_differ():
     @fn(random=True)
     def two() -> tuple[f32, f32]:
-        return jax.random.normal(tx.key()), jax.random.normal(tx.key())
+        return jr.normal(tx.key()), jr.normal(tx.key())
 
     a, b = two()
     assert a != b
@@ -35,7 +36,7 @@ def test_several_draws_inside_one_call_differ():
 def test_explicit_key_scope():
     with tx.rng(42):
         a = noise(jnp.zeros(3))
-    with tx.rng(jax.random.key(42)):
+    with tx.rng(jr.key(42)):
         b = noise(jnp.zeros(3))
     assert jnp.allclose(a, b)
 
@@ -60,17 +61,17 @@ def test_plain_jit_with_explicit_key_scope():
         with tx.rng(key):
             return noise(x)
 
-    a = step(jnp.zeros(3), jax.random.key(0))
-    b = step(jnp.zeros(3), jax.random.key(1))
+    a = step(jnp.zeros(3), jr.key(0))
+    b = step(jnp.zeros(3), jr.key(1))
     assert not jnp.allclose(a, b)
-    with tx.rng(jax.random.key(0)):
+    with tx.rng(jr.key(0)):
         assert jnp.allclose(a, noise(jnp.zeros(3)))  # same result eagerly
 
 
 def test_owned_jit_gets_fresh_randomness_without_retracing():
     @fn(jit=True, random=True)
     def jnoise[D](x: f32[D]) -> f32[D]:
-        return x + jax.random.normal(tx.key(), x.shape)
+        return x + jr.normal(tx.key(), x.shape)
 
     outs = [jnoise(jnp.zeros(3)) for _ in range(4)]
     assert len({tuple(o.tolist()) for o in outs}) == 4
@@ -104,9 +105,9 @@ def test_keys_agree_between_eager_and_staged_control_flow():
         out = []
         for s in steps:
             if s > 0:
-                pos = pos + s * jax.random.normal(tx.key())
+                pos = pos + s * jr.normal(tx.key())
             else:
-                pos = pos - jax.random.uniform(tx.key())
+                pos = pos - jr.uniform(tx.key())
             out.append(pos)
         return jnp.asarray(out)
 
@@ -119,7 +120,7 @@ def test_keys_agree_between_eager_and_staged_control_flow():
         with tx.rng(key):
             return walk(steps)
 
-    staged = run(steps, jax.random.key(3))
+    staged = run(steps, jr.key(3))
     assert jnp.allclose(eager, staged, atol=1e-6)
     assert "scan" in "".join(walk.flow.values())
     assert len(set(eager.tolist())) == 5
@@ -130,13 +131,13 @@ def test_independent_random_loop_uses_vmap_with_distinct_keys():
     def samples[T](x: f32[T]) -> f32[T]:
         out = []
         for v in x:
-            out.append(v + jax.random.normal(tx.key()))
+            out.append(v + jr.normal(tx.key()))
         return jnp.asarray(out)
 
     x = jnp.zeros(6)
     with tx.rng(1):
         eager = samples(x)
-    staged = jax.jit(lambda x, k: _scoped(samples, k, x))(x, jax.random.key(1))
+    staged = jax.jit(lambda x, k: _scoped(samples, k, x))(x, jr.key(1))
     assert jnp.allclose(eager, staged, atol=1e-6)
     assert len(set(staged.tolist())) == 6
     assert "vmap" in "".join(samples.flow.values())

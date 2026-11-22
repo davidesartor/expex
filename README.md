@@ -6,6 +6,7 @@ and decorate with `@fn`:
 ```python
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 import typax as tx
 from typax import fn, f32, i32
 
@@ -107,8 +108,8 @@ class Stack[D]:
             x = block(x)
         return x
 
-keys = jax.random.split(jax.random.key(0), 24)
-model = Stack([Block(0.1 * jax.random.normal(k, (16, 16)), jnp.zeros(16)) for k in keys])
+keys = jr.split(jr.key(0), 24)
+model = Stack([Block(0.1 * jr.normal(k, (16, 16)), jnp.zeros(16)) for k in keys])
 y = jax.jit(lambda m, x: m(x))(model, jnp.ones((4, 16)))
 grads = jax.grad(lambda m: m(jnp.ones((4, 16))).sum())(model)   # a Stack too
 ```
@@ -259,7 +260,7 @@ layer: with the layer scan, a 12-layer backward pass went from 57 MB to 22 MB.
 ```python
 @fn(random=True)
 def dropout[D](x: f32[D], rate: float = 0.5) -> f32[D]:
-    keep = jax.random.bernoulli(tx.key(), 1 - rate, x.shape)
+    keep = jr.bernoulli(tx.key(), 1 - rate, x.shape)
     return jnp.where(keep, x / (1 - rate), 0.0)
 
 tx.seed(0)

@@ -17,14 +17,15 @@ config = {"LR": 2.5e-4, "NUM_ENVS": 4, "NUM_STEPS": 128, "UPDATE_EPOCHS": 4, "NU
 config["TOTAL_TIMESTEPS"] = n_updates * config["NUM_STEPS"] * config["NUM_ENVS"]
 import time
 t = time.time()
-res = jax.jit(ppo.make_train(config))(jax.random.PRNGKey(30))
+res = jax.jit(ppo.make_train(config))(jr.PRNGKey(30))
 jax.block_until_ready(res)
 print("original: %.1fs" % (time.time() - t))
 ts = res["runner_state"][0]
 flat = {"/".join(map(str, [getattr(k, "key", getattr(k, "name", k)) for k in path])): np.asarray(v)
         for path, v in jax.tree_util.tree_flatten_with_path(ts.params)[0]}
 import jax.numpy as jnp
-_, k0 = jax.random.split(jax.random.PRNGKey(30))
+import jax.random as jr
+_, k0 = jr.split(jr.PRNGKey(30))
 init = ppo.ActorCritic(2, activation="tanh").init(k0, jnp.zeros(4))
 init_flat = {"/".join(map(str, [getattr(k, "key", getattr(k, "name", k)) for k in path])): np.asarray(v)
         for path, v in jax.tree_util.tree_flatten_with_path(init)[0]}

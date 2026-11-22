@@ -6,6 +6,7 @@ import pytest
 
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 
 import typax as tx
 from typax._spec import StaticSpec
@@ -255,7 +256,7 @@ def test_structs_keys_containers_and_64_bit():
 
     @fn
     def noise[D](x: f32[D], key: Key) -> f32[D]:
-        return x + jax.random.normal(key, x.shape)
+        return x + jr.normal(key, x.shape)
 
     @fn
     def legacy[D](x: f32[D], key: Key) -> f32[D]:
