@@ -5,7 +5,6 @@ from __future__ import annotations
 import dataclasses
 import functools
 import inspect
-import linecache
 import os
 import warnings
 import weakref
@@ -21,11 +20,9 @@ from typing import (
 )
 
 import jax
-import jax.numpy as jnp
-import jax.random as jr
 import numpy as np
 
-from . import _flow, _ops, _rng
+from . import _flow, _lift, _messages, _ops, _rng
 from ._convert import NotConverted
 from ._convert import convert as _convert
 from ._dims import DExpr, DName, Env, describe, is_symbolic, resolve
@@ -33,8 +30,6 @@ from ._errors import Mismatch, RetraceWarning, ShapeError, StageError
 from ._expr import Expr
 from ._jit import _avals, _Frozen, _is_traced_leaf, _mark
 from ._spec import (
-    ArraySpec,
-    KeySpec,
     OpaqueSpec,
     Spec,
     StaticSpec,
@@ -513,7 +508,7 @@ class Fn(Generic[P, R]):
             if env.deferred:
                 resolve(env)
         except Mismatch as m:
-            raise self._error(m, "argument", env) from None
+            raise _messages.error(self, m, "argument", env) from None
         if self.where:
             self._check_where(env, final=False)
         # Objects this call creates are its own: updating them in place is fine
@@ -531,7 +526,7 @@ class Fn(Generic[P, R]):
         except Exception as e:
             _flow._STAGE.depth = depth
             if config.notes and not getattr(e, "_typax_local", None) is self:
-                self._annotate(e, bound, env)
+                _messages.annotate(self, e, bound, env)
             raise
         _flow._STAGE.depth = depth
         if self.converted:
@@ -542,7 +537,7 @@ class Fn(Generic[P, R]):
                 if env.deferred:
                     resolve(env)
             except Mismatch as m:
-                raise self._error(m, "return", env) from None
+                raise _messages.error(self, m, "return", env) from None
             if self.where:
                 self._check_where(env, final=True)
         return out
@@ -624,103 +619,10 @@ class Fn(Generic[P, R]):
             if env.deferred:
                 resolve(env)
         except Mismatch as m:
-            e = self._error(m, "local", env, site)
+            e = _messages.error(self, m, "local", env, site)
             setattr(e, "_typax_local", self)
             raise e from None
 
-    def _error(self, m: Mismatch, role: str, env: Env, site: str = "") -> Exception:
-        if role == "local":
-            top = m.path.split(".")[0].split("[")[0]
-            head = f"{self.name}(): local variable `{top}` does not match its annotation."
-            declared = f"{m.path}: {m.spec}"
-            got = "assigned"
-        elif role == "argument":
-            top = m.path.split(".")[0].split("[")[0]
-            head = f"{self.name}(): argument `{top}` does not match its annotation."
-            declared = f"{m.path}: {m.spec}"
-            got = "received"
-        else:
-            head = f"{self.name}(): the return value does not match its annotation."
-            sub = m.path[len("return"):]
-            declared = f"-> {m.spec}" if not sub else f"return{sub}: {m.spec}"
-            got = "returned"
-        pad = " " * max(0, len(declared) - len(str(m.spec)))
-        lines = [
-            head,
-            "",
-            f"    declared  {declared}",
-            f"    {got}  {pad}{describe(m.value)}",
-            "",
-            f"    {m.reason}",
-        ]
-        binds = env.summary()
-        if binds and role != "argument":
-            lines.append(f"    Bound so far: {binds}.")
-        hint = self._hint(m, role, env)
-        if hint:
-            lines += ["", f"    Hint: {hint}"]
-        if site:
-            text = linecache.getline(*_split_site(site)).strip()
-            lines += ["", f"    at {site}" + (f"\n    > {text}" if text else "")]
-        lines += ["", f"    {self.signature}", f"    defined at {self.location}"]
-        cls = StageError if getattr(m, "stage", False) else ShapeError
-        return cls("\n".join(lines))
-
-    def _hint(self, m: Mismatch, role: str, env: Env) -> str:
-        """A suggestion for the most common causes of a mismatch, or ''."""
-        spec = m.spec
-        if not isinstance(spec, ArraySpec):
-            return ""
-        value: Any = m.value
-        try:
-            shape, dtype = tuple(value.shape), value.dtype
-        except AttributeError:
-            return ""
-        if not spec.dtype.accepts(dtype):
-            want, got = spec.dtype.dtype, np.dtype(dtype) if _is_np(dtype) else None
-            if want is not None and got is not None and want.kind == got.kind:
-                if got.itemsize > want.itemsize:
-                    src = "NumPy and Python default to 64 bits; " if got.itemsize == 8 else ""
-                    return f"{src}convert with jnp.asarray(x, jnp.{want.name})."
-                return f"convert with x.astype(jnp.{want.name}), or declare the wider dtype."
-            if want is not None and got is not None and want.kind == "f" and got.kind in "iub":
-                return f"this is an integer array; convert with x.astype(jnp.{want.name})."
-            return ""
-        rank = spec.core_rank
-        if rank is None:
-            return ""
-        if len(shape) > rank and role == "argument":
-            extra = len(shape) - rank
-            return (
-                f"`{m.path}` has {extra} extra leading ax{'is' if extra == 1 else 'es'}. To map "
-                f"over {'it' if extra == 1 else 'them'}, call {self.name}.lift(...)."
-            )
-        if len(shape) == rank and rank > 1:
-            want_shape = []
-            for d in spec.dims:
-                v = d.value if hasattr(d, "value") else env.dims.get(getattr(d, "name", ""), None)
-                if not isinstance(v, int):
-                    return ""
-                want_shape.append(v)
-            if tuple(want_shape) != shape and sorted(want_shape) == sorted(shape):
-                perm = [want_shape.index(s) for s in shape]
-                if len(set(perm)) == len(perm):
-                    names = ", ".join(str(spec.dims[i]) for i in perm)
-                    return f"the axes look permuted: this has the layout [{names}]."
-        return ""
-
-    def _annotate(self, e: Exception, bound: dict[str, Any], env: Env) -> None:
-        try:
-            _stage_hint(e, self)
-            args = ", ".join(
-                f"{n}: {describe(v)}" for n, v in bound.items() if self.params[n].spec.leafy
-            )
-            binds = env.summary()
-            note = f"typax: in {self.name}({args})" + (f"  [{binds}]" if binds else "")
-            if note not in getattr(e, "__notes__", ()):
-                e.add_note(note)
-        except Exception:
-            pass
 
     # ------------------------------------------------------------------- jit
 
@@ -781,104 +683,12 @@ class Fn(Generic[P, R]):
         Each argument's batch axes are whatever precedes its declared shape.
         Arguments without extra axes are passed to every call unchanged; batch
         axes of different arguments broadcast against each other. The result
-        gains the batch axes in front.
-
-        A single PRNG key is split into one key per batch element, so examples
-        do not share randomness.
+        gains the batch axes in front. A single PRNG key is split into one key
+        per batch element, so examples do not share randomness.
         """
         __tracebackhide__ = True
-        try:
-            ba = self._sig.bind(*args, **kwargs)
-        except TypeError:
-            return self._direct(args, kwargs)  # let Python raise its own error
-        try:
-            leaves, batches, bshape = self._batch_plan(ba.arguments, "lift")
-        except TypeError:
-            if not self.auto_lift:
-                raise
-            return self._direct(args, kwargs)  # variadic shapes: nothing to infer
-        if not bshape:
-            return self._direct(args, kwargs)
+        return _lift.lift(self, args, kwargs)
 
-        n = len(bshape)
-        prepared: list[Any] = []
-        levels: list[set[int]] = []
-        if self.random:  # one key per example
-            prepared.append(jr.split(_rng.fresh(f"{self.name}.lift()"), bshape))
-            levels.append(set(range(n)))
-        for (spec, v, path), b in zip(leaves, batches):
-            if isinstance(spec, KeySpec) and not b:
-                split: Callable[[Any], Any] = lambda k: jr.split(k, bshape)  # noqa: E731
-                for _ in range(spec.core_rank or 0):
-                    split = jax.vmap(split, out_axes=n)
-                prepared.append(split(v))
-                levels.append(set(range(n)))
-                continue
-            off = n - len(b)
-            ones = tuple(i for i, s in enumerate(b) if _is_one(s))
-            if ones:
-                v = jnp.squeeze(jnp.asarray(v), axis=ones)
-            prepared.append(v)
-            levels.append({off + i for i in range(len(b)) if i not in ones})
-
-        def core_fn(*lv: Any) -> Any:
-            it = iter(lv)
-            k = next(it) if self.random else None
-            new = self._walk(ba.arguments, lambda s, x, p: next(it))
-            b2 = inspect.BoundArguments(self._sig, new)  # type: ignore[arg-type]
-            if self._jitted is not None:
-                return self._call_jit(b2.args, b2.kwargs, k)
-            return self._run(b2.args, b2.kwargs, key=k)
-
-        g: Callable[..., Any] = core_fn
-        for level in reversed(range(n)):
-            in_axes = tuple(0 if level in lv else None for lv in levels)
-            if any(a is not None for a in in_axes):
-                g = jax.vmap(g, in_axes=in_axes)
-            else:
-                g = jax.vmap(g, in_axes=in_axes, axis_size=bshape[level])
-        return g(*prepared)
-
-    def _batch_plan(
-        self, arguments: Any, what: str
-    ) -> tuple[list[tuple[Spec, Any, str]], list[tuple[Any, ...]], tuple[Any, ...]]:
-        """Split each array argument's shape into batch axes + declared axes."""
-        if self._lazy:
-            self._resolve_owner()
-        leaves: list[tuple[Spec, Any, str]] = []
-
-        def collect(spec: Spec, v: Any, path: str) -> Any:
-            leaves.append((spec, v, path))
-            return v
-
-        self._walk(arguments, collect)
-        batches: list[tuple[Any, ...]] = []
-        for spec, v, path in leaves:
-            core = spec.core_rank  # type: ignore[attr-defined]
-            if core is None:
-                raise TypeError(
-                    f"{self.name}.{what}(): `{path}: {spec}` has a variadic shape, so its "
-                    f"batch axes cannot be told apart from its own axes."
-                )
-            if isinstance(spec, KeySpec):
-                shape = KeySpec.batch_shape(v) or ()
-            else:
-                shape = tuple(jnp.shape(v))
-            nb = len(shape) - core
-            batches.append(shape[:nb] if nb > 0 else ())
-        try:
-            bshape = tuple(jnp.broadcast_shapes(*batches)) if batches else ()
-        except ValueError:
-            listing = "\n".join(
-                f"    {path}: {describe(v)}  = batch {b} + {spec}"
-                for (spec, v, path), b in zip(leaves, batches)
-                if b
-            )
-            raise ShapeError(
-                f"{self.name}.{what}(): the batch axes of the arguments do not broadcast.\n\n"
-                f"{listing}\n\n    {self.signature}"
-            ) from None
-        return leaves, batches, bshape
 
     def _walk(self, arguments: Any, visit: Callable[[Spec, Any, str], Any]) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -998,35 +808,12 @@ class BoundFn(Generic[P, R]):
         return f"<bound {self.fn!r} of {type(self.obj).__name__}>"
 
 
-def _is_np(dtype: Any) -> bool:
-    try:
-        np.dtype(dtype)
-    except TypeError:
-        return False
-    return True
-
-
 def _field_names(cls: Any) -> set[str]:
     if cls is None:
         return set()
     if dataclasses.is_dataclass(cls):
         return {f.name for f in dataclasses.fields(cls)}
     return set(getattr(cls, "_fields", ()))
-
-
-def _split_site(site: str) -> tuple[str, int]:
-    fname, _, line = site.rpartition(":")
-    try:
-        return fname, int(line)
-    except ValueError:
-        return site, 0
-
-
-def _is_one(s: Any) -> bool:
-    try:
-        return bool(s == 1)
-    except Exception:
-        return False
 
 
 def _trace_desc(leaf: Any) -> str:
@@ -1038,65 +825,6 @@ def _trace_desc(leaf: Any) -> str:
 
 
 # ---------------------------------------------------------------- stage hints
-
-_PKG_DIRS = (os.path.dirname(os.path.abspath(jax.__file__)), os.path.dirname(os.path.abspath(__file__)))
-
-
-def _user_frame(e: BaseException) -> tuple[str, int, str] | None:
-    tb = e.__traceback__
-    found = None
-    while tb is not None:
-        fname = tb.tb_frame.f_code.co_filename
-        if not os.path.abspath(fname).startswith(_PKG_DIRS):
-            found = (fname, tb.tb_lineno, linecache.getline(fname, tb.tb_lineno).strip())
-        tb = tb.tb_next
-    return found
-
-
-def _stage_hint(e: Exception, f: Fn[Any, Any]) -> None:
-    if not isinstance(e, jax.errors.JAXTypeError) or getattr(e, "_typax_hint", False):
-        return
-    E = jax.errors
-    if isinstance(e, E.TracerBoolConversionError):
-        need = "a concrete Python bool (for `if`, `while`, `and`/`or`, `assert`)"
-        fixes = [
-            "to choose between two values:        jnp.where(cond, a, b)",
-            "to choose between two computations:  jax.lax.cond(cond, f, g, *operands)",
-            "to loop until a condition:           jax.lax.while_loop(cond_fn, body_fn, init)",
-        ]
-    elif isinstance(e, E.TracerIntegerConversionError):
-        need = "a concrete Python int (for `range`, a shape, or an index into a Python list)"
-        fixes = [
-            "if it is a size, read it from an array's .shape (shapes are always concrete)",
-            "to loop a traced number of times:    jax.lax.fori_loop / jax.lax.scan",
-        ]
-    elif isinstance(e, E.TracerArrayConversionError):
-        need = "a concrete NumPy array"
-        fixes = ["use jax.numpy (jnp) instead of numpy (np) on traced values"]
-    elif isinstance(e, E.NonConcreteBooleanIndexError):
-        need = "a concrete boolean mask (the result's shape would depend on the data)"
-        fixes = ["keep the shape fixed:  jnp.where(mask, x, fill)  or  x * mask"]
-    elif isinstance(e, E.ConcretizationTypeError):
-        need = "a concrete value"
-        fixes = []
-    else:
-        return
-    setattr(e, "_typax_hint", True)
-    frame = _user_frame(e)
-    where = f"`{frame[2]}`  ({frame[0]}:{frame[1]})" if frame and frame[2] else "this code"
-    traced = [n for n, p in f.params.items() if isinstance(p.spec, (ArraySpec, KeySpec))]
-    lines = [
-        f"typax: {where} needs {need},",
-        "    but the value is traced: inside jit/vmap/grad, array arguments have no "
-        "values, only shapes.",
-    ]
-    lines += [f"    - {x}" for x in fixes]
-    lines.append(
-        "    - if the value is configuration rather than data, declare the parameter "
-        "Static[...]"
-        + (f" (array parameters of {f.name}: {', '.join(traced)})" if traced else "")
-    )
-    e.add_note("\n".join(lines))
 
 
 # ------------------------------------------------------------------ decorator
