@@ -193,3 +193,48 @@ def test_module_lift():
     m = Heads(jnp.eye(4) * 2, heads=2)
     assert m.lift(jnp.ones((5, 4))).shape == (5, 4)
     assert jnp.allclose(m.lift(jnp.ones((5, 4))), 2.0)
+
+
+@tx.struct(where="D % heads == 0")
+class Attn[D]:
+    wq: f32[D, D]
+    wo: f32[D, D]
+    heads: int = 2
+
+    def __init__(self, key, d: int, heads: int = 2):
+        kq, ko = jr.split(key)
+        self.wq = jr.normal(kq, (d, d))
+        self.wo = jr.normal(ko, (d, d))
+        self.heads = heads
+
+    def __call__[T](self, x: f32[T, D]) -> f32[T, D]:
+        return x @ self.wq @ self.wo
+
+
+def test_custom_init():
+    a = Attn(jr.key(0), 4)
+    assert a.heads == 2 and a(jnp.ones((3, 4))).shape == (3, 4)
+    with pytest.raises(Exception):
+        a.wq = jnp.zeros((4, 4))  # frozen after __init__
+    # rebuilt by JAX without calling __init__
+    doubled = jax.tree.map(lambda w: 2 * w, a)
+    assert isinstance(doubled, Attn) and jnp.allclose(doubled.wq, 2 * a.wq)
+    g = jax.grad(lambda m: m(jnp.ones((3, 4))).sum())(a)
+    assert isinstance(g, Attn) and g.heads == 2
+    assert jnp.allclose(a.replace(heads=4).wq, a.wq)
+    stacked = jax.vmap(lambda k: Attn(k, 4))(jr.split(jr.key(1), 3))
+    assert stacked.wq.shape == (3, 4, 4)
+    # the finished object is checked against its annotations and invariants
+    with pytest.raises(ShapeError, match="Attn requires `D % heads == 0`, which does not hold \\(D=5, heads=2\\)"):
+        Attn(jr.key(0), 5)
+    assert jax.tree_util.keystr(jax.tree_util.tree_flatten_with_path(a)[0][0][0]) == ".wq"
+
+    @tx.struct
+    class Incomplete:
+        w: f32[2]  # type: ignore[valid-type]
+
+        def __init__(self):
+            pass
+
+    with pytest.raises(TypeError, match="did not set w"):
+        Incomplete()

@@ -35,6 +35,7 @@ from ._spec import (
     _assumptions_of,
     parse,
     parse_owner,
+    rebuild,
     static_type,
     resolve,
 )
@@ -1096,8 +1097,7 @@ def _mark(spec: Spec, v: Any, wrap: bool) -> Any:
         if isinstance(v, tuple):
             record: Any = v
             return record._replace(**new)
-        instance: Any = v
-        return dataclasses.replace(instance, **new)
+        return rebuild(v, **new)
     elems = getattr(spec, "elems", None)
     if elems is not None and isinstance(v, tuple) and len(v) == len(elems):
         return tuple(_mark(s, x, wrap) for s, x in zip(elems, v))

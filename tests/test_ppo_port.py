@@ -26,13 +26,12 @@ REF = np.load(ROOT / "tests" / "data" / "purejaxrl_ppo_3_updates.npz")
 
 
 def net_from(prefix):
-    def layer(i):
-        return ppo.Layer(
-            jnp.asarray(REF[f"{prefix}:params/Dense_{i}/kernel"]),
-            jnp.asarray(REF[f"{prefix}:params/Dense_{i}/bias"]),
-        )
-
-    return ppo.Net((layer(0), layer(1), layer(2)), (layer(3), layer(4), layer(5)))
+    """A network holding the reference parameters (actor layers, then critic layers)."""
+    leaves = []
+    for i in range(6):
+        leaves += [REF[f"{prefix}:params/Dense_{i}/kernel"], REF[f"{prefix}:params/Dense_{i}/bias"]]
+    shape = jax.tree.structure(ppo.Net(jr.key(0)))
+    return jax.tree.unflatten(shape, [jnp.asarray(x) for x in leaves])
 
 
 def test_matches_the_original():
@@ -66,10 +65,10 @@ def test_eager_and_compiled_agree():
 def test_environment_step_matches_a_reference_rollout():
     # plain `if done:` inside step(), lifted over environments
     keys = jr.split(jr.key(0), 5)
-    obs, env = ppo.reset.lift(keys)
+    obs, env = ppo.Env.reset.lift(keys)
     for t in range(60):
         step_keys = jr.split(jr.key(t), 5)
-        obs, env, reward, done, info = ppo.step.lift(step_keys, env, jnp.ones(5, jnp.int32))
+        obs, env, reward, done, info = env.step.lift(step_keys, jnp.ones(5, jnp.int32))
         assert obs.shape == (5, 4) and reward.shape == (5,)
     assert int(info.timestep[0]) == 60
     assert bool((env.cart.time < 60).all())  # always pushing right ends episodes
@@ -77,5 +76,5 @@ def test_environment_step_matches_a_reference_rollout():
 
 def test_all_shapes_are_proved():
     reports = tx.prove(ppo)
-    assert len(reports) == 11
+    assert len(reports) == 12
     assert all(r.status == "proved" for r in reports), reports

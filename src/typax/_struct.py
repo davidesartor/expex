@@ -23,13 +23,15 @@ checked against the annotations, with the class's own dimensions shared.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import inspect
 from typing import Any, Callable, TypeVar, overload
 
 import jax
 
 from ._fn import Fn, fn
-from ._spec import _class_annotations, static_type
+from ._errors import Mismatch, ShapeError
+from ._spec import Env, _class_annotations, parse_owner, rebuild, resolve, static_type
 
 T = TypeVar("T", bound=type)
 
@@ -66,6 +68,7 @@ def struct(
 
     def build(original: Any) -> Any:
         cls: Any = original
+        custom_init = "__init__" in vars(cls)  # dataclass() keeps a hand-written __init__
         params = getattr(cls, "__dataclass_params__", None)
         if not (isinstance(cls, type) and params is not None and params.frozen):
             cls = dataclasses.dataclass(frozen=True)(cls)
@@ -74,7 +77,9 @@ def struct(
         meta: list[str] = []
         for f in dataclasses.fields(cls):
             (meta if static_type(anns.get(f.name, Any)) else data).append(f.name)
-        jax.tree_util.register_dataclass(cls, data_fields=data, meta_fields=meta)
+        _register(cls, tuple(data), tuple(meta))
+        if custom_init:
+            _wrap_init(cls)
 
         for name, value in list(vars(cls).items()):
             if name in _SKIP or (name.startswith("__") and name != "__call__"):
@@ -99,8 +104,8 @@ def struct(
         if "replace" not in vars(cls):
 
             def replace(self: Any, **changes: Any) -> Any:
-                """A copy with some fields changed."""
-                return dataclasses.replace(self, **changes)
+                """A copy with some fields changed (``__init__`` is not called)."""
+                return rebuild(self, **changes)
 
             cls.replace = replace
         cls.__typax_struct__ = True
@@ -108,3 +113,86 @@ def struct(
         return cls
 
     return build(cls) if cls is not None else build
+
+
+def _register(cls: Any, data: tuple[str, ...], meta: tuple[str, ...]) -> None:
+    """Register ``cls`` as a pytree that is rebuilt without calling ``__init__``."""
+    from jax.tree_util import GetAttrKey
+
+    def flatten_with_keys(obj: Any) -> Any:
+        children = [(GetAttrKey(n), getattr(obj, n)) for n in data]
+        return children, tuple(getattr(obj, n) for n in meta)
+
+    def flatten(obj: Any) -> Any:
+        return [getattr(obj, n) for n in data], tuple(getattr(obj, n) for n in meta)
+
+    def unflatten(aux: tuple[Any, ...], children: Any) -> Any:
+        obj = object.__new__(cls)
+        for n, v in zip(data, children):
+            object.__setattr__(obj, n, v)
+        for n, v in zip(meta, aux):
+            object.__setattr__(obj, n, v)
+        return obj
+
+    jax.tree_util.register_pytree_with_keys(cls, flatten_with_keys, unflatten, flatten)
+
+
+def _wrap_init(cls: Any) -> None:
+    """Let a hand-written ``__init__`` assign fields, then freeze and check the object."""
+    user_init = cls.__init__
+    frozen_setattr = cls.__setattr__
+
+    @functools.wraps(user_init)
+    def __init__(self: Any, *args: Any, **kwargs: Any) -> None:
+        object.__setattr__(self, "__typax_building__", True)
+        try:
+            user_init(self, *args, **kwargs)
+        finally:
+            object.__delattr__(self, "__typax_building__")
+        missing = []
+        for f in dataclasses.fields(cls):
+            if f.name in self.__dict__:
+                continue
+            if f.default is not dataclasses.MISSING:
+                object.__setattr__(self, f.name, f.default)
+            elif f.default_factory is not dataclasses.MISSING:
+                object.__setattr__(self, f.name, f.default_factory())
+            else:
+                missing.append(f.name)
+        if missing:
+            raise TypeError(f"{cls.__name__}.__init__ did not set {', '.join(missing)}")
+        _check_new(cls, self)
+
+    def __setattr__(self: Any, name: str, value: Any) -> None:
+        if self.__dict__.get("__typax_building__"):
+            object.__setattr__(self, name, value)
+        else:
+            frozen_setattr(self, name, value)
+
+    cls.__init__ = __init__
+    cls.__setattr__ = __setattr__
+
+
+def _check_new(cls: Any, obj: Any) -> None:
+    """Check a freshly built object against its own annotations and invariants."""
+    from ._fn import config
+
+    if not config.checked:
+        return
+    spec = parse_owner(cls)
+    if not spec.leafy:
+        return
+    env = Env()
+    try:
+        spec.match(obj, "self", env)
+        if env.deferred:
+            resolve(env)
+    except Mismatch as m:
+        from ._spec import describe
+
+        raise ShapeError(
+            f"{cls.__name__}(): the constructed object does not match its annotations.\n\n"
+            f"    declared  {m.path}: {m.spec}\n"
+            f"    got       {describe(m.value)}\n\n"
+            f"    {m.reason}"
+        ) from None

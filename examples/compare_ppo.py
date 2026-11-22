@@ -16,17 +16,18 @@ import jax.numpy as jnp
 import jax.random as jr
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
-from ppo import Config, Layer, Net, train  # noqa: E402
+from ppo import Config, Net, train  # noqa: E402
 
 orig = np.load(sys.argv[1])
 updates = orig["returns"].shape[0]
 
 
 def net_from(prefix: str) -> Net:
-    def layer(i):
-        return Layer(jnp.asarray(orig[f"{prefix}:params/Dense_{i}/kernel"]), jnp.asarray(orig[f"{prefix}:params/Dense_{i}/bias"]))
-
-    return Net((layer(0), layer(1), layer(2)), (layer(3), layer(4), layer(5)))
+    """A network holding the original's parameters (actor layers, then critic layers)."""
+    leaves = []
+    for i in range(6):
+        leaves += [orig[f"{prefix}:params/Dense_{i}/kernel"], orig[f"{prefix}:params/Dense_{i}/bias"]]
+    return jax.tree.unflatten(jax.tree.structure(Net(jax.random.key(0))), [jnp.asarray(x) for x in leaves])
 
 
 cfg = Config(num_updates=updates)

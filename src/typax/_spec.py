@@ -787,6 +787,44 @@ class UnionSpec(Spec):
         return UnionSpec(tuple(o.replace_dims(f) for o in self.options))
 
 
+def rebuild(obj_or_cls: Any, **values: Any) -> Any:
+    """A NamedTuple / dataclass built from field values, without calling ``__init__``.
+
+    ``rebuild(obj, f=v)`` copies ``obj`` with some fields changed;
+    ``rebuild(cls, **fields)`` makes a new one, filling in field defaults.
+    Classes with a custom ``__init__`` (``@tx.struct`` modules) need this.
+    """
+    cls: Any
+    base: dict[str, Any] | None
+    if isinstance(obj_or_cls, type):
+        cls, base = obj_or_cls, {}
+    else:
+        cls, base = type(obj_or_cls), None
+    if issubclass(cls, tuple):
+        if base is None:
+            record: Any = obj_or_cls
+            return record._replace(**values)
+        return cls(**values)
+    if not getattr(cls, "__typax_struct__", False):
+        if base is None:
+            return dataclasses.replace(obj_or_cls, **values)  # type: ignore[type-var]
+        return cls(**values)
+    new = object.__new__(cls)
+    for f in dataclasses.fields(cls):
+        if f.name in values:
+            v = values[f.name]
+        elif base is None:
+            v = getattr(obj_or_cls, f.name)
+        elif f.default is not dataclasses.MISSING:
+            v = f.default
+        elif f.default_factory is not dataclasses.MISSING:
+            v = f.default_factory()
+        else:
+            raise TypeError(f"{cls.__name__}: no value for field `{f.name}`")
+        object.__setattr__(new, f.name, v)
+    return new
+
+
 def _ident(name: str) -> str:
     return name.replace(".", "__")
 
@@ -909,7 +947,7 @@ class StructSpec(Spec):
         if all(new[n] is getattr(value, n) for n in new):
             return value
         if dataclasses.is_dataclass(value):
-            return dataclasses.replace(value, **new)  # type: ignore[type-var]
+            return rebuild(value, **new)
         return value._replace(**new)  # type: ignore[attr-defined]
 
     def abstract(self, ctx: Any, path: str) -> Any:
@@ -922,7 +960,7 @@ class StructSpec(Spec):
                 raise Unsynthesizable(f"{path}.{name}")
             kwargs[name] = s.abstract(ctx, f"{path}.{name}")
         try:
-            return self.cls(**kwargs)
+            return rebuild(self.cls, **kwargs)
         except Exception as e:
             raise Unsynthesizable(f"{path} ({self.cls.__name__}: {e})") from None
 

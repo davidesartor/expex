@@ -96,6 +96,10 @@ class Block[D]:
     b: f32[D]
     act: Callable = jax.nn.gelu          # plain Python types are static fields
 
+    def __init__(self, key, d: int):
+        self.w = 0.1 * jr.normal(key, (d, d))
+        self.b = jnp.zeros(d)
+
     def __call__[B](self, x: f32[B, D]) -> f32[B, D]:
         return x + self.act(x @ self.w + self.b)
 
@@ -103,22 +107,32 @@ class Block[D]:
 class Stack[D]:
     blocks: list[Block[D]]
 
+    def __init__(self, key, d: int, depth: int):
+        self.blocks = [Block(k, d) for k in jr.split(key, depth)]
+
     def __call__[B](self, x: f32[B, D]) -> f32[B, D]:
         for block in self.blocks:      # identical blocks: one lax.scan, not 24 copies
             x = block(x)
         return x
 
-keys = jr.split(jr.key(0), 24)
-model = Stack([Block(0.1 * jr.normal(k, (16, 16)), jnp.zeros(16)) for k in keys])
+model = Stack(jr.key(0), d=16, depth=24)
 y = jax.jit(lambda m, x: m(x))(model, jnp.ones((4, 16)))
 grads = jax.grad(lambda m: m(jnp.ones((4, 16))).sum())(model)   # a Stack too
 ```
 
-A struct is a frozen dataclass registered as a pytree. Fields with array
-annotations are traced; fields with plain Python types are static. Every method
-is an `@fn` that checks `self`'s fields and shares the class's sizes, so
-`tx.prove(Block.__call__)` works without an instance. Use `.replace(w=...)` for
-modified copies; `@tx.struct(jit=True)` compiles every method.
+A struct is a frozen dataclass registered as a pytree:
+- Fields with array annotations are traced; fields with plain Python types are static.
+- `__init__` is optional: without one you get the dataclass constructor; with
+  one, its fields are assigned as usual and the result is checked against the
+  annotations. JAX and `.replace(...)` rebuild objects without calling it.
+- Every method is an `@fn` that checks `self`'s fields and shares the class's
+  sizes, so `tx.prove(Block.__call__)` works without an instance.
+- `model.lift(x)` maps `__call__` over extra leading axes, and
+  `@tx.struct(jit=True)` compiles every method.
+- `@tx.struct(where="D % heads == 0")` states an invariant. It is checked
+  whenever an instance is built or passed in, and assumed by every function
+  that receives one; a method's derived sizes can name its int fields
+  (`@fn(H="heads")`).
 
 A `for` loop over a list of pytrees with identical structure and shapes, such
 as layers, is stacked and lowered to `lax.scan`. Deep models therefore compile

@@ -114,13 +114,18 @@ def _is_arr(x: Any) -> bool:
 _NUM = (bool, int, float, complex)
 
 
+def _function(v: Any) -> bool:
+    """A function or other callable that is not data (a module with ``__call__`` is data)."""
+    return callable(v) and not getattr(type(v), "__typax_struct__", False)
+
+
 def _dyn(v: Any) -> bool:
     """Can ``v`` be carried through lax control flow (a pytree of arrays/numbers)?"""
     if v is UNDEF or v is None:
         return False
     if _is_arr(v) or type(v) in _NUM:
         return True
-    if isinstance(v, (str, bytes, _Collector, Stacked)) or callable(v):
+    if isinstance(v, (str, bytes, _Collector, Stacked)) or _function(v):
         return False
     try:
         leaves = jax.tree.leaves(v)
@@ -495,7 +500,7 @@ def _guard(values: tuple[Any, ...], taken: Any, which: Any = None) -> tuple[Any,
             or v is UNDEF
             or v is None
             or isinstance(v, (list, _Collector, Stacked))
-            or callable(v)
+            or _function(v)
         ):
             plans.append(None)
             continue
@@ -693,12 +698,9 @@ def _replaceable(obj: Any) -> bool:
 
 
 def _replace(obj: Any, name: str, value: Any) -> Any:
-    if isinstance(obj, tuple):
-        record: Any = obj
-        return record._replace(**{name: value})
-    import dataclasses
+    from ._spec import rebuild
 
-    return dataclasses.replace(obj, **{name: value})
+    return rebuild(obj, **{name: value})
 
 
 def setattr_(value: Any, obj: Any, name: str) -> Any:
