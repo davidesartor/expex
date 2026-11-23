@@ -521,9 +521,13 @@ class Fn(Generic[P, R]):
         """
         if not isinstance(text, str):
             return
+        from .annotations.expr import ExprError
+
         try:
             value, missing = sym.unknown_names(text, glb, scope, params)
             leafy = parse(value).leafy
+        except ExprError:
+            raise  # size arithmetic that is not supported (T / 2, T ** 2): say so, don't skip the check
         except Exception:
             return
         if missing and leafy:

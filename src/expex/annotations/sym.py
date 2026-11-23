@@ -75,6 +75,24 @@ class Sym:
     def __rmod__(self, o: Any) -> Sym:
         return self._op("%", o, True)
 
+    # Not size arithmetic: refused loudly, or the annotation would silently go unchecked.
+    def _refuse(self, op: str, o: Any, right: bool, fix: str) -> Any:
+        from .expr import ExprError
+
+        raise coded("EX403", ExprError(f"`{op}` in a size annotation (with {self.src}) is not size arithmetic: {fix}"))
+
+    def __truediv__(self, o: Any) -> Any:
+        return self._refuse("/", o, False, "sizes are integers, divide with `//` (and add a leading `assert ... % ... == 0` if it must be exact).")
+
+    def __rtruediv__(self, o: Any) -> Any:
+        return self._refuse("/", o, True, "sizes are integers, divide with `//`.")
+
+    def __pow__(self, o: Any) -> Any:
+        return self._refuse("**", o, False, "write the product out, e.g. `T * T`.")
+
+    def __rpow__(self, o: Any) -> Any:
+        return self._refuse("**", o, True, "powers of sizes are not supported; give the result its own size name.")
+
     def __call__(self, *a: Any) -> Any:  # lets typing accept it where it wants a type
         raise coded("EX410", TypeError("a size is not callable"))
 
