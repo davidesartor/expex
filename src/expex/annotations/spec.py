@@ -38,7 +38,7 @@ from .dims import (
 )
 from .errors import Mismatch
 from .expr import Expr
-from .sym import evaluate, texts
+from .sym import evaluate, named_sizes, texts
 from .types import ArrayAnn, BatchAnn, DType, KeyAnn, StaticAnn
 
 # --------------------------------------------------------------------------
@@ -686,6 +686,7 @@ def _class_annotations(cls: type) -> dict[str, Any]:
         glb = getattr(sys.modules.get(c.__module__), "__dict__", {})
         scope = dict(getattr(c, "__expex_localns__", {}))
         scope.update({p.__name__: p for p in getattr(c, "__type_params__", ())})
+        scope.update(named_sizes(c))  # cells: i32[Rows:6, Cols:7]
         scope[c.__name__] = c
         for k, v in anns.items():
             text = v if isinstance(v, str) else getattr(v, "__forward_arg__", None)
@@ -935,3 +936,22 @@ def fields(spec: Spec, value: Any, path: str = "") -> Iterator[tuple[str, Spec, 
     elif isinstance(spec, DictSpec):
         for k, v in value.items():
             yield from fields(spec.value, v, f"{path}[{k!r}]")
+
+
+def fixed_sizes(*specs: Spec) -> dict[str, int]:
+    """The named fixed sizes in ``specs`` (``R:6``, ``class RGB(Dim, size=3)``), for listing as ``R (= 6)``."""
+    out: dict[str, int] = {}
+
+    def visit(d: Any) -> Any:
+        if isinstance(d, DConst) and d.label:
+            out.setdefault(d.label, d.value)
+        return d
+
+    for s in specs:
+        s.replace_dims(visit)
+    return out
+
+
+def fn_fixed_sizes(f: Any) -> dict[str, int]:
+    """:func:`fixed_sizes` of an ``@fn``'s parameters (``self`` included) and result."""
+    return fixed_sizes(*(p.spec for p in f.params.values()), f.ret)

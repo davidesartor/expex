@@ -40,7 +40,7 @@ from .decorators import fn, jit, random, remat, vectorize
 from .function import Fn, compile_cache, config
 from .io import load, save
 from .keys import key, rng, seed
-from .modules import struct
+from .modules import build, struct
 from .sharding import device_put, shard, shardings
 from .staging.axes import einsum, rearrange
 from .staging.loops import rows, stack
@@ -51,7 +51,7 @@ from .tools.summary import Summary, summary
 
 __all__ = [
     # decorate
-    "fn", "jit", "vectorize", "random", "remat", "struct", "prove",
+    "fn", "jit", "vectorize", "random", "remat", "struct", "build", "prove",
     "save", "load", "shard", "shardings", "device_put", "cost", "diff", "summary", "diagram", "eps", "tiny", "huge",
     # annotate
     "f16", "f32", "f64", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "c64", "c128",

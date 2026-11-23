@@ -370,9 +370,12 @@ def broken[T, D](x: f32[T, D], w: f32[D, D]) -> f32[T, D]:
 
 @pytest.fixture(scope="module")
 def buggy(tmp_path_factory):
-    """The example transformer with a bug: the MLP called without .vectorize."""
+    """The example transformer with a bug: the MLP called without .vectorize, and not mapped by itself."""
     src = (ROOT / "examples" / "transformer.py").read_text()
     src = src.replace("x + self.mlp.vectorize(self.norm2.vectorize(x))", "x + self.mlp(self.norm2.vectorize(x))")
+    mlp = "    def __call__(self, x: f32[D]) -> f32[D]:\n        return jax.nn.gelu"
+    assert src.count(mlp) == 1
+    src = src.replace(mlp, "    @expex.fn(vectorize=False)\n" + mlp)
     path = tmp_path_factory.mktemp("buggy") / "buggy_transformer.py"
     path.write_text(src)
     return load("diagram_buggy", path)

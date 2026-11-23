@@ -113,7 +113,7 @@ def test_checks_run_once_per_trace_under_jax_jit():
         assert jnp.allclose(step(jnp.ones(3), 0.5, 2), 1.0)
     assert len(calls) == 1
     with pytest.raises(ShapeError):
-        step(jnp.ones((3, 3)), 0.5, 2)
+        step(jnp.ones(3, jnp.int32), 0.5, 2)
 
 
 def test_fn_options():

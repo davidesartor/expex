@@ -15,6 +15,7 @@ callable and arguments to trace (``Static`` arguments closed over), and
 :func:`make_jaxpr` traces it. The rest of the module walks jaxprs.
 """
 
+import collections.abc
 import dataclasses
 import enum
 import inspect
@@ -25,6 +26,7 @@ import typing
 from typing import Any, Callable, Iterator
 
 import jax
+import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
 from jax import export
@@ -33,7 +35,7 @@ from .. import keys
 from ..annotations.dims import DAny, DConst, DEllipsis, DExpr, DName, DVar, Env
 from ..annotations.errors import ShapeError, StageError
 from ..annotations.expr import divisibility, to_jax_constraint
-from ..annotations.spec import KeySpec, Spec, StaticSpec, Unsynthesizable
+from ..annotations.spec import KeySpec, Spec, StaticSpec, Unsynthesizable, parse
 from ..function import BoundFn, Fn, unwrap
 
 _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the expex package
@@ -150,8 +152,39 @@ class Sizes:
 # ------------------------------------------------------------------ what to trace
 
 
+class StandIn:
+    """Stands in for a ``Callable[..., R]`` parameter while proving: any function returning an ``R``.
+
+    Called, it returns zeros shaped as ``R`` declares, in the sizes of the trace
+    (bound by :func:`trace`), so a proof holds for every function that keeps
+    to its declared result.
+    """
+
+    def __init__(self, result: Spec, ctx: Any = None):
+        self.result, self.ctx = result, ctx
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        def zeros(s: Any) -> Any:
+            if jax.dtypes.issubdtype(s.dtype, jax.dtypes.prng_key):
+                return jnp.broadcast_to(jr.key(0), s.shape)
+            return jnp.zeros(s.shape, s.dtype)
+
+        return jax.tree.map(zeros, self.result.abstract(self.ctx, "the result"))
+
+    def __repr__(self) -> str:
+        return f"<any function returning {self.result}>"
+
+
 def auto_examples(ann: Any) -> list[Any]:
     """Values tried for a static parameter that has no default."""
+    if isinstance(ann, typing.TypeAliasType):
+        return auto_examples(ann.__value__)
+    if typing.get_origin(ann) is collections.abc.Callable and typing.get_args(ann):
+        try:
+            result = parse(typing.get_args(ann)[-1])
+        except TypeError:
+            return []
+        return [StandIn(result)] if result.leafy else []
     if ann is bool:
         return [False, True]
     if ann is int:
@@ -306,6 +339,9 @@ def trace(f: Fn[Any, Any], fixed: dict[str, Any], abstract: list[str], ctx: Size
     (and nested) annotation checks.
     """
     arguments: dict[str, Any] = dict(fixed)
+    for name, v in fixed.items():
+        if isinstance(v, StandIn):  # its result in this trace's sizes
+            arguments[name] = StandIn(v.result.replace_dims(f._derive) if f.defs else v.result, ctx)
     abstract = list(abstract)
     for name in abstract:
         arguments[name] = f.params[name].spec.abstract(ctx, name)

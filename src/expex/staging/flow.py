@@ -128,8 +128,8 @@ def _check_pred(pred: Any, what: str, site: str) -> None:
             raise StageError(
                 f"the condition of the `{what}` at {site} is an array of shape {shape}, "
                 f"not a single True/False.\n"
-                f"    - to choose per element:      write the function for one element and\n"
-                f"                                  use @expex.fn(vectorize=True), or jnp.where(cond, a, b)\n"
+                f"    - to choose per element:      write the function for one element (x: f32): a call\n"
+                f"                                  on an array maps over it. Or jnp.where(cond, a, b)\n"
                 f"    - to test all/any elements:   cond.all()  /  cond.any()"
             )
 

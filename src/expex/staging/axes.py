@@ -68,23 +68,31 @@ def lifted_(i: int) -> bool:
     return bool(CALLS.stack) and i in getattr(CALLS.stack[-1][1], "_lifted", ())
 
 
-def size_(name: Any) -> Any:
+def call_() -> Any:
+    """The running ``@fn`` call, for the functions defined in its body to see its sizes."""
+    from .ops import CALLS
+
+    return CALLS.stack[-1] if CALLS.stack else None
+
+
+def size_(name: Any, call: Any = None) -> Any:
     """``T`` used as a value inside an ``@fn``: its size in the current call.
 
     The converter rewrites ``jnp.zeros((B, T))`` to use this. For a variadic
     ``*B`` it is a tuple of sizes, for a derived size (``U = T + 1``) its value.
     Under the prover the sizes are symbolic, so the code is proved for all sizes.
+    ``call`` is the call a nested function or lambda was created in (see :func:`call_`).
     """
     from .ops import CALLS
 
     n = axis_name(name)
     if n is None:
         return name  # not a size name after all (e.g. rebound in an enclosing scope)
-    if not CALLS.stack:
+    if call is None and not CALLS.stack:
         raise ShapeError(
             f"the size {n} is only known inside an @fn call."
         )
-    env, fn = CALLS.stack[-1]
+    env, fn = call or CALLS.stack[-1]
     if n.startswith("*"):
         if n[1:] in env.vars:
             return tuple(env.vars[n[1:]])
@@ -101,37 +109,40 @@ def size_(name: Any) -> Any:
     )
 
 
-def named_(target: Any, attr: str | None, args: tuple[Any, ...], kwargs: dict[str, Any], site: str, var: str | None) -> Any:
+def named_(
+    target: Any, attr: str | None, args: tuple[Any, ...], kwargs: dict[str, Any], site: str, var: str | None,
+    call: Any = None,
+) -> Any:
     """Call ``target.attr(*args, **kwargs)`` (or ``target(...)``) with axis names resolved."""
     __tracebackhide__ = True
     if attr is not None:
         f, arr = getattr(target, attr), target
-        args = tuple(_axes(a, arr, site, var) for a in args)
+        args = tuple(_axes(a, arr, site, var, call) for a in args)
     else:
         f, arr = target, args[0] if args else None
         if isinstance(arr, (list, tuple)) and arr:
             arr = arr[0]
-    kwargs = {k: _axes(v, arr, site, var) if k in AXIS_KEYWORDS else v for k, v in kwargs.items()}
+    kwargs = {k: _axes(v, arr, site, var, call) if k in AXIS_KEYWORDS else v for k, v in kwargs.items()}
     return f(*args, **kwargs)
 
 
-def _axes(v: Any, arr: Any, site: str, var: str | None) -> Any:
+def _axes(v: Any, arr: Any, site: str, var: str | None, call: Any = None) -> Any:
     if isinstance(v, (tuple, list)) and any(axis_name(x) for x in v):
         out: list[int] = []
         for x in v:
-            r = _axes(x, arr, site, var)
+            r = _axes(x, arr, site, var, call)
             out.extend(r if isinstance(r, tuple) else (r,))
         return tuple(out)
     name = axis_name(v)
-    return v if name is None else resolve(name, arr, site, var, getattr(v, "size", None))
+    return v if name is None else resolve(name, arr, site, var, getattr(v, "size", None), call)
 
 
-def resolve(name: str, arr: Any, site: str, var: str | None, fixed: int | None = None) -> Any:
+def resolve(name: str, arr: Any, site: str, var: str | None, fixed: int | None = None, call: Any = None) -> Any:
     """The position of axis ``name`` in ``arr`` (a tuple for a variadic name)."""
     from .ops import CALLS
 
     shape = tuple(jnp.shape(arr))
-    env, fn = CALLS.stack[-1] if CALLS.stack else (None, None)
+    env, fn = call or (CALLS.stack[-1] if CALLS.stack else (None, None))
 
     # 1. the variable's annotation
     spec = None
@@ -217,14 +228,14 @@ def einsum(*operands: Any, to: Any) -> Any:
     return einsum_(operands, (None,) * len(operands), to, "expex.einsum")
 
 
-def einsum_(operands: tuple[Any, ...], variables: tuple[str | None, ...], to: Any, site: str) -> Any:
+def einsum_(operands: tuple[Any, ...], variables: tuple[str | None, ...], to: Any, site: str, call: Any = None) -> Any:
     """``expex.einsum`` with the operands' variable names (passed by the converter)."""
     __tracebackhide__ = True
     from .ops import CALLS
 
-    if not CALLS.stack:
+    if call is None and not CALLS.stack:
         raise ShapeError("expex.einsum() finds axes by name, so it only works inside an @fn.")
-    env, fn = CALLS.stack[-1]
+    env, fn = call or CALLS.stack[-1]
     outs = _names(to if isinstance(to, (tuple, list)) else (to,), env)
     twice = sorted({n for n in outs if outs.count(n) > 1})
     if twice:
@@ -339,14 +350,14 @@ def rearrange(x: Any, *, to: Any) -> Any:
     return rearrange_(x, None, to, "expex.rearrange")
 
 
-def rearrange_(x: Any, var: str | None, to: Any, site: str) -> Any:
+def rearrange_(x: Any, var: str | None, to: Any, site: str, call: Any = None) -> Any:
     """``expex.rearrange`` with the operand's variable name (passed by the converter)."""
     __tracebackhide__ = True
     from .ops import CALLS
 
-    if not CALLS.stack:
+    if call is None and not CALLS.stack:
         raise ShapeError("expex.rearrange() finds axes by name, so it only works inside an @fn.")
-    env, fn = CALLS.stack[-1]
+    env, fn = call or CALLS.stack[-1]
     src = _operand_names(x, var, env, fn, site)
     tgt = _names(to if isinstance(to, (tuple, list)) else (to,), env)
     size = dict(zip(src, jnp.shape(x)))

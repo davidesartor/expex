@@ -168,7 +168,7 @@ def test_non_scalar_condition():
             return x
         return -x
 
-    with pytest.raises(StageError, match=r"(?s)array of shape \(3,\).*vectorize=True.*jnp.where"):
+    with pytest.raises(StageError, match=r"(?s)array of shape \(3,\).*for one element.*jnp.where"):
         jax.jit(f)(jnp.ones(3))
     with pytest.raises(StageError, match=r"(?s)`if` at .*array of shape \(3,\)"):
         f(jnp.ones(3))  # eagerly too, instead of Python's "truth value ... is ambiguous"
@@ -186,14 +186,14 @@ def test_non_scalar_ternary_and_while():
         return x
 
     for call in (lambda: relu(jnp.ones(3)), lambda: jax.jit(relu)(jnp.ones(3))):
-        with pytest.raises(StageError, match=r"(?s)`\.\.\. if \.\.\. else \.\.\.` at .*shape \(3,\).*vectorize=True"):
+        with pytest.raises(StageError, match=r"(?s)`\.\.\. if \.\.\. else \.\.\.` at .*shape \(3,\).*for one element"):
             call()
     with pytest.raises(StageError, match=r"(?s)`while` at .*shape \(3,\)"):
         halve(jnp.full(3, 4.0))
 
 
 def test_ternary_per_element_with_vectorize():
-    @fn(vectorize=True)
+    @fn  # mapped over the array's axis by itself
     def relu(x: f32) -> f32:
         return x if x > 0 else 0.0 * x
 

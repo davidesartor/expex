@@ -7,8 +7,13 @@ text; expex evaluates that text again with every size, parameter and field of
 expression.
 """
 
+import ast
+import functools
 import inspect
+import re
+import types
 import typing
+import weakref
 from typing import Any
 
 _PRECEDENCE = {"+": 1, "-": 1, "*": 2, "//": 2, "%": 2}
@@ -119,9 +124,13 @@ def signature(f: Any) -> inspect.Signature:
 
 
 def texts(obj: Any) -> dict[str, Any]:
-    """An object's annotations, as values where Python can evaluate them, else as text."""
+    """An object's annotations, as values where Python can evaluate them, else as text.
+
+    Always as text where they declare sizes (``f32[R:6]``): a global ``R`` must not be used.
+    """
     try:
-        return dict(inspect.get_annotations(obj))
+        if not _declares(obj):
+            return dict(inspect.get_annotations(obj))
     except Exception:
         pass
     try:  # Python 3.14: an annotation could not be evaluated; ask for the source text
@@ -178,3 +187,236 @@ def unknown_names(text: str, glb: dict[str, Any], scope: dict[str, Any], params:
         ns.setdefault(p, Sym(p))
     ns["self"] = _Self()
     return eval(text, glb, ns), missing  # noqa: S307
+
+
+# --------------------------------------------------------------------------
+# Sizes declared in annotations: f32[R:6, 7]
+# --------------------------------------------------------------------------
+#
+# ``R:6`` in a subscript is a slice, ``slice(R, 6)``: it reads "R, which is 6".
+# Anywhere in a function's annotations (or a class's field annotations) it
+# declares R as a fixed size of the function (or class). R is then a ``Dim``
+# class with ``size=6``, so everything that works for ``class R(Dim, size=6)``
+# works for it: plain ``R`` in the other annotations, R in the body as a size
+# or an axis, the prover treating it as the constant 6.
+
+_NAMED: "weakref.WeakKeyDictionary[Any, dict[str, type]]" = weakref.WeakKeyDictionary()
+
+
+@functools.cache
+def fixed(name: str, size: int) -> type:
+    """The ``Dim`` class of a size declared as ``name:size``."""
+    from .types import Dim
+
+    def body(ns: dict[str, Any]) -> None:
+        ns["__module__"] = "expex"
+        ns["__doc__"] = f"The size {name}, fixed at {size} (declared as `{name}:{size}` in an annotation)."
+
+    return types.new_class(name, (Dim,), {"size": size}, body)
+
+
+def strings(obj: Any) -> dict[str, str]:
+    """An object's own annotations as source text, without evaluating them."""
+    try:
+        import annotationlib  # type: ignore[import-not-found]  # pyright: ignore[reportMissingImports]
+
+        out = annotationlib.get_annotations(obj, format=annotationlib.Format.STRING)
+    except Exception:
+        return {}
+    return {k: v for k, v in out.items() if isinstance(v, str)}
+
+
+def _declares(obj: Any) -> bool:
+    """Do ``obj``'s own annotations declare a size (``R:6``)? Cheap: no evaluation."""
+    return any(":" in t and _SLICE.search(t) for t in strings(obj).values())
+
+
+_SLICE = re.compile(r"[\[,]\s*[A-Za-z_]\w*\s*:")
+
+
+def _where(key: str, text: str) -> str:
+    return f"`-> {text}`" if key == "return" else f"`{key}: {text}`"
+
+
+def _scan(owner: str, anns: dict[str, str], glb: dict[str, Any]) -> dict[str, tuple[int, str]]:
+    """``{name: (size, where)}`` for each ``name:size`` in the annotation texts ``anns``."""
+    import builtins
+
+    out: dict[str, tuple[int, str]] = {}
+    for key, text in anns.items():
+        if not (":" in text and _SLICE.search(text)):
+            continue
+        try:
+            tree: ast.AST = ast.parse(text, mode="eval").body
+            while isinstance(tree, ast.Constant) and isinstance(tree.value, str):  # quoted
+                tree = ast.parse(tree.value, mode="eval").body
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Subscript):
+                continue
+            items = node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
+            for it in items:
+                if not (isinstance(it, ast.Slice) and isinstance(it.lower, ast.Name)):
+                    continue
+                name, where = it.lower.id, _where(key, text)
+                size: Any = None
+                if it.upper is not None and it.step is None:
+                    try:
+                        size = eval(  # noqa: S307 - an annotation, as typing.get_type_hints
+                            compile(ast.Expression(it.upper), "<annotation>", "eval"),
+                            {"__builtins__": builtins, **glb},
+                        )
+                    except Exception:
+                        size = None
+                if type(size) is not int or size < 0:
+                    shown = ast.unparse(it)
+                    raise TypeError(
+                        f"{owner}: `{shown}` in {where} declares the size {name}, but "
+                        + ("its size is missing" if it.upper is None else "a size takes no step" if it.step is not None
+                           else "its size is not an int known where it is declared")
+                        + f". Write it as {name}:6 (a literal, or a global int)."
+                    )
+                if name in out and out[name][0] != size:
+                    raise TypeError(
+                        f"{owner}: the size {name} is declared twice, with different values: "
+                        f"{name}:{out[name][0]} in {out[name][1]}, and {name}:{size} in {where}."
+                    )
+                out.setdefault(name, (size, where))
+    return out
+
+
+def _merge(owner: str, into: dict[str, tuple[int, str]], more: dict[str, tuple[int, str]], whose: str) -> None:
+    for name, (size, where) in more.items():
+        if name in into and into[name][0] != size:
+            raise TypeError(
+                f"{owner}: the size {name} is declared twice, with different values: "
+                f"{name}:{into[name][0]} in {into[name][1]}, and {name}:{size} in {where} ({whose})."
+            )
+        into.setdefault(name, (size, where))
+
+
+def named_sizes(obj: Any) -> dict[str, type]:
+    """The sizes declared as ``R:6`` in the annotations of ``obj``: ``{"R": <Dim R, size 6>}``.
+
+    For a function, its own annotations and those of the class it is defined
+    in (a method sees its class's sizes); for a class, its field annotations
+    and its bases'. Raises ``TypeError`` for a name declared with two values,
+    or one that is also a type parameter or a parameter.
+    """
+    try:
+        return _NAMED[obj]
+    except (KeyError, TypeError):
+        pass
+    found = _declared(obj)
+    out = {name: fixed(name, size) for name, (size, _) in found.items()}
+    try:
+        _NAMED[obj] = out
+    except TypeError:
+        pass
+    return out
+
+
+def _declared(obj: Any) -> dict[str, tuple[int, str]]:
+    import sys
+
+    owner = str(getattr(obj, "__qualname__", None) or getattr(obj, "__name__", "?"))
+    if isinstance(obj, type):
+        glb = getattr(sys.modules.get(obj.__module__), "__dict__", {})
+        found = _scan(owner, strings(obj), glb) if _declares(obj) else {}
+        for base in obj.__bases__:
+            if base is not object:
+                more = {n: (_size(c), f"the class {base.__name__}") for n, c in named_sizes(base).items()}
+                _merge(owner, found, more, f"inherited from {base.__name__}")
+        params = {p.__name__ for p in getattr(obj, "__type_params__", ())}
+        _not_params(owner, found, params, set())
+        return found
+    if not hasattr(obj, "__code__"):
+        return {}
+    glb = getattr(obj, "__globals__", {})
+    found = _scan(owner, strings(obj), glb) if _declares(obj) else {}
+    params = {p.__name__ for p in getattr(obj, "__type_params__", ())}
+    code = obj.__code__
+    n = code.co_argcount + code.co_kwonlyargcount
+    n += bool(code.co_flags & inspect.CO_VARARGS) + bool(code.co_flags & inspect.CO_VARKEYWORDS)
+    _not_params(owner, found, params, set(code.co_varnames[:n]))
+    cls_sizes, cls_params = _class_of(obj)
+    if cls_sizes:
+        _merge(owner, found, cls_sizes, "the class's")
+    _not_params(owner, found, cls_params, set())
+    return found
+
+
+def _size(dim: type) -> int:
+    return int(getattr(dim, "size"))
+
+
+def _not_params(owner: str, found: dict[str, tuple[int, str]], type_params: set[str], params: set[str]) -> None:
+    for name, (size, where) in found.items():
+        if name in type_params:
+            raise TypeError(
+                f"{owner}: {name}:{size} in {where} declares {name} as a size fixed at {size}, "
+                f"but {name} is also a type parameter, a size bound by the arguments. "
+                f"Use one or the other: drop {name} from the type parameters, or write {name} "
+                f"without `:{size}`."
+            )
+        if name in params:
+            raise TypeError(
+                f"{owner}: {name}:{size} in {where} declares the size {name}, but {name} is "
+                f"also a parameter. Rename one of them."
+            )
+
+
+# A method's body may use its class's sizes, but the class does not exist yet
+# when the method is decorated: they are read from the class's source.
+_TREES: dict[str, tuple[int, ast.Module | None]] = {}
+
+
+def _class_of(fn: Any) -> tuple[dict[str, tuple[int, str]], set[str]]:
+    """The sizes declared in the fields of the class ``fn`` is defined in, and its type parameters."""
+    qual = getattr(fn, "__qualname__", "").split(".")
+    if len(qual) < 2 or qual[-2] == "<locals>":
+        return {}, set()
+    import linecache
+
+    code = fn.__code__
+    lines = linecache.getlines(code.co_filename)
+    if not lines:
+        return {}, set()
+    key = hash(tuple(lines))
+    have = _TREES.get(code.co_filename)
+    if have is None or have[0] != key:
+        try:
+            have = (key, ast.parse("".join(lines)))
+        except SyntaxError:
+            have = (key, None)
+        _TREES[code.co_filename] = have
+    tree = have[1]
+    if tree is None:
+        return {}, set()
+    best: ast.ClassDef | None = None
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.ClassDef) and node.name == qual[-2]
+            and node.lineno <= code.co_firstlineno <= (node.end_lineno or 0)
+            and (best is None or node.lineno > best.lineno)
+        ):  # fmt: skip
+            best = node
+    if best is None:
+        return {}, set()
+    anns = {
+        s.target.id: ast.unparse(s.annotation)
+        for s in best.body
+        if isinstance(s, ast.AnnAssign) and isinstance(s.target, ast.Name)
+    }
+    glb = getattr(fn, "__globals__", {})
+    try:
+        found = _scan(best.name, anns, glb)
+    except TypeError:
+        found = {}  # reported where the class is used
+    for b in best.bases:
+        base = glb.get(b.id) if isinstance(b, ast.Name) else None
+        if isinstance(base, type):
+            for n, c in named_sizes(base).items():
+                found.setdefault(n, (_size(c), f"the class {base.__name__}"))
+    return found, {getattr(t, "name", "") for t in getattr(best, "type_params", ())}

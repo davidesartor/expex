@@ -28,7 +28,7 @@ def fn(f: Callable[P, R], /) -> Fn[P, R]: ...
 def fn(
     *,
     jit: bool = False,
-    vectorize: bool = False,
+    vectorize: bool | None = None,
     random: bool = False,
     remat: Any = False,
     donate: str | tuple[str, ...] = (),
@@ -42,7 +42,7 @@ def fn(
     /,
     *,
     jit: bool = False,
-    vectorize: bool = False,
+    vectorize: bool | None = None,
     random: bool = False,
     remat: Any = False,
     donate: str | tuple[str, ...] = (),
@@ -70,7 +70,9 @@ def fn(
     ``jit``
         Compile, as :func:`expex.jit`: static arguments read from the signature.
     ``vectorize``
-        Plain calls take extra leading batch axes, as :func:`expex.vectorize`.
+        Whether a call whose arguments have extra leading axes (beyond their
+        annotations) maps over them, as ``f.vectorize(...)`` does. On by default
+        (``expex.config.vectorize``); ``False`` makes such a call a ``ShapeError``.
     ``random``
         An implicit PRNG key, ``expex.key()``, as :func:`expex.random`.
     ``remat``
@@ -103,7 +105,7 @@ def fn(
         raise TypeError(f"@expex.fn got {k}={v!r}: {hint}.")
 
     def wrap(raw: Callable[..., Any]) -> Fn[Any, Any]:
-        flags: dict[str, bool] = {}
+        flags: dict[str, bool | None] = {}
         if isinstance(raw, Fn):
             flags = {"random": raw.random, "auto_vectorize": raw.auto_vectorize}
             REGISTRY.discard(raw)
@@ -112,8 +114,8 @@ def fn(
         vars(out).update(flags)
         if random:
             out.random = True
-        if vectorize:
-            out.auto_vectorize = True
+        if vectorize is not None:
+            out.auto_vectorize = vectorize
         result: Any = out
         if remat:
             result = _remat(out, remat)
@@ -153,18 +155,19 @@ def _flagged(f: Any, flag: str) -> Any:
 
 
 def vectorize(f: Callable[P, R], /) -> Fn[P, R]:
-    """Let plain calls take extra leading batch axes, as ``f.vectorize(...)`` does.
+    """Map plain calls over extra leading batch axes, as ``f.vectorize(...)`` does.
 
     ::
 
         @expex.vectorize
-        @expex.fn
         def norm[D](x: f32[D]) -> f32: ...
 
         norm(jnp.ones((8, 3, 5)))   # f32[8, 3]
 
-    Arguments without extra axes are shared by every element. A plain
-    function is wrapped with :func:`fn` first.
+    Every ``@fn`` does this already unless ``expex.config.vectorize`` is off;
+    this decorator (like ``@expex.fn(vectorize=True)``) keeps it on for this
+    function regardless. Arguments without extra axes are shared by every
+    element. A plain function is wrapped with :func:`fn` first.
     """
     return _flagged(f, "auto_vectorize")
 

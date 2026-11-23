@@ -29,9 +29,11 @@ import textwrap
 import types
 from typing import Any, Callable, Iterable
 
+from ..annotations.sym import named_sizes
 from . import analysis, axes, runtime
 
 FLOW = "__expex_flow__"
+CALL = "__bn_call__"  # the running call, for nested functions to see its sizes
 RET = "__bn_ret__"
 RETF = "__bn_returned__"
 
@@ -176,18 +178,75 @@ class _Exprs(ast.NodeTransformer):
         self.einsums = einsums
         #: Calls rewritten to take axes by name.
         self.named = 0
+        #: Inside a nested function or lambda: the sizes are those of the call it was
+        #: created in (``__bn_call__``), not of whatever call is running when it runs.
+        self.call: ast.expr | None = None
+        #: Some nested function or lambda uses sizes: the body must capture its call.
+        self.uses_call = False
+        #: Inside a nested ``def``: only sizes and axes are rewritten; the rest stays plain Python.
+        self.plain = False
+        #: Variables of nested scopes: not the enclosing function's annotated variables.
+        self.hidden: set[str] = set()
+
+    def _nested(self, node: ast.AST, body: Callable[[], Any], plain: bool) -> None:
+        """Visit a nested scope's body with its own names hiding the enclosing sizes and variables."""
+        bound = analysis.bound_names(node)
+        names = self.axis_names - bound
+        comp = isinstance(node, analysis.COMPS)  # runs right away, in the call
+        parts = [] if comp else node.body if isinstance(node.body, list) else [node.body]  # type: ignore[attr-defined]
+        used = not comp and any(isinstance(m, ast.Name) and m.id in names for p in parts for m in ast.walk(p))
+        if plain and not used:
+            return  # a nested function that uses no size is left alone
+        saved = self.axis_names, self.call, self.plain, self.hidden
+        self.axis_names, self.hidden = names, self.hidden | bound
+        if used:
+            self.call, self.plain, self.uses_call = _name(CALL), self.plain or plain, True
+        try:
+            body()
+        finally:
+            self.axis_names, self.call, self.plain, self.hidden = saved
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
-        return node  # nested functions are left alone
+        # A nested function sees the sizes of the call it is defined in, as a closure
+        # would: `def score(row): return row.sum(D)`. Its own control flow is left alone.
+        node.decorator_list = [self.visit(d) for d in node.decorator_list]  # evaluated outside
+        a = node.args
+        a.defaults = [self.visit(d) for d in a.defaults]
+        a.kw_defaults = [d if d is None else self.visit(d) for d in a.kw_defaults]
+
+        def body() -> None:
+            node.body = [self.visit(s) for s in node.body]
+
+        self._nested(node, body, plain=True)
+        return node
 
     visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
-    visit_ClassDef = visit_FunctionDef  # type: ignore[assignment]
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> Any:
+        return node  # nested classes are left alone
 
     def visit_Lambda(self, node: ast.Lambda) -> Any:
         if getattr(node, "_expex_annotation", False):
             return node  # `f32[B, T]` in a local annotation: the names stay names
-        self.generic_visit(node)
+        self._nested(node, lambda: self.generic_visit(node), plain=False)
         return node
+
+    def _comp(self, node: ast.AST) -> Any:
+        self._nested(node, lambda: self.generic_visit(node), plain=False)
+        return node
+
+    visit_ListComp = visit_SetComp = visit_DictComp = visit_GeneratorExp = _comp
+
+    def _with_call(self, call: ast.Call) -> ast.Call:
+        if self.call is not None:
+            call.args.append(self.call)
+        return call
+
+    def _var(self, v: Any) -> Any:
+        """A variable's name, unless a nested scope's own variable hides the enclosing one."""
+        if isinstance(v, str) and v.split(".")[0] in self.hidden:
+            return None
+        return v
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> Any:
         if node.value is not None:
@@ -197,7 +256,7 @@ class _Exprs(ast.NodeTransformer):
     def visit_Name(self, node: ast.Name) -> Any:
         if isinstance(node.ctx, ast.Load) and node.id in self.axis_names:
             self.named += 1
-            return ast.copy_location(_call("size_", node), node)  # `T` as a value: its size
+            return ast.copy_location(self._with_call(_call("size_", node)), node)  # `T` as a value: its size
         return node
 
     def _by_name(self, f: ast.expr) -> str | None:
@@ -218,7 +277,9 @@ class _Exprs(ast.NodeTransformer):
             if to is not None and len(node.keywords) == 1:
                 self.named += 1
                 ops = [self.visit(a) for a in node.args]
-                variables: list[ast.expr] = [_constant(_operand_name(a) or self._names(a)) for a in node.args]
+                variables: list[ast.expr] = [
+                    _constant(self._var(_operand_name(a)) or self._names(a)) for a in node.args
+                ]
                 if which == "rearrange" and len(ops) == 1:
                     call = _call("rearrange_", ops[0], variables[0], to, self.site(node))
                 else:
@@ -226,7 +287,7 @@ class _Exprs(ast.NodeTransformer):
                         "einsum_", ast.Tuple(elts=ops, ctx=ast.Load()),
                         ast.Tuple(elts=variables, ctx=ast.Load()), to, self.site(node),
                     )  # fmt: skip
-                return ast.copy_location(call, node)
+                return ast.copy_location(self._with_call(call), node)
         if self.axis_names and analysis.named_axes_call(node, self.axis_names):
             # axis positions keep the names; everything else is visited as usual
             method = isinstance(node.func, ast.Attribute) and node.func.attr in axes.AXIS_METHODS
@@ -238,6 +299,8 @@ class _Exprs(ast.NodeTransformer):
                     k.value = self.visit(k.value)
             return self._named(node)
         self.generic_visit(node)
+        if self.plain:
+            return node
         if (
             isinstance(node.func, ast.Name)
             and node.func.id == "super"
@@ -293,13 +356,12 @@ class _Exprs(ast.NodeTransformer):
             values=[k.value for k in node.keywords],
         )
         args = ast.Tuple(elts=list(node.args), ctx=ast.Load())
-        return ast.copy_location(
-            _call("named_", target, attr, args, kwargs, self.site(node), _constant(var)), node
-        )
+        call = _call("named_", target, attr, args, kwargs, self.site(node), _constant(self._var(var)))
+        return ast.copy_location(self._with_call(call), node)
 
     def visit_Compare(self, node: ast.Compare) -> Any:
         self.generic_visit(node)
-        if len(node.ops) < 2 or _has_walrus(node):
+        if self.plain or len(node.ops) < 2 or _has_walrus(node):
             return node
         ops = ast.Tuple(elts=[ast.Constant(type(o).__name__) for o in node.ops], ctx=ast.Load())
         return ast.copy_location(
@@ -308,7 +370,7 @@ class _Exprs(ast.NodeTransformer):
 
     def visit_BoolOp(self, node: ast.BoolOp) -> Any:
         self.generic_visit(node)
-        if _has_walrus(node):
+        if self.plain or _has_walrus(node):
             return node  # `:=` inside a thunk would bind in the wrong scope
         attr = "and_" if isinstance(node.op, ast.And) else "or_"
         acc = node.values[0]
@@ -318,13 +380,13 @@ class _Exprs(ast.NodeTransformer):
 
     def visit_UnaryOp(self, node: ast.UnaryOp) -> Any:
         self.generic_visit(node)
-        if isinstance(node.op, ast.Not):
+        if isinstance(node.op, ast.Not) and not self.plain:
             return ast.copy_location(_call("not_", node.operand), node)
         return node
 
     def visit_IfExp(self, node: ast.IfExp) -> Any:
         self.generic_visit(node)
-        if _has_walrus(node):
+        if self.plain or _has_walrus(node):
             return node
         return ast.copy_location(
             _call("ifexp", node.test, _thunk(node.body), _thunk(node.orelse), self.site(node)), node
@@ -873,7 +935,9 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
         or analysis.is_rewritable(m)
         or (isinstance(m, ast.Name) and m.id in names)
         for m in analysis.walk_all(fdef.body)
-    ) and not analysis.size_asserts(fdef, names, {}, []):
+    ) and not analysis.size_asserts(fdef, names, {}, []) and not any(
+        isinstance(m, ast.Name) and m.id in names for s in fdef.body for m in ast.walk(s)
+    ):  # a size used in a nested function
         raise NotConverted("no control flow to convert")
     if "." in raw.__qualname__.replace(".<locals>.", "") and analysis.MANGLED.search(src):
         raise NotConverted("uses private (name-mangled) attributes")
@@ -895,6 +959,8 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
     if n_locals:  # local annotations may name the function's type parameters
         for tp in getattr(raw, "__type_params__", ()):
             cells.setdefault(tp.__name__, types.CellType(tp))
+    for n, dim in named_sizes(raw).items():  # f32[R:6]: R is a name in the body
+        cells[n] = types.CellType(dim)
     pre: list[ast.stmt] = [
         ast.Assign(targets=[_name(v, store=True)], value=ast.Constant(None)) for v in cells
     ]
@@ -970,6 +1036,8 @@ def _rewrite(tree: ast.Module, fdef: ast.FunctionDef, raw: Any) -> tuple[_Conver
         analysis.einsum_spellings(raw),
     )
     fdef.body = [exprs.visit(s) for s in fdef.body]
+    if exprs.uses_call:  # nested functions see the sizes of the call they are defined in
+        fdef.body.insert(0, _locate(ast.Assign(targets=[_name(CALL, store=True)], value=_call("call_")), fdef.body[0]))
     n_locals += exprs.named  # axes by name need the call's sizes, as checked locals do
     conv.sizes = exprs.named
     conv.lifted = [srcs for _, srcs in lifted]

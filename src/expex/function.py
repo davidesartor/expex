@@ -1,11 +1,13 @@
 """``Fn``: a function whose signature is read, checked on every call and put to work.
 
 An ``Fn`` (made by the decorators in ``decorators.py``) parses its annotations
-into specs once. A call goes ``__call__`` → ``batching.vectorize`` (with
-``@vectorize``) or ``_direct`` → ``_run`` (opens a key scope if random) →
-``_run_checked`` (through ``CALL_HOOK`` when a tool installed one) →
-``_checked``, which matches the arguments, runs the converted body and
-matches the result. ``config`` holds the global switches.
+into specs once. A call goes ``__call__`` → ``_direct`` → ``_run`` (opens a
+key scope if random) → ``_run_checked`` (through ``CALL_HOOK`` when a tool
+installed one) → ``_checked``, which matches the arguments, runs the converted
+body and matches the result. When the arguments fail to match only because
+they have extra leading axes, ``_checked`` raises ``batching.Rebatch`` and
+``_run`` maps the call over those axes (``batching.vectorize``). ``config``
+holds the global switches.
 """
 
 import contextvars
@@ -27,7 +29,7 @@ from .annotations import messages, sym
 from .annotations.dims import DExpr, DName, Env, is_symbolic, resolve
 from .annotations.errors import Mismatch, ShapeError, StageError
 from .annotations.expr import Expr
-from .annotations.spec import OpaqueSpec, Spec, StaticSpec, _assumptions_of, _struct_fields, parse, parse_owner, static_type
+from .annotations.spec import ArraySpec, KeySpec, OpaqueSpec, Spec, StaticSpec, _assumptions_of, _struct_fields, parse, parse_owner, static_type
 from .staging import flow, ops
 from .staging.convert import NotConverted
 from .staging.convert import convert as _convert
@@ -67,7 +69,12 @@ class Config:
         #: Turn ``for`` loops into ``lax.scan`` / ``vmap`` when tracing. With False,
         #: loops over arrays and ranges are unrolled, as in plain JAX.
         self.lower_loops: bool = os.environ.get("EXPEX_LOWER_LOOPS", "1") not in ("0", "false", "")
-
+        #: Map a call over extra leading axes of its arguments, when that is all that
+        #: keeps them from matching (``@expex.fn(vectorize=False)`` opts one function out).
+        self.vectorize: bool = os.environ.get("EXPEX_VECTORIZE", "1") not in ("0", "false", "")
+        #: Outside ``jax.jit``, run a mapped call (``f.vectorize``, or mapped
+        #: automatically) compiled from its second call with the same shapes on.
+        self.compile_vectorized: bool = os.environ.get("EXPEX_COMPILE_VECTORIZED", "1") not in ("0", "false", "")
 
     def __call__(self, **changes: Any) -> "_Scoped":
         """``with expex.config(checked=False): ...`` changes settings inside the block."""
@@ -139,12 +146,15 @@ def _scope(raw: Callable[..., Any], localns: dict[str, Any], owner: type | None 
     out = {**localns, **{p.__name__: p for p in getattr(raw, "__type_params__", ())}}
     if owner is not None:
         out.update({p.__name__: p for p in getattr(owner, "__type_params__", ())})
+        out.update(sym.named_sizes(owner))  # cells: i32[Rows:6, Cols:7]
         out[owner.__name__] = owner
     return out
 
 
 def _annotations(raw: Callable[..., Any], localns: dict[str, Any]) -> dict[str, Any]:
     try:
+        if sym.named_sizes(raw):  # f32[R:6]: R is evaluated from the text, below
+            raise NameError
         anns = inspect.get_annotations(raw, eval_str=True)
         if not any(isinstance(v, str) for v in anns.values()):  # e.g. quoted twice
             return anns
@@ -186,8 +196,9 @@ class Fn(Generic[P, R]):
         self.raw = raw
         #: Set by ``@expex.random``: the function gets an implicit PRNG key.
         self.random = False
-        #: Set by ``@expex.vectorize``: a plain call maps over extra leading axes by itself.
-        self.auto_vectorize = False
+        #: ``@expex.fn(vectorize=...)``: whether a call maps over extra leading axes of its
+        #: arguments by itself. None follows ``expex.config.vectorize`` (on by default).
+        self.auto_vectorize: bool | None = None
         #: The function that actually runs: ``raw`` with its control flow converted.
         self._impl: Callable[..., Any] = raw
         #: Why the control flow was not converted ("" if it was).
@@ -236,6 +247,7 @@ class Fn(Generic[P, R]):
         # sizes defined in the body (H = heads) are names in the annotations
         defined = getattr(self._impl, "__expex_defs__", {})
         self._localns.update({n: typing.TypeVar(n) for n in defined})  # type: ignore[misc]  # pyright: ignore[reportGeneralTypeIssues]
+        self._localns.update(sym.named_sizes(raw))  # f32[R:6, 7]: R is a fixed size (raises for conflicts)
         anns = _annotations(raw, self._localns)
         # Annotations that could not be evaluated yet (a forward reference to the
         # class being defined, say) are retried at the first call.
@@ -346,6 +358,15 @@ class Fn(Generic[P, R]):
             (n, p.spec) for n, p in self.params.items() if p.spec.leafy
         ]
         self._check_ret = self.ret.leafy
+        #: Plain array parameters: (position or None, name, rank, is a key), for the
+        #: unchecked fast path to see extra leading axes (see ``_extra_rank``).
+        kinds = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        self._ranked = [
+            (i if p.kind in kinds else None, n, p.spec.core_rank, isinstance(p.spec, KeySpec))
+            for i, (n, p) in enumerate(self.params.items())
+            if isinstance(p.spec, (ArraySpec, KeySpec)) and p.spec.core_rank is not None and n != "self"
+            and p.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        ]  # fmt: skip
         self._var_kinds = {
             n: p.kind
             for n, p in self.params.items()
@@ -405,8 +426,6 @@ class Fn(Generic[P, R]):
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
         __tracebackhide__ = True
-        if self.auto_vectorize:
-            return self.vectorize(*args, **kwargs)
         return self._direct(args, kwargs)
 
     def _direct(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
@@ -426,23 +445,62 @@ class Fn(Generic[P, R]):
         key: Any = None,
     ) -> Any:
         __tracebackhide__ = True
-        if self.random:
-            if key is None and "key" in self.params:
-                key = self._own_key(args, kwargs)
-            if not isinstance(key, _BatchTracer) and any(
-                isinstance(x, _BatchTracer) for x in jax.tree.leaves((args, kwargs))
-            ):
-                raise StageError(
-                    f"{self.name}() is being mapped with jax.vmap, but its random key is "
-                    f"shared by the whole batch: every element would draw the same numbers.\n"
-                    f"    - use {self.name}.vectorize(...), which gives each element its own key\n"
-                    f"    - or split a key yourself and pass the keys: {self.name}(..., key=keys)"
-                )
-            if key is None:
-                key = keys.fresh(f"{self.name}()")
-            with keys.child(key):
-                return self._run_checked(args, kwargs, env, force)
-        return self._run_checked(args, kwargs, env, force)
+        try:
+            if self.random:
+                if key is None and "key" in self.params:
+                    key = self._own_key(args, kwargs)
+                if not isinstance(key, _BatchTracer) and any(
+                    isinstance(x, _BatchTracer) for x in jax.tree.leaves((args, kwargs))
+                ):
+                    raise StageError(
+                        f"{self.name}() is being mapped with jax.vmap, but its random key is "
+                        f"shared by the whole batch: every element would draw the same numbers.\n"
+                        f"    - use {self.name}.vectorize(...), which gives each element its own key\n"
+                        f"    - or split a key yourself and pass the keys: {self.name}(..., key=keys)"
+                    )
+                if key is None:
+                    key = keys.fresh(f"{self.name}()")
+                with keys.child(key):
+                    return self._run_checked(args, kwargs, env, force)
+            return self._run_checked(args, kwargs, env, force)
+        except batching.Rebatch:
+            # the arguments have extra leading axes: map over them (a key is split per element)
+            if key is not None and "key" not in self.params:
+                kwargs = {**kwargs, "key": key}
+            return batching.vectorize(self, args, kwargs, auto=True)
+
+    def _auto(self) -> bool:
+        """Whether calls map over extra leading axes by themselves."""
+        return config.vectorize if self.auto_vectorize is None else self.auto_vectorize
+
+    def _extra_rank(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+        """Unchecked calls: whether a plain array parameter has more axes than declared."""
+        for i, name, rank, is_key in self._ranked:
+            v = args[i] if i is not None and i < len(args) else kwargs.get(name)
+            shape = KeySpec.batch_shape(v) if is_key else getattr(v, "shape", None)
+            if shape is not None and len(shape) > rank:
+                return True
+        return False
+
+    def _wants_batch(self, args: tuple[Any, ...], kwargs: dict[str, Any], force: bool) -> bool:
+        """Whether the argument check would ask to map over extra leading axes.
+
+        Asked before a call hook sees the call, so that tools see only the
+        mapped calls, as with ``f.vectorize``; without a hook ``_checked`` finds out.
+        """
+        if not self._auto():
+            return False
+        if not force and not config.checked and not self._needs_sizes:
+            return bool(self._ranked) and self._extra_rank(args, kwargs)
+        if self._lazy:
+            self._resolve_owner()
+        try:
+            self._match_args(self._sig.bind(*args, **kwargs).arguments, Env())
+        except Mismatch as m:
+            return batching.extra_axes(self, m)
+        except Exception:
+            return False
+        return False
 
     def _unknown_in(
         self, where: str, text: Any, glb: dict[str, Any], scope: dict[str, Any], params: Any
@@ -483,6 +541,8 @@ class Fn(Generic[P, R]):
     ) -> Any:
         __tracebackhide__ = True
         if (hook := CALL_HOOK.get()) is not None:
+            if self._wants_batch(args, kwargs, force):
+                raise batching.Rebatch
             return hook(self, args, kwargs, lambda a, k: self._checked(a, k, env, force))
         return self._checked(args, kwargs, env, force)
 
@@ -491,6 +551,8 @@ class Fn(Generic[P, R]):
     ) -> Any:
         __tracebackhide__ = True
         if not force and not config.checked and not self._needs_sizes:
+            if self._ranked and self._auto() and self._extra_rank(args, kwargs):
+                raise batching.Rebatch
             out = self._impl(*args, **kwargs)
             return flow.unstack(out) if self.converted else out
         if self._lazy:
@@ -501,44 +563,14 @@ class Fn(Generic[P, R]):
             bound = self._sig.bind(*args, **kwargs).arguments
         except TypeError:
             return self._impl(*args, **kwargs)  # let Python raise its own error
-        for name in self.static_refs:
-            v = bound[name] if name in bound else self.params[name].default
-            v = _concrete_int(v)
-            if isinstance(v, Tracer):
-                raise StageError(
-                    f"{self.name}(): `{name}` sets a size, so it must be known when the "
-                    f"function is traced, but it is traced. Under jax.jit, mark it static: "
-                    f"jax.jit(f, static_argnames=\"{name}\")."
-                )
-            if isinstance(v, (int, np.integer)) and not isinstance(v, bool):
-                env.dims[name] = int(v)
-                env.origin[name] = f"the argument `{name}`"
-            elif jax.export.is_symbolic_dim(v):  # a size passed on under the prover: `self.empty(T)`
-                env.dims[name] = v
-                env.origin[name] = f"the argument `{name}`"
-        if self.field_refs:
-            obj = bound.get(next(iter(self.params)))
-            for name in self.field_refs:
-                v = _concrete_int(getattr(obj, name, None))
-                if isinstance(v, (int, np.integer)) and not isinstance(v, bool):
-                    env.dims[name] = int(v)
-                    env.origin[name] = f"`self.{name}`"
         try:
-            for name, spec in self._check_inputs:
-                if name in bound:
-                    kind = self._var_kinds.get(name)
-                    if kind is None:
-                        spec.match(bound[name], name, env)
-                    elif kind is inspect.Parameter.VAR_POSITIONAL:
-                        for i, v in enumerate(bound[name]):
-                            spec.match(v, f"{name}[{i}]", env)
-                    else:
-                        for k, v in bound[name].items():
-                            spec.match(v, k, env)
-            if env.deferred:
-                resolve(env)
+            self._match_args(bound, env)
         except Mismatch as m:
-            raise messages.error(self, m, "argument", env) from None
+            if self._auto() and batching.extra_axes(self, m):
+                raise batching.Rebatch from None
+            err = messages.error(self, m, "argument", env)
+            setattr(err, "_expex_arguments", self)  # for a mapped call to say it was mapped
+            raise err from None
         if self.where:
             self._check_where(env, final=False)
         # Objects this call creates are its own: updating them in place is fine
@@ -572,6 +604,44 @@ class Fn(Generic[P, R]):
             if self.where:
                 self._check_where(env, final=True)
         return out
+
+    def _match_args(self, bound: dict[str, Any], env: Env) -> None:
+        """Bind this call's sizes in ``env`` and match the arguments (raises ``Mismatch``)."""
+        for name in self.static_refs:
+            v = bound[name] if name in bound else self.params[name].default
+            v = _concrete_int(v)
+            if isinstance(v, Tracer):
+                raise StageError(
+                    f"{self.name}(): `{name}` sets a size, so it must be known when the "
+                    f"function is traced, but it is traced. Under jax.jit, mark it static: "
+                    f"jax.jit(f, static_argnames=\"{name}\")."
+                )
+            if isinstance(v, (int, np.integer)) and not isinstance(v, bool):
+                env.dims[name] = int(v)
+                env.origin[name] = f"the argument `{name}`"
+            elif jax.export.is_symbolic_dim(v):  # a size passed on under the prover: `self.empty(T)`
+                env.dims[name] = v
+                env.origin[name] = f"the argument `{name}`"
+        if self.field_refs:
+            obj = bound.get(next(iter(self.params)))
+            for name in self.field_refs:
+                v = _concrete_int(getattr(obj, name, None))
+                if isinstance(v, (int, np.integer)) and not isinstance(v, bool):
+                    env.dims[name] = int(v)
+                    env.origin[name] = f"`self.{name}`"
+        for name, spec in self._check_inputs:
+            if name in bound:
+                kind = self._var_kinds.get(name)
+                if kind is None:
+                    spec.match(bound[name], name, env)
+                elif kind is inspect.Parameter.VAR_POSITIONAL:
+                    for i, v in enumerate(bound[name]):
+                        spec.match(v, f"{name}[{i}]", env)
+                else:
+                    for k, v in bound[name].items():
+                        spec.match(v, k, env)
+        if env.deferred:
+            resolve(env)
 
     def _check_where(self, env: Env, final: bool) -> None:
         for w in self.where:
@@ -643,6 +713,10 @@ class Fn(Generic[P, R]):
         axes of different arguments broadcast against each other. The result
         gains the batch axes in front. A single PRNG key is split into one key
         per batch element, so examples do not share randomness.
+
+        A plain call does the same by itself when extra leading axes are all
+        that keep the arguments from matching, except on ``self``: this maps
+        over a batch of models too, and works with ``vectorize=False``.
         """
         __tracebackhide__ = True
         return batching.vectorize(self, args, kwargs)
@@ -719,6 +793,8 @@ class Fn(Generic[P, R]):
         """Everything expex knows about this function, as text."""
         lines = [self.signature, f"  defined at {self.location}"]
         opts = [k for k, v in (("vectorize", self.auto_vectorize), ("random", self.random)) if v]
+        if self.auto_vectorize is False:
+            opts.append("vectorize=False")
         if opts:
             lines.append("  options: " + ", ".join(opts))
         for k, e in self.defs.items():

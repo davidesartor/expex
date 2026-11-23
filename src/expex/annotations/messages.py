@@ -107,6 +107,8 @@ def hint(f: Fn[Any, Any], m: Mismatch, role: str, env: Env) -> str:
 def annotate(f: Fn[Any, Any], e: Exception, bound: dict[str, Any], env: Env) -> None:
     try:
         _stage_hint(e, f)
+        if isinstance(e, NameError):
+            _size_hint(e, f, env)
         args = ", ".join(
             f"{n}: {describe(v)}" for n, v in bound.items() if f.params[n].spec.leafy
         )
@@ -116,6 +118,41 @@ def annotate(f: Fn[Any, Any], e: Exception, bound: dict[str, Any], env: Env) -> 
             e.add_note(note)
     except Exception:
         pass
+
+
+def _size_hint(e: NameError, f: Fn[Any, Any], env: Env) -> None:
+    """A size used by name outside the function it belongs to: in a helper defined elsewhere."""
+    from .sym import named_sizes
+
+    name = getattr(e, "name", None)
+    if not name or getattr(e, "_expex_hint", False):
+        return
+    raw = f.raw
+    sizes = {*env.dims, *env.vars, *f.defs, *named_sizes(raw)}
+    sizes |= {p.__name__ for p in getattr(raw, "__type_params__", ())}
+    if name not in sizes:
+        return
+    tb = e.__traceback__
+    while tb is not None and tb.tb_next is not None:
+        tb = tb.tb_next
+    if tb is None:
+        return
+    code = tb.tb_frame.f_code
+    setattr(e, "_expex_hint", True)
+    if code is getattr(f._impl, "__code__", None) or code is getattr(raw, "__code__", None):
+        why = f.convert_note or "it is not converted"
+        e.add_note(
+            f"expex: {name} is a size of {f.name}(), declared in its annotations, but the body "
+            f"cannot use it by name because {why}."
+        )
+        return
+    helper = getattr(code, "co_qualname", code.co_name)
+    e.add_note(
+        f"expex: {name} is a size of {f.name}(), but `{helper}` ({code.co_filename}:{tb.tb_lineno}) "
+        f"is defined outside {f.name}(), so it does not see {f.name}()'s sizes.\n"
+        f"    - define `{helper}` inside {f.name}(): a nested function sees the sizes of the call\n"
+        f"    - or decorate it with @expex.fn and annotate its arguments with {name}"
+    )
 
 
 def _is_np(dtype: Any) -> bool:

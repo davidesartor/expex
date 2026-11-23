@@ -175,6 +175,24 @@ def free_names(scope: ast.AST) -> set[str]:
     return (used - bound) | declared
 
 
+def bound_names(scope: ast.AST) -> set[str]:
+    """Names a nested function, lambda or comprehension binds itself (they hide the enclosing ones)."""
+    if isinstance(scope, COMPS):
+        return {n for gen in scope.generators for n in (target_names(gen.target) or reads([gen.target]))}
+    if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        return set()
+    a = scope.args
+    out = {x.arg for x in a.posonlyargs + a.args + a.kwonlyargs + [x for x in (a.vararg, a.kwarg) if x]}
+    if isinstance(scope, ast.Lambda):
+        return out
+    out |= {getattr(t, "name", "") for t in getattr(scope, "type_params", ())}
+    out |= assigned(scope.body)
+    for m in walk_all(scope.body):
+        if isinstance(m, (ast.Global, ast.Nonlocal)):
+            out |= set(m.names)
+    return out
+
+
 def is_rewritable(m: ast.AST) -> bool:
     """Statements/calls worth converting even without control flow around them."""
     if isinstance(m, ast.Assert):
@@ -313,8 +331,11 @@ def einsum_spellings(raw: Any) -> tuple[dict[str, str], set[str]]:
 
 
 def axis_names(raw: Any, fdef: ast.FunctionDef) -> set[str]:
-    """Names that stand for axes in ``raw``: type parameters and ``Dim`` classes."""
+    """Names that stand for axes in ``raw``: type parameters, ``Dim`` classes, sizes declared as ``R:6``."""
+    from ..annotations.sym import named_sizes
+
     out = {tp.__name__ for tp in getattr(raw, "__type_params__", ())}
+    out |= set(named_sizes(raw))
     code = raw.__code__
     for name, cell in zip(code.co_freevars, raw.__closure__ or ()):
         try:

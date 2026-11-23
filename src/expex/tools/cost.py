@@ -45,6 +45,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from ..annotations.spec import fn_fixed_sizes
 from .trace import Target, resolve, source_of, sub_jaxprs
 
 type Mono = tuple[tuple[str, int], ...]  # ((name, power), ...) sorted by name
@@ -205,9 +206,12 @@ class Cost:
     largest: tuple[str, Poly] | None = None  # (type of the largest value, its elements)
     notes: list[str] = field(default_factory=list)
     given: dict[str, int] = field(default_factory=dict)  # sizes given as keywords
+    fixed: dict[str, int] = field(default_factory=dict)  # named fixed sizes: R in f32[R:6]
 
     def __str__(self) -> str:
-        sizes = ", ".join(self.sizes + [f"{k}={v}" for k, v in self.given.items()])
+        sizes = ", ".join(
+            self.sizes + [f"{k}={v}" for k, v in self.given.items()] + [f"{k} (= {v})" for k, v in self.fixed.items()]
+        )
         out = [f"{self.name}   (sizes: {sizes or 'none'})"]
         out.append(f"  flops        {self.flops.format(self.sizes)}{_num(self.flops, 'FLOP')}")
         if self.parameters is not None:
@@ -304,6 +308,7 @@ def cost(target: Any, /, **sizes: Any) -> Cost:
         None if largest is None else (largest[0], largest[1].subs(values)),
         notes + more,
         values,
+        fn_fixed_sizes(f),
     )
 
 

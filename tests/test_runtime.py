@@ -92,8 +92,9 @@ def test_scalar_and_python_scalars():
     scale(jnp.ones(3), 2.0)
     scale(jnp.ones(3), 2)
     scale(jnp.ones(3), jnp.float32(2))
+    assert scale(jnp.ones(3), jnp.ones(2)).shape == (2, 3)  # extra axes on `a`: mapped over
     with pytest.raises(ShapeError, match="expected 0 axes, got 1"):
-        scale(jnp.ones(3), jnp.ones(3))
+        fn(vectorize=False)(scale.raw)(jnp.ones(3), jnp.ones(3))
 
     @fn
     def count(n: i32) -> i32:
@@ -150,7 +151,7 @@ def test_fixed_and_named_dims():
         return img.mean(-1)
 
     gray(jnp.ones((4, 5, 3)))
-    with pytest.raises(ShapeError, match="axis 2 should be RGB = 3, but is 4"):
+    with pytest.raises(ShapeError, match="axis 2 should be RGB, which is fixed at 3, but is 4"):
         gray(jnp.ones((4, 5, 4)))
 
     @fn
@@ -394,8 +395,9 @@ def test_key():
     noise(jnp.zeros(3), jr.PRNGKey(0))
     with pytest.raises(ShapeError, match="expected a PRNG key"):
         noise(jnp.zeros(3), jnp.zeros(3))
+    assert noise(jnp.zeros(3), jr.split(jr.key(0), 4)).shape == (4, 3)  # a batch of keys: mapped
     with pytest.raises(ShapeError, match="expected 0 axes, got 1"):
-        noise(jnp.zeros(3), jr.split(jr.key(0), 4))
+        fn(vectorize=False)(noise.raw)(jnp.zeros(3), jr.split(jr.key(0), 4))
 
     @fn
     def many[N](keys: Key[N]) -> f32[N]:
@@ -416,8 +418,10 @@ def test_methods():
     m = M(2.0)
     assert m.call(jnp.ones(3)).shape == (3,)
     assert m.call.vectorize(jnp.ones((4, 3))).shape == (4, 3)
+    assert m.call(jnp.ones((4, 3))).shape == (4, 3)  # mapped over by itself
     with pytest.raises(ShapeError, match="expected 1 axis, got 2"):
-        m.call(jnp.ones((3, 3)))
+        with expex.config(vectorize=False):
+            m.call(jnp.ones((3, 3)))
 
 
 def test_unannotated_is_ignored():
@@ -543,7 +547,7 @@ def test_batch_annotation():
 
 
 def test_hints():
-    @fn
+    @fn(vectorize=False)
     def f[B, T](x: f32[B, T], y: f32[B, T]) -> f32[B, T]:
         return x + y
 

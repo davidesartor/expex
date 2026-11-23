@@ -5,6 +5,7 @@ the arguments given, or, without arguments, on symbolic sizes from its
 annotations (the trace engine's first case), so the shapes hold for all sizes.
 """
 
+import contextlib
 import inspect
 import sys
 from dataclasses import dataclass
@@ -128,9 +129,16 @@ def shapes(f: Callable[..., Any], *args: Any, **kwargs: Any) -> ShapeTrace:
             title = f"{getattr(raw, '__qualname__', raw.__name__)} at {fname}:{start}"
         else:
             title = _symbolic_run(target)
+    except Exception as e:  # the lines before the error, for `python -m expex shapes`
+        with contextlib.suppress(AttributeError):
+            setattr(e, "shapes", _listing(f"{raw.__qualname__}: stopped by the error", src_lines, start, seen))
+        raise
     finally:
         sys.settrace(old)
+    return _listing(title, src_lines, start, seen)
 
+
+def _listing(title: str, src_lines: list[str], start: int, seen: dict[int, dict[str, list[str]]]) -> ShapeTrace:
     rows = []
     for i, text in enumerate(src_lines):
         n = start + i

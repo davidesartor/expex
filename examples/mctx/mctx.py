@@ -65,7 +65,6 @@ class Step[A]:
     value: f32  # of the state reached
 
 
-type Model = Callable[..., tuple[Step, Any]]  # (params, key, action: i32, embedding: f32[E]) -> (Step[A], f32[E])
 type Select = Callable[..., i32]  # (key, tree, node: i32[, depth: i32]) -> action
 
 
@@ -107,22 +106,22 @@ class Tree[N, A, E]:
         probs = counts / total if total > 0 else jnp.full(A, 1 / A)
         return Summary(counts, probs, self.node_values[ROOT], self.qvalues(ROOT))
 
-    def simulate(self, key: Key, select_root: Select, select_interior: Select, max_depth: int) -> tuple[i32, i32]:
-        """Descend from the root to an unexpanded action, or to `max_depth`: (node, action)."""
-        node, depth = ROOT, 0
-        while True:
+    def simulate(
+        self, key: Key, select_root: Select, select_interior: Select, max_depth: int | None
+    ) -> tuple[i32, i32]:
+        """Descend from the root to an unexpanded action, or to `max_depth` edges: (node, action)."""
+        key, pick = jr.split(key)
+        node, depth, action = ROOT, 0, select_root(pick, self, ROOT)
+        while self.children_index[node, action] != UNVISITED and (max_depth is None or depth + 1 < max_depth):
+            node, depth = self.children_index[node, action], depth + 1
             key, pick = jr.split(key)
-            if depth == 0:
-                action = select_root(pick, self, node)
-            else:
-                action = select_interior(pick, self, node, depth)
-            child = self.children_index[node, action]
-            depth += 1
-            if child == UNVISITED or depth >= max_depth:
-                return node, action
-            node = child
+            action = select_interior(pick, self, node, depth)
+        return node, action
 
-    def expand(self, params: Any, key: Key, model: Model, parent: i32, action: i32, child: i32) -> Tree[N, A, E]:
+    @expex.fn(examples={"params": [None]})
+    def expand(
+        self, params: Any, key: Key, model: Callable[..., tuple[Step[A], f32[E]]], parent: i32, action: i32, child: i32
+    ) -> Tree[N, A, E]:
         """Evaluate `action` from `parent` with the model, and store the result as node `child`."""
         step, embedding = model(params, key, action, self.embeddings[parent])
         tree = self.fill(child, step.prior_logits, step.value, embedding)
@@ -192,13 +191,13 @@ def new_tree[A, E](root: Root[A, E], nodes: int, invalid: Bool[A], gumbel: f32[A
     return tree.fill(ROOT, root.prior_logits, root.value, root.embedding)
 
 
-@expex.fn
+@expex.fn(examples={"params": [None]})
 def search[S, A, E](
     params: Any,
     select_keys: Key[S],
     model_keys: Key[S],
     root: Root[A, E],
-    model: Model,
+    model: Callable[..., tuple[Step[A], f32[E]]],
     select_root: Select,
     select_interior: Select,
     invalid: Bool[A],
@@ -208,7 +207,7 @@ def search[S, A, E](
     """S simulations, each adding one node (mctx's `search`, for one tree)."""
     tree = new_tree(root, S + 1, invalid, gumbel)
     for sim in range(S):
-        parent, action = tree.simulate(select_keys[sim], select_root, select_interior, max_depth or S)
+        parent, action = tree.simulate(select_keys[sim], select_root, select_interior, max_depth)
         child = tree.children_index[parent, action]
         if child == UNVISITED:  # else max_depth was reached: evaluate the leaf again
             child = sim + 1
@@ -391,12 +390,12 @@ def with_temperature[A](logits: f32[A], temperature: f32) -> f32[A]:
     return (logits - logits.max()) / jnp.maximum(expex.tiny(logits), temperature)
 
 
-@expex.fn
+@expex.fn(examples={"params": [None]})
 def muzero_policy[B, A, E](
     params: Any,
     key: Key,
     root: Batch[Root[A, E], B],
-    recurrent_fn: Model,
+    recurrent_fn: Callable[..., tuple[Step[A], f32[E]]],
     num_simulations: int,
     invalid_actions: Bool[B, A] | None = None,
     max_depth: int | None = None,
@@ -427,12 +426,12 @@ def muzero_policy[B, A, E](
     return Policy(action.astype(jnp.int32), weights, trees)
 
 
-@expex.fn
+@expex.fn(examples={"params": [None]})
 def gumbel_muzero_policy[B, A, E](
     params: Any,
     key: Key,
     root: Batch[Root[A, E], B],
-    recurrent_fn: Model,
+    recurrent_fn: Callable[..., tuple[Step[A], f32[E]]],
     num_simulations: int,
     invalid_actions: Bool[B, A] | None = None,
     max_depth: int | None = None,
@@ -462,7 +461,9 @@ def gumbel_muzero_policy[B, A, E](
 
 
 @expex.fn
-def gumbel_decision[N, A, E](tree: Tree[N, A, E], qtransform: Callable[..., f32[A]]) -> Policy[N, A, E]:
+def gumbel_decision[N, A, E](
+    tree: Tree[N, A, E], qtransform: Callable[..., f32[A]] = qtransform_completed_by_mix_value
+) -> Policy[N, A, E]:
     """The best of the most visited root actions, and softmax(prior_logits + completed Q) as the target."""
     visits, logits = tree.children_visits[ROOT], tree.children_prior_logits[ROOT]
     q = qtransform(tree, ROOT)

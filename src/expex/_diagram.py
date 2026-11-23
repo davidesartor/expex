@@ -88,6 +88,7 @@ from jax.core import Tracer
 from . import function as _fn
 from .annotations.dims import fmt_dim, short_dtype
 from .annotations.errors import ShapeError
+from .annotations.spec import fn_fixed_sizes
 from .tools import cost as _cost
 from .tools.trace import sub_jaxprs
 
@@ -659,6 +660,11 @@ def _outline(m: dict[str, Any]) -> str:
             head += f"   ESTIMATED from FLOPs, not measured ({t['why']}): {_amount(t['total'], 'flop')} per call"
     elif err:
         head += "   ShapeError: traced up to the failing call"
+    if m.get("fixed"):  # f32[R:6]: R is shown as 6 in the types, so say which sizes are fixed
+        types = [e[2] for e in _view(m, _opened(m))[1]]
+        head += "   sizes " + " · ".join(
+            [n for n in _names(types) if n not in m["fixed"]] + [f"{k} (= {v})" for k, v in m["fixed"].items()]
+        )
     width = max([len(r[0]) for r in rows] + [len("  (outside the calls)") if t else 0]) + 2
     lines = [head] + [f"{name:<{width}}{what}".rstrip() for name, what, _ in rows]
     if t and t.get("outside"):
@@ -1713,6 +1719,7 @@ class _Figure:
                 continue
             parts.append(f"{name} = len({m['lists'][name]})" if name in m.get("lists", {}) else name)
         parts += [f"{k} = {v}" for k, v in m.get("given", {}).items()]
+        parts += [f"{k} (= {v})" for k, v in m.get("fixed", {}).items()]  # f32[R:6]: drawn as 6
         return " · ".join(parts)
 
     def paint(self) -> None:
@@ -2052,6 +2059,7 @@ def _draw(target: Any, depth: int, sizes: dict[str, Any]) -> Diagram:
     if lists and not given:  # for the figure's line of sizes: L = len(blocks)
         model["lists"] = {"L": ", ".join(dict.fromkeys(field(p) for p in lists))}
     model["given"] = {k: int(v) for k, v in sizes.items() if k not in f.params and isinstance(v, int)}
+    model["fixed"] = fn_fixed_sizes(f)  # f32[R:6]: R is drawn as 6
     return Diagram(model)
 
 

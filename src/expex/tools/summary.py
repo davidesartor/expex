@@ -26,10 +26,10 @@ import jax
 import jax.random as jr
 
 from ..annotations.dims import DConst, DExpr, DName, Env
-from ..annotations.spec import ArraySpec, NoneSpec, SeqSpec, StructSpec, UnionSpec, join, parse_owner
+from ..annotations.spec import ArraySpec, NoneSpec, SeqSpec, StructSpec, UnionSpec, fixed_sizes, join, parse_owner
 from .. import function
 from ..function import Fn, unwrap
-from ..modules import _all_fields
+from ..modules import _all_fields, build
 from . import pages
 from .cost import Poly, arrays, cost, si
 from .trace import resolve
@@ -62,6 +62,7 @@ class Summary:
     sizes: dict[str, int]
     order: list[str]
     notes: list[str] = field(default_factory=list)
+    fixed: dict[str, int] = field(default_factory=dict)  # named fixed sizes: Rows in i32[Rows:6, Cols:7]
 
     def _cells(self, r: Row) -> list[str]:
         fmt = lambda p: "" if p is None else p.format(self.order)
@@ -77,7 +78,7 @@ class Summary:
         right = {2, 3, 5, 6}
         line = lambda x: "  ".join(c.rjust(w[i]) if i in right else c.ljust(w[i]) for i, c in enumerate(x)).rstrip()  # fmt: skip
         rule = "─" * len(line(head))
-        sizes = ", ".join(f"{k}={v}" for k, v in self.sizes.items())
+        sizes = ", ".join([f"{k}={v}" for k, v in self.sizes.items()] + [f"{k} (= {v})" for k, v in self.fixed.items()])
         out = [f"{self.name}   ({sizes})", line(head), rule, *map(line, body), rule, line(foot)]
         return "\n".join(out + [f"note: {n}" for n in self.notes])
 
@@ -102,7 +103,10 @@ class Summary:
                 f'<td class="n"{tip(c[6])}>{c[5] or ("—" if not c[6] else "ƒ")}</td><td class="f">{html.escape(c[6])}</td></tr>'
             )  # fmt: skip
 
-        sizes = " ".join(f"<span>{html.escape(k)}={v}</span>" for k, v in self.sizes.items())
+        sizes = " ".join(
+            [f"<span>{html.escape(k)}={v}</span>" for k, v in self.sizes.items()]
+            + [f"<span>{html.escape(k)} (= {v})</span>" for k, v in self.fixed.items()]
+        )
         body = "".join(tr(i, r) for i, r in enumerate(self.rows))
         notes = "".join(f"<li>{html.escape(n)}</li>" for n in self.notes)
         return pages.table(pages.uid("txs"), _CSS, (
@@ -122,7 +126,7 @@ def summary(model: Any, /, **sizes: int) -> Summary:
     """A table of a model's modules: parameters, bytes and FLOPs, as numbers and formulas.
 
     ``model`` is an ``@expex.struct`` instance, or a struct class with the sizes
-    ``init`` needs (``summary(Transformer, Vocab=50, D=32, F=64, blocks=4)``,
+    building it needs (``summary(Transformer, Vocab=50, D=32, F=64, blocks=4)``,
     built under ``jax.eval_shape``, so nothing is allocated). Other keywords
     (``T=128``) are sizes of the ``__call__`` methods, used for FLOP counts.
     """
@@ -134,7 +138,7 @@ def summary(model: Any, /, **sizes: int) -> Summary:
         accepts |= {n for n in names if n.isidentifier()}
         built = {k: v for k, v in sizes.items() if k in accepts}
         sizes = {k: v for k, v in sizes.items() if k not in accepts}
-        model = jax.eval_shape(lambda: model.init(jr.key(0), **built))
+        model = jax.eval_shape(lambda: build(model, jr.key(0), **built))
     cls = type(model)
     spec = parse_owner(cls)
     if not isinstance(spec, StructSpec):
@@ -163,7 +167,7 @@ def summary(model: Any, /, **sizes: int) -> Summary:
     calls = sorted((used | set(sizes)) - set(known) - {"L"} - set(order))  # T first, as expex.cost does
     order = list(dict.fromkeys([*calls, *order, *sorted(known.keys() - {"L"}), "L"]))
     shown = {k: v for k, v in sorted({**known, **sizes}.items(), key=lambda kv: order.index(kv[0]))}
-    return Summary(cls.__name__, rows, total, shown, order, s.notes)
+    return Summary(cls.__name__, rows, total, shown, order, s.notes, fixed_sizes(spec))
 
 
 @dataclass

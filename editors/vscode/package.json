@@ -1,0 +1,72 @@
+{
+  "name": "expex-shapes",
+  "displayName": "expex shapes",
+  "description": "Shapes of every line and shape errors from expex, as inlay hints and diagnostics.",
+  "version": "0.1.0",
+  "publisher": "expex",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/davidesartor/expex"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Linters",
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:python"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "expex.check",
+        "title": "expex: Show shapes of this file"
+      },
+      {
+        "command": "expex.toggleHints",
+        "title": "expex: Toggle shape hints"
+      }
+    ],
+    "configuration": {
+      "title": "expex",
+      "properties": {
+        "expex.hints.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the shape of every assignment and return as an inlay hint at the end of the line."
+        },
+        "expex.python": {
+          "type": "string",
+          "default": "",
+          "description": "Python interpreter to run `python -m expex shapes` with, when the Python extension has none selected. Empty: `python`."
+        },
+        "expex.runOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check a Python file when it is saved."
+        },
+        "expex.timeout": {
+          "type": "number",
+          "default": 120,
+          "description": "Seconds before a check is stopped."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "@types/vscode": "~1.75.0",
+    "@vscode/vsce": "^3.2.0",
+    "typescript": "^5.6.0"
+  }
+}

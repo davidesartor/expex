@@ -1,0 +1,55 @@
+# The original projects the ports in examples/ are checked and timed against,
+# pinned to the commits the ports were written from.
+# `python benchmarks/fetch.py` clones each into benchmarks/.originals/<name>/.
+#
+#   url      the repository
+#   commit   the exact commit checked out
+#   sparse   (optional) only these directories are checked out (for huge repositories)
+#   path     (optional) what goes on sys.path, relative to the clone (default: the clone)
+#   ports    the expex ports that use it
+
+[purejaxrl]
+url = "https://github.com/luchris429/purejaxrl"
+commit = "31756b197773a52db763fdbe6d635e4b46522a73"  # 2024-09-09
+path = "purejaxrl"
+ports = ["ppo"]
+
+[gymnax]
+# PureJaxRL's CartPole: gymnax 0.0.8 (the tag). Newer gymnax changed the
+# environment API that PureJaxRL's wrappers use. Put on sys.path, not installed,
+# because its pip package pins `gym`, which does not build on Python 3.14.
+url = "https://github.com/RobertTLange/gymnax"
+commit = "88fef6978d3d9966828256bfc27f5489b57f7757"  # tag v0.0.8
+ports = ["ppo"]
+
+[mamba-jax]
+url = "https://github.com/vvvm23/mamba-jax"
+commit = "3c50f6e807dc77b1ae697b3f9f0ef757a781687a"  # 2024-01-25
+ports = ["mamba"]
+
+[llama-2-jax]
+url = "https://github.com/ayaka14732/llama-2-jax"
+commit = "6bb19056f2e10b052321c9c510df8d9474aca333"  # 2024-01-08
+ports = ["llama"]
+
+[pgx]
+url = "https://github.com/sotetsuk/pgx"
+commit = "87278d2d6e677fd87248c457207b59cfa42e578d"  # 2025-03-06 (v2.6.0)
+ports = ["pgx"]
+
+[vision_transformer]
+url = "https://github.com/google-research/vision_transformer"
+commit = "64801f1b3b367b3611cc27a3d45cc22870a36fb3"  # 2026-08-01
+ports = ["vit"]
+
+[mctx]
+url = "https://github.com/google-deepmind/mctx"
+commit = "428bfb7e1c931715cd3d74f9c65e9991afd86df8"  # 2026-10-05
+ports = ["mctx"]
+
+[google-research]
+# JaxNeRF lives in the google-research monorepo: only jaxnerf/ is checked out.
+url = "https://github.com/google-research/google-research"
+commit = "87e25a5ba04d2c4cf0108f0cec96d648fe2b945a"  # 2026-11-21
+sparse = ["jaxnerf"]
+ports = ["nerf"]

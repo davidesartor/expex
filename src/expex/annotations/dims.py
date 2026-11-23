@@ -134,6 +134,17 @@ def parse_dim(item: Any, subst: dict[Any, Any]) -> Any:
         if item.size is not None:
             return DConst(item.size, item.__name__)
         return DName(item.__name__)
+    if type(item) is slice:  # R:6, a size declared in the annotation
+        start = item.start
+        if (
+            isinstance(start, type) and issubclass(start, Dim) and start.size is not None
+            and item.stop == start.size and item.step is None
+        ):  # fmt: skip
+            return DConst(start.size, start.__name__)
+        raise DimError(
+            f"{_slice_src(item)} is not a valid dimension. To declare a fixed size by name, "
+            f"write Name:size, e.g. f32[R:6, 7]."
+        )
     if isinstance(item, str):
         raise DimError(
             f"{item!r}: sizes are type parameters, not strings. Declare them in the "
@@ -144,6 +155,13 @@ def parse_dim(item: Any, subst: dict[Any, Any]) -> Any:
         f"{item!r} is not a valid dimension. Use a type parameter, Literal[n], "
         f"a Dim subclass, Any or `...`."
     )
+
+
+def _slice_src(s: slice) -> str:
+    def part(x: Any) -> str:
+        return "" if x is None else getattr(x, "__name__", None) or repr(x)
+
+    return f"`{part(s.start)}:{part(s.stop)}" + (f":{part(s.step)}`" if s.step is not None else "`")
 
 
 def _hashable(x: Any) -> bool:
@@ -414,7 +432,7 @@ def _match_shape(
                 raise Mismatch(path, spec, value, reason)
         elif t is DConst:
             if not _same(d.value, size):
-                want = f"{d.label} = {d.value}" if d.label else str(d.value)
+                want = f"{d.label}, which is fixed at {d.value}" if d.label else str(d.value)
                 raise Mismatch(path, spec, value, f"axis {axis} should be {want}, but is {size}.")
         elif t is DExpr:
             env.deferred.append((d, size, path, spec, value, axis))

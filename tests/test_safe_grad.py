@@ -130,7 +130,8 @@ def test_variadic_generic_structs():
     assert "f: Mix[N, O, M, D]" in repr(weights) and "f: Mix[*B, M, D]" in repr(any_batch)
     with pytest.raises(expex.ShapeError, match=r"declared  f.a: Float\[N, O, M\]"):
         weights(Mix(jnp.ones((2, 3, 4, 5)), jnp.ones((2, 3, 9))))
-    with pytest.raises(expex.ShapeError, match="expected 2 axes, got 4"):
+    assert single(m).shape == (2, 3)  # extra leading axes: mapped over
+    with pytest.raises(expex.ShapeError, match="expected 2 axes, got 4"), expex.config(vectorize=False):
         single(m)
     for f in (weights, any_batch, single):
         assert expex.prove(f).status == "proved"
