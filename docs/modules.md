@@ -40,7 +40,7 @@ grads = jax.grad(lambda m: m(jnp.ones((4, 16))).sum())(model)   # a Stack too
   `__init__` also works: assign the fields as usual, and the result is checked
   against the annotations. JAX and `.replace(...)` rebuild objects without
   calling it.
-- Every method is an `@fn` sharing the class's sizes, so
+- Every method is an `@expex.fn` sharing the class's sizes, so
   `expex.prove(Block.__call__)` works without an instance.
 - A loop over identical layers is one `lax.scan`, so a deep model compiles in
   the time one layer takes.

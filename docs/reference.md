@@ -14,7 +14,7 @@ class Params[D](NamedTuple):         # dataclasses work too
     w: f32[D, D]
     b: f32[D]
 
-@fn
+@expex.fn
 def example[*Batch, H, W](
     img: f32[*Batch, H, W, RGB],     # *Batch: any number of axes
     idx: Int[*Batch],                # any integer dtype

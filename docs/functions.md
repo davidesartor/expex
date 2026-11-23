@@ -9,9 +9,9 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 import expex
-from expex import fn, f32, i32
+from expex import f32, i32
 
-@fn
+@expex.fn
 def attend[B, T, D](q: f32[B, T, D], k: f32[B, T, D]) -> f32[B, T, T]:
     return jnp.einsum("btd,bsd->bts", q, k)
 ```
@@ -44,11 +44,11 @@ Sizes can be computed from other sizes and from int parameters, right in the
 annotation, and constraints are `assert`s at the top of the body:
 
 ```python
-@fn
+@expex.fn
 def pad[B, T](x: f32[B, T]) -> f32[B, T + 1]:
     return jnp.pad(x, ((0, 0), (0, 1)))
 
-@fn
+@expex.fn
 def split_heads[T, D](x: f32[T, D], heads: int) -> f32[heads, T, D // heads]:
     assert D % heads == 0
     return x.reshape(T, heads, D // heads).transpose(1, 0, 2)
@@ -65,7 +65,7 @@ A leading `assert` on sizes is checked before the body runs, and the prover
 assumes it. A leading assignment names a size for the signature and the body:
 
 ```python
-@fn
+@expex.fn
 def heads_first[T, D](x: f32[T, D], heads: int) -> f32[H, T, K]:
     H, K = heads, D // heads
     assert D % heads == 0
@@ -83,16 +83,16 @@ The sizes in the signature are names, and the body can use them. As a value,
 a name is its size in this call; as an axis argument, it is that axis:
 
 ```python
-@fn
+@expex.fn
 def pool[B, T, D](x: f32[B, T, D]) -> f32[B, D]:
     return x.mean(T)                     # an axis
 
-@fn
+@expex.fn
 def swap[B, T, D](x: f32[B, T, D]) -> f32[T, B, D]:
     y = jnp.tanh(x).reshape(B, T, D)     # sizes
     return y.transpose(T, B, D)          # axes
 
-@fn
+@expex.fn
 def running_mean[N, D](xs: f32[N, D]) -> f32[N, D]:
     total = jnp.zeros(D)
     out = []
@@ -119,11 +119,11 @@ print(expex.prove(running_mean))                    # proved for all sizes
 Contractions and reshapes need only the names of the result:
 
 ```python
-@fn
+@expex.fn
 def attention[B, T, S, D](q: f32[B, T, D], k: f32[B, S, D]) -> f32[B, T, S]:
     return expex.einsum(q, k, to=(B, T, S))      # D is not in `to`: summed over
 
-@fn
+@expex.fn
 def heads[T, D](x: f32[T, D], n: int) -> f32[H, T, K]:
     H, K = n, D // n
     assert D % n == 0
@@ -142,7 +142,7 @@ new ones, or merges several into one new one.
 every size:
 
 ```python
-@fn
+@expex.fn
 def diff[T, D](xs: f32[T, D]) -> f32[T, D]:
     return xs[1:] - xs[:-1]
 
@@ -163,13 +163,13 @@ diff: failed
 `expex.prove(split_heads)` proves it for every `D` and `heads` with
 `D % heads == 0`. Parameters such as `heads: int` are tried at a few values
 (ints at 1 and 2, bools both ways, every `Literal` and enum value); others take
-`@fn(examples={"name": [...]})`. Prove a whole package with `python -m expex pkg`
+`@expex.fn(examples={"name": [...]})`. Prove a whole package with `python -m expex pkg`
 or `pytest --expex pkg`.
 
 ## Plain Python on traced values
 
 ```python
-@fn
+@expex.fn
 def collatz(n: i32) -> i32:
     steps = 0
     while n != 1:
@@ -184,7 +184,7 @@ print(jax.vmap(collatz)(jnp.array([6, 7, 27])))     # [  8  16 111]
 ```
 
 ```python
-@fn
+@expex.fn
 def rnn[T, D](xs: f32[T, D], w: f32[D, D]) -> f32[T, D]:
     h = jnp.zeros(xs.shape[1])
     hs = []
@@ -209,7 +209,7 @@ On Python values every statement runs exactly as written. On traced values:
 - Gradients through a traced `if` are NaN-free where a branch is not taken,
   so the `jnp.where`-with-sanitised-inputs trick becomes a plain `if`.
 
-`f.flow` says how each statement ran; `@fn(convert=False)` opts out.
+`f.flow` says how each statement ran; `@expex.fn(convert=False)` opts out.
 
 ## Vectorising
 
@@ -217,7 +217,7 @@ A function's annotations say which axes are its own, so extra leading axes can
 be mapped over without `in_axes`:
 
 ```python
-@fn
+@expex.fn
 def score[T, D](x: f32[T, D], w: f32[D]) -> f32[T]:
     return jnp.tanh(x @ w)
 

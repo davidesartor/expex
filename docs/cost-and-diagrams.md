@@ -112,7 +112,7 @@ Transformer.__call__
   LayerNorm.__call__ · vectorized      f32[D] → f32[D]
 ```
 
-- Each call to an `@fn` is a rounded box. `depth=2`, or a click on the page,
+- Each call to an `@expex.fn` is a rounded box. `depth=2`, or a click on the page,
   opens it into a panel holding the calls inside. A loop over identical layers
   is `Name × L` (a stack of cards while closed). The selective scan in
   `examples/mamba/` is a panel `loop × T`. A traced `if` or `while` is a dashed

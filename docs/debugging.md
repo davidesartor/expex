@@ -8,7 +8,7 @@
 they meet, so the same code is right in bfloat16, float32 and float64:
 
 ```python
-@fn
+@expex.fn
 def entropy_safe[N](p: f32[N]) -> f32:
     return -(p * jnp.log(p + expex.tiny)).sum()       # tiny of p's dtype
 
@@ -21,7 +21,7 @@ jnp.maximum(x, expex.tiny(x))                         # as an argument: give it 
 ## Debugging
 
 ```python
-@fn
+@expex.fn
 def entropy[N](logits: f32[N]) -> f32:
     p = jax.nn.softmax(logits)
     return -(p * jnp.log(p)).sum()
@@ -43,7 +43,7 @@ and branches. `expex.debug.shapes` annotates every line with its shapes, here fo
 all sizes at once:
 
 ```python
-@fn
+@expex.fn
 def attention[B, T, D](q: f32[B, T, D], k: f32[B, T, D]) -> f32[B, T, T]:
     scores = q @ k.swapaxes(-1, -2)
     return jax.nn.softmax(scores, axis=-1)
@@ -108,7 +108,7 @@ blocks[5].__call__ ['activations growing: RMS ×2.8e+02 from blocks[4].__call__'
   named by path (`blocks[3].attn.__call__`), other functions by name, with a
   call index when one is called more than once (`Attention.causal#3`).
 - Each row has the output's shape, mean, std, largest magnitude, RMS and
-  NaN / inf counts, and the same for `d loss / d output`. A lifted call is
+  NaN / inf counts, and the same for `d loss / d output`. A vectorized call is
   one row over the whole batch: `×n` counts the outputs it covers.
 - A row is flagged (`!` in the text) when its output or gradient is not
   finite, when its gradient RMS is more than `grad_ratio` (100) times above

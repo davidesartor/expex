@@ -6,7 +6,7 @@
 
 ```python
 @expex.random
-@fn
+@expex.fn
 def dropout[D](x: f32[D], rate: float = 0.5) -> f32[D]:
     keep = jr.bernoulli(expex.key(), 1 - rate, x.shape)
     return jnp.where(keep, x / (1 - rate), 0.0)
@@ -27,7 +27,7 @@ would be frozen into the compiled function.
 The common transformations are options of `@expex.fn`, in any combination:
 
 ```python
-@fn(jit=True, remat="dots")
+@expex.fn(jit=True, remat="dots")
 def repeat[N](x: f32[N], n: int, scale: float) -> f32[N * n]:
     return jnp.tile(x, n) * scale
 
@@ -48,7 +48,7 @@ Each is also a decorator of its own (`@expex.jit`, `@expex.vectorize`, `@expex.r
 numbers are traced, so a new learning rate does not recompile. A compiled
 random function draws a fresh key on every call, or takes `key=`.
 
-JAX's own transformations work on any `@fn` too: `jax.jit(f,
+JAX's own transformations work on any `@expex.fn` too: `jax.jit(f,
 static_argnames=...)`, `jax.grad`, `jax.vmap`, `jax.checkpoint`.
 
 `expex.compile_cache(path)` keeps compiled programs on disk across runs.
