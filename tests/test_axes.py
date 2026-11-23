@@ -144,3 +144,45 @@ def test_unknown_sizes_are_explained():
 
     with pytest.raises(ShapeError, match="onehot.*the size Vocab is not known"):
         onehot(jnp.arange(3))
+
+
+def test_sizes_defined_in_the_body():
+    @fn
+    def split[T, D](x: f32[T, D], heads: int) -> f32[H, T, K]:
+        H, K = heads, D // heads
+        assert D % heads == 0
+        h: f32[T, H, K] = x.reshape(T, H, K)
+        return h.transpose(H, T, K)
+
+    x = jnp.arange(40.0).reshape(5, 8)
+    assert jnp.array_equal(split(x, 2), x.reshape(5, 2, 4).transpose(1, 0, 2))
+    assert tx.prove(split).ok
+    with pytest.raises(ShapeError, match="D % heads == 0"):
+        split(x, 3)
+
+    @fn
+    def wrong[T, D](x: f32[T, D], heads: int) -> f32[H, T, K]:
+        H, K = heads, D // heads
+        return x.reshape(T, H, K)
+
+    with pytest.raises(ShapeError):
+        wrong(x, 2)
+
+    @tx.struct
+    class Att[D]:
+        w: f32[D, D]
+        heads: int = 2
+
+        def split[T](self, x: f32[T, D]) -> f32[H, T, K]:
+            H, K = self.heads, D // self.heads
+            assert D % self.heads == 0
+            return x.reshape(T, H, K).transpose(H, T, K)
+
+    assert Att(jnp.eye(8)).split(jnp.ones((3, 8))).shape == (2, 3, 4) and tx.prove(Att.split).ok
+
+    @fn
+    def ordinary[N](x: f32[N]) -> f32[N]:
+        m = N * 2  # not in the signature: an ordinary local variable
+        return x * m
+
+    assert ordinary(jnp.ones(3)).tolist() == [6.0, 6.0, 6.0]

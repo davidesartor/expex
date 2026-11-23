@@ -45,6 +45,23 @@ def axis_name(v: Any) -> str | None:
     return None
 
 
+def _size_of(name: str, env: Any, fn: Any) -> Any:
+    """The size ``name`` has in this call: bound by the arguments, or defined (H = heads)."""
+    if env is None:
+        return None
+    if name in env.dims:
+        return env.dims[name]
+    expr = getattr(fn, "defs", {}).get(name)
+    if expr is not None and expr.names <= env.dims.keys():
+        return expr(env.dims)
+    return None
+
+
+def dim_(name: str) -> Any:
+    """A size defined in the body (``H = heads``): a name for it, like a type parameter."""
+    return typing.TypeVar(name)  # type: ignore[misc]  # pyright: ignore[reportGeneralTypeIssues]
+
+
 def lifted_(i: int) -> bool:
     """Is the body's ``i``-th leading assert checked as a constraint (so the body skips it)?"""
     from ._ops import CALLS
@@ -72,10 +89,10 @@ def size_(name: Any) -> Any:
     if n.startswith("*"):
         if n[1:] in env.vars:
             return tuple(env.vars[n[1:]])
-    elif n in env.dims:
-        return env.dims[n]
-    elif n in getattr(fn, "defs", {}) and fn.defs[n].names <= env.dims.keys():
-        return fn.defs[n](env.dims)  # a derived size, e.g. U = T + 1
+    else:
+        v = _size_of(n, env, fn)
+        if v is not None:
+            return v
     raise ShapeError(
         f"{getattr(fn, 'name', '?')}(): the size {n.lstrip('*')} is not known in this call: only sizes that appear in "
         f"the arguments, or are computed from them in an annotation, are known inside "
@@ -134,7 +151,7 @@ def resolve(name: str, arr: Any, site: str, var: str | None) -> Any:
             f"{site}: cannot tell where {name} is in `{where}`. Annotate it "
             f"(`{var or 'y'}: f32[{name}, ...] = ...`)."
         )
-    size = env.dims.get(name) if env is not None else None
+    size = _size_of(name, env, fn)
     if size is None:
         raise ShapeError(
             f"{site}: axis {name} is not bound in this call, so `{where}` cannot be "

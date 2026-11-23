@@ -566,6 +566,7 @@ class _Converter:
         self.count = 0
         self.sizes = 0  # uses of size names in the body
         self.lifted: list[list[str]] = []  # leading asserts on sizes, as constraints
+        self.defs: dict[str, str] = {}  # leading size definitions, H = heads
         self.uses_return_flag = False
         args = fdef.args
         params = [a.arg for a in args.posonlyargs + args.args + args.kwonlyargs]
@@ -1043,14 +1044,37 @@ def _axis_names(raw: Any, fdef: ast.FunctionDef) -> set[str]:
     return out
 
 
-def _size_asserts(fdef: ast.FunctionDef, sizes: set[str]) -> list[tuple[ast.Assert, list[str]]]:
-    """The leading ``assert``s that only compare sizes, parameters and fields of ``self``.
+def _signature_names(fdef: ast.FunctionDef) -> set[str]:
+    """Names used in the signature's annotations, and the type parameters."""
+    a = fdef.args
+    anns = [x.annotation for x in a.posonlyargs + a.args + a.kwonlyargs + [a.vararg, a.kwarg] if x]
+    out = {n.id for ann in [*anns, fdef.returns] if ann is not None for n in ast.walk(ann) if isinstance(n, ast.Name)}
+    out |= {getattr(t, "name", "") for t in getattr(fdef, "type_params", ())}
+    for ann in [*anns, fdef.returns]:  # names inside a quoted annotation
+        if isinstance(ann, ast.Constant) and isinstance(ann.value, str):
+            try:
+                out |= {n.id for n in ast.walk(ast.parse(ann.value, mode="eval")) if isinstance(n, ast.Name)}
+            except SyntaxError:
+                pass
+    return out
+
+
+def _size_asserts(
+    fdef: ast.FunctionDef,
+    sizes: set[str],
+    defs: dict[str, str] | None = None,
+    def_stmts: list[ast.Assign] | None = None,
+) -> list[Any]:
+    """The leading ``assert``s and size definitions of the body.
 
     ``assert D % heads == 0`` becomes the constraint ``D % heads == 0``: checked
-    before the body runs, and assumed by the prover.
+    before the body runs, and assumed by the prover. ``H, K = heads, D // heads``,
+    for names used in the signature, defines those sizes (recorded in ``defs``).
+    Both may only involve sizes, int parameters and fields of ``self``.
     """
     a = fdef.args
     params = {x.arg for x in a.posonlyargs + a.args + a.kwonlyargs}
+    in_signature = _signature_names(fdef)
     allowed = sizes | params
 
     def plain(e: ast.AST) -> bool:
@@ -1076,6 +1100,22 @@ def _size_asserts(fdef: ast.FunctionDef, sizes: set[str]) -> list[tuple[ast.Asse
     body = fdef.body
     start = 1 if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) else 0
     for s in body[start:]:
+        if isinstance(s, ast.Assign) and defs is not None and len(s.targets) == 1:
+            target, value = s.targets[0], s.value
+            names = [target] if isinstance(target, ast.Name) else getattr(target, "elts", None)
+            values = [value] if isinstance(target, ast.Name) else getattr(value, "elts", None)
+            if (
+                names and values and len(names) == len(values)
+                and all(isinstance(n, ast.Name) and n.id in in_signature for n in names)
+                and all(plain(v) for v in values)
+            ):  # fmt: skip
+                for n, v in zip(names, values):
+                    defs[n.id] = ast.unparse(Unself().visit(copy.deepcopy(v)))
+                    allowed.add(n.id)
+                if def_stmts is not None:
+                    def_stmts.append(s)
+                continue
+            break
         if not isinstance(s, ast.Assert):
             break
         tests = s.test.values if isinstance(s.test, ast.BoolOp) and isinstance(s.test.op, ast.And) else [s.test]
@@ -1133,7 +1173,7 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
         or _is_rewritable(m)
         or (isinstance(m, ast.Name) and m.id in names)
         for m in _walk_all(fdef.body)
-    ):
+    ) and not _size_asserts(fdef, names, {}, []):
         raise NotConverted("no control flow to convert")
     if "." in raw.__qualname__.replace(".<locals>.", "") and _MANGLED.search(src):
         raise NotConverted("uses private (name-mangled) attributes")
@@ -1191,6 +1231,7 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
     new.__typax_locals__ = n_locals  # type: ignore[attr-defined]
     new.__typax_sizes__ = conv.sizes  # type: ignore[attr-defined]
     new.__typax_where__ = conv.lifted  # type: ignore[attr-defined]
+    new.__typax_defs__ = conv.defs  # type: ignore[attr-defined]
     return new
 
 
@@ -1198,7 +1239,19 @@ def _rewrite(tree: ast.Module, fdef: ast.FunctionDef, raw: Any) -> tuple[_Conver
     """Rewrite ``fdef`` (parsed from ``raw``'s source) in place; the shared pipeline."""
     code = raw.__code__
     ast.increment_lineno(tree, code.co_firstlineno - 1)
-    lifted = _size_asserts(fdef, _axis_names(raw, fdef))
+    defs: dict[str, str] = {}
+    def_stmts: list[ast.Assign] = []
+    lifted = _size_asserts(fdef, _axis_names(raw, fdef), defs, def_stmts)
+    # `H, K = heads, D // heads` defines sizes: H and K become size names, whose
+    # value in the body is computed like any size of the call
+    for s in def_stmts:
+        names = [n.id for n in ast.walk(s.targets[0]) if isinstance(n, ast.Name)]
+        new = [
+            _locate(ast.Assign(targets=[_name(n, store=True)], value=_call("dim_", ast.Constant(n))), s)
+            for n in names
+        ]
+        i = fdef.body.index(s)
+        fdef.body[i : i + 1] = new
     # An assert that became a constraint is checked before the body runs (or
     # after, if it involves the result): the body skips it then.
     for i, (stmt, _) in enumerate(lifted):
@@ -1212,11 +1265,14 @@ def _rewrite(tree: ast.Module, fdef: ast.FunctionDef, raw: Any) -> tuple[_Conver
     conv.rewrite_inplace(fdef.body)
     conv.rewrite_raises(fdef.body)
     n_locals = conv.rewrite_annotations(fdef.body)
-    exprs = _Exprs(conv.site, conv.first_param, conv.builtins_ok, _axis_names(raw, fdef) - conv.locals)
+    exprs = _Exprs(
+        conv.site, conv.first_param, conv.builtins_ok, (_axis_names(raw, fdef) - conv.locals) | set(defs)
+    )
     fdef.body = [exprs.visit(s) for s in fdef.body]
     n_locals += exprs.named  # axes by name need the call's sizes, as checked locals do
     conv.sizes = exprs.named
     conv.lifted = [srcs for _, srcs in lifted]
+    conv.defs = defs
     fdef.body = conv.lower_jumps(fdef.body)
     if any(
         isinstance(s, ast.If) and (_returns_via_ifs(s.body) or _returns_via_ifs(s.orelse))

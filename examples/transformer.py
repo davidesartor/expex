@@ -46,9 +46,11 @@ class Attention[D]:
         self.wq, self.wk, self.wv, self.wo = (dense(k, d, d) for k in (kq, kk, kv, ko))
         self.heads = heads
 
-    def split[T](self, x: f32[T, D]) -> f32[self.heads, T, D // self.heads]:
+    def split[T](self, x: f32[T, D]) -> f32[H, T, K]:
+        H, K = self.heads, D // self.heads
         assert D % self.heads == 0
-        return x.reshape(T, self.heads, D // self.heads).transpose(1, 0, 2)
+        h: f32[T, H, K] = x.reshape(T, H, K)
+        return h.transpose(H, T, K)
 
     @staticmethod
     @tx.fn

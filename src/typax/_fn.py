@@ -7,6 +7,7 @@ import dataclasses
 import functools
 import inspect
 import types
+import typing
 import os
 import weakref
 from typing import (
@@ -206,7 +207,7 @@ class Fn(Generic[P, R]):
         self.examples = dict(examples or {})
         self._sig = _sym.signature(raw)
 
-        defs = defs or {}
+        defs = {**getattr(self._impl, "__typax_defs__", {}), **(defs or {})}  # H = heads in the body
         self.defs = {k: Expr(v) for k, v in defs.items()}
         if isinstance(where, str):
             where = [where]
@@ -232,6 +233,9 @@ class Fn(Generic[P, R]):
 
         #: Where the function was defined (for annotations written as text).
         self._localns = _sym.caller_locals()
+        # sizes defined in the body (H = heads) are names in the annotations
+        defined = getattr(self._impl, "__typax_defs__", {})
+        self._localns.update({n: typing.TypeVar(n) for n in defined})  # type: ignore[misc]  # pyright: ignore[reportGeneralTypeIssues]
         anns = _annotations(raw, self._localns)
         # Annotations that could not be evaluated yet (a forward reference to the
         # class being defined, say) are retried at the first call.

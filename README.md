@@ -87,7 +87,19 @@ ShapeError: split_heads(): constraint `D % heads == 0` is violated (D=8, heads=3
 ```
 
 A leading `assert` on sizes is checked before the body runs, and the prover
-assumes it. (Arithmetic in annotations needs Python 3.14, which evaluates
+assumes it. A leading assignment names a size for the signature and the body:
+
+```python
+@fn
+def heads_first[T, D](x: f32[T, D], heads: int) -> f32[H, T, K]:
+    H, K = heads, D // heads
+    assert D % heads == 0
+    h: f32[T, H, K] = x.reshape(T, H, K)
+    return h.transpose(H, T, K)
+```
+
+Only names used in the signature are definitions; other assignments are
+ordinary local variables. (Arithmetic in annotations needs Python 3.14, which evaluates
 annotations lazily; before that, `from __future__ import annotations` at the
 top of the file.)
 
