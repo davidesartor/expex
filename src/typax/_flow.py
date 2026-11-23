@@ -549,7 +549,15 @@ class Stacked(Sequence):  # type: ignore[type-arg]
         self.array = array
 
     def __len__(self) -> int:
-        return int(jax.tree.leaves(self.array)[0].shape[0])
+        n = jax.tree.leaves(self.array)[0].shape[0]
+        try:
+            return int(n)
+        except Exception:
+            raise TypeError(
+                f"the values collected by this loop number {n}, a size not known while "
+                f"proving: use jnp.asarray(ys) (or tx.stack(ys) for pytrees), which takes "
+                f"the stacked array as it is, rather than jnp.stack(ys)."
+            ) from None
 
     def __getitem__(self, i: Any) -> Any:
         if isinstance(i, slice):

@@ -446,13 +446,21 @@ def example[*Batch, H, W](
 
 ## Ported projects
 
-An existing codebase rewritten in this style and checked against the
-original:
+Existing codebases rewritten in this style and checked against the
+originals:
 
 - **[PureJaxRL](https://github.com/luchris429/purejaxrl) PPO** (`examples/ppo/`):
   plain loops instead of four nested `lax.scan`s, `if done:` for the
   auto-reset. Identical to the original for the first 21 of 976 updates, then
   drifting as float32 programs do; same speed; all shapes proved.
+- **[mamba-jax](https://github.com/vvvm23/mamba-jax) Mamba** (`examples/mamba/`):
+  the selective scan is a plain `for` loop over time, sizes are used by name
+  (`xz[:, :E]`, `jnp.zeros((E, N))`), and generation is a loop carrying the
+  layers' states. Logits match the original to 2e-7, gradients to 7e-7
+  (relative) and sampled tokens exactly; all 11 functions are proved. On a
+  2048-token sequence on CPU it runs 4.5x faster forward and 3x faster for
+  gradients (the original materialises the full `T x E x N` decay before
+  scanning, and recomputes it under `jax.checkpoint` to save memory).
 
 ## Limitations
 

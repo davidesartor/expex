@@ -259,7 +259,12 @@ def _lower_for(
     k: Any,
 ) -> tuple[Any, ...]:
     n = it.n
-    coll = [i for i, v in enumerate(state) if isinstance(v, (list, Stacked))]
+    # An empty list collects `append`ed values; a list of arrays that the loop
+    # replaces (states = step(states)) is ordinary state, carried like an array.
+    coll = [
+        i for i, v in enumerate(state)
+        if isinstance(v, Stacked) or (isinstance(v, list) and not (v and _dyn(v)))
+    ]  # fmt: skip
     for i in coll:
         if len(state[i]) != 0:
             raise _CannotLower(f"the list `{names[i]}` is not empty when the loop starts")
