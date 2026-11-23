@@ -343,8 +343,9 @@ Two existing codebases rewritten in this style, checked against the originals:
   auto-reset. Identical to the original for the first 21 of 976 updates, then
   drifting as float32 programs do; same speed; all shapes proved.
 - **[bofus](https://github.com/davidesartor/bofus)** (`examples/bofus/`): the
+  mixtures and the Gaussian process become modules with methods. The
   original's 74 tests pass against the port, and 164 arrays of values and
-  gradients match it to 1e-13 (2.6e-7 for the L-BFGS acquisition optimizer).
+  gradients match it to 1e-13 (6e-7 for the L-BFGS acquisition optimizer).
   42 `jnp.where` calls became 13; speed is on par.
 
 ## Limitations

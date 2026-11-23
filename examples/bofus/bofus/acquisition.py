@@ -5,7 +5,7 @@ import jax.scipy as jsp
 import vlse.optim
 
 import typax as tx
-from typax import Float, Int, Key, fn
+from typax import Batch, Float, Int, Key, fn
 
 from . import gp, rkhs, utils
 from .rkhs import RBFMixture
@@ -143,7 +143,7 @@ def optimize_expected_improvement[N, O, M, D, Q](
     n_best: int = 4,
     sigma_around_best: float = 1e-2,
     eta: float = 2.0,
-) -> RBFMixture[Q, O, M, D]:
+) -> Batch[RBFMixture[M, D], Q, O]:
     """Maximize Monte Carlo batch EI over RBF mixtures, screening probe batches then L-BFGS-B."""
     _, o, m, d = surrogate.f.l.shape
     x_range = (jnp.asarray(-rkhs.X_MAX), jnp.asarray(rkhs.X_MAX))

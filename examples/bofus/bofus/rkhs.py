@@ -1,4 +1,3 @@
-from typing import NamedTuple, Self
 
 import numpy as np
 import jax
@@ -6,7 +5,8 @@ import jax.numpy as jnp
 import jax.random as jr
 from jax.scipy.special import erf
 
-from typax import Float, Key, fn
+import typax as tx
+from typax import Batch, Float, Key, fn
 
 from . import utils
 
@@ -15,29 +15,32 @@ X_MAX = 1.0  # domain is [-X_MAX, X_MAX]^d, periodic dimensions wrap
 Periodic = tuple[bool, ...] | None
 
 
-class RBFMixture[*B, M, D](NamedTuple):
-    """RBF mixture f = sum_i a_i prod_j phi(x_j - x_ij; l_ij)."""
+@tx.struct(lift=True)
+class RBFMixture[M, D]:
+    """One RBF mixture f = sum_i a_i prod_j phi(x_j - x_ij; l_ij).
 
-    l: Float[*B, M, D]
-    x: Float[*B, M, D]
-    a: Float[*B, M]
+    Collections of mixtures are the same class with leading axes on every field,
+    ``Batch[RBFMixture[M, D], N, O]``; every method maps over them.
+    """
 
+    l: Float[M, D]
+    x: Float[M, D]
+    a: Float[M]
+
+    def __call__(self, x: Float[D], periodic: Periodic = None) -> Float:
+        """Evaluate f at a single point x. Periodic dimensions wrap."""
+        return jnp.sum(self.a * jnp.exp(log_rbf(x - self.x, self.l, periodic)))
+
+    @staticmethod
     @fn(jit=True)
-    def __call__(self, x: Float[D], periodic: Periodic = None) -> Float[*B]:
-        """Evaluate f at a single point x, lift for more. Periodic dimensions wrap."""
-        return jnp.sum(self.a * jnp.exp(log_rbf(x - self.x, self.l, periodic)), axis=-1)
-
-    @classmethod
-    @fn(jit=True)
-    def sample(
-        cls,
+    def sample[*B, K, E](
         key: Key,
         shape: tuple[int, ...],
         l_range: tuple[Float, Float],
         a_range: tuple[Float, Float],
         sigma0: float = 1.0,
         coverage: float = 1.0,
-    ) -> Self:
+    ) -> "Batch[RBFMixture[K, E], *B]":
         """Draw iid mixtures of shape (*b, m, d) from the prior, then clip l and a to their ranges.
         log l ~ N(median, sigma0^2 / d), the median solved so the atoms fill coverage of the box (m + 1) E[phi^2] = coverage.
         Amplitudes make the box mean of Var f(x) 1 before clipping. Periodic dims use the line energy.
@@ -62,17 +65,62 @@ class RBFMixture[*B, M, D](NamedTuple):
         l = jnp.exp(log_median + sigma * jr.normal(key_l, shape))
         x = jr.uniform(key_x, shape, minval=-X_MAX, maxval=X_MAX)
         a = jr.normal(key_a, (*b, m)) * jnp.sqrt((m + 1) / (m * coverage))
-        return cls(l.clip(*l_range), x, a.clip(*a_range))
+        return RBFMixture(l.clip(*l_range), x, a.clip(*a_range))
 
-    @fn(K="m", where="m >= M")
-    def pad_to[K](self, m: int) -> "RBFMixture[*B, K, D]":
+    @fn(lift=True, K="m", where="m >= M")
+    def pad_to[K](self, m: int) -> "RBFMixture[K, D]":
         """Pad with inert atoms: zero amplitude, period wide lengthscale, at the origin."""
-        *b, m0, d = self.l.shape
-        pad = (*b, m - m0, d)
-        l = jnp.concat([self.l, jnp.full(pad, (2 * X_MAX) ** 2)], axis=-2)
-        x = jnp.concat([self.x, jnp.zeros(pad)], axis=-2)
-        a = jnp.concat([self.a, jnp.zeros((*b, m - m0))], axis=-1)
-        return self._replace(l=l, x=x, a=a)
+        m0, d = self.l.shape
+        l = jnp.concat([self.l, jnp.full((m - m0, d), (2 * X_MAX) ** 2)])
+        x = jnp.concat([self.x, jnp.zeros((m - m0, d))])
+        a = jnp.concat([self.a, jnp.zeros(m - m0)])
+        return self.replace(l=l, x=x, a=a)
+
+    def inner[K](
+        self, other: "RBFMixture[K, D]", l0: Float[D] | None = None, periodic: Periodic = None
+    ) -> Float:
+        """Inner product in the rkhs of phi(.; l0) on [-X_MAX, X_MAX]^d, in L2 if l0 is None.
+        RBF are analytic, so the rkhs inner product on the box is an isometry of the one on the line.
+        See Steinwart, Hush, Scovel 2006, https://doi.org/10.1109/TIT.2006.881713
+        The L2 inner product is scaled by 1 / sqrt(2 pi) per dimension.
+        """
+        # atom pairs on (m, k, d)
+        l1, x1 = self.l[:, None, :], self.x[:, None, :]
+        l2, x2 = other.l[None, :, :], other.x[None, :, :]
+        wraps = np.zeros(self.x.shape[-1], bool) if periodic is None else np.asarray(periodic)
+
+        if l0 is None:  # L2 inner product, scaled by 1 / sqrt(2 pi)^d
+            # box dimensions keep only the mass of each atom product N(mu, s) inside [-X_MAX, X_MAX]
+            ls = l1 + l2
+            mu = (l2 * x1 + l1 * x2) / ls
+            root_2s = jnp.sqrt(2.0 * l1 * l2 / ls)
+            mass = 0.5 * (erf((X_MAX - mu) / root_2s) - erf((-X_MAX - mu) / root_2s))
+            mass = jnp.maximum(mass, jnp.finfo(mass.dtype).tiny)  # finite log for atoms off the box
+            log_scale = 0.5 * jnp.log(l1 * l2 / ls) + jnp.where(wraps, 0.0, jnp.log(mass))
+        else:
+            # deconvolved atom variances: infinite if any atom does not fit the ambient rkhs
+            v1 = l1 - l0 / 2
+            v2 = l2 - l0 / 2
+            if not jnp.all((v1 > 0.0) & (v2 > 0.0)):
+                return jnp.inf
+            ls = v1 + v2
+            log_scale = 0.5 * jnp.log(l1 * l2 / (l0 * ls))
+
+        K = jnp.exp(jnp.sum(log_scale, axis=-1) + log_rbf(x1 - x2, ls, periodic))
+        return jnp.einsum("ij,i,j->", K, self.a, other.a)
+
+    def distance[K](
+        self, other: "RBFMixture[K, D]", l0: Float[D] | None = None, periodic: Periodic = None
+    ) -> Float:
+        """Distance between mixtures in the rkhs of phi(.; l0), in L2 on the box if l0 is None."""
+        norms = self.inner(self, l0, periodic) + other.inner(other, l0, periodic)
+        d2 = norms - 2.0 * self.inner(other, l0, periodic)
+        if jnp.isinf(d2) or jnp.isnan(d2):  # inf - inf gives nan
+            return jnp.inf
+        return utils.safe_sqrt(d2)
+
+
+RBFMixture._replace = RBFMixture.replace  # the NamedTuple spelling the original API used
 
 
 @fn(lift=True)
@@ -106,54 +154,12 @@ def log_rbf(x, l, periodic: Periodic = None, expansion_terms: int = 4):
     return line + jnp.sum(_log_circle(theta, s, expansion_terms), axis=-1)
 
 
-@fn(lift=True)
-def inner[M1, M2, D](
-    f1: RBFMixture[M1, D],
-    f2: RBFMixture[M2, D],
-    l0: Float[D] | None = None,
-    periodic: Periodic = None,
-) -> Float:
-    """Inner product in the rkhs of phi(.; l0) on [-X_MAX, X_MAX]^d, in L2 if l0 is None.
-    RBF are analytic, so the rkhs inner product on the box is an isometry of the one on the line.
-    See Steinwart, Hush, Scovel 2006, https://doi.org/10.1109/TIT.2006.881713
-    The L2 inner product is scaled by 1 / sqrt(2 pi) per dimension.
-    """
-    # atom pairs on (m1, m2, d)
-    l1, x1 = f1.l[:, None, :], f1.x[:, None, :]
-    l2, x2 = f2.l[None, :, :], f2.x[None, :, :]
-    wraps = np.zeros(f1.x.shape[-1], bool) if periodic is None else np.asarray(periodic)
-
-    if l0 is None:  # L2 inner product, scaled by 1 / sqrt(2 pi)^d
-        # box dimensions keep only the mass of each atom product N(mu, s) inside [-X_MAX, X_MAX]
-        ls = l1 + l2
-        mu = (l2 * x1 + l1 * x2) / ls
-        root_2s = jnp.sqrt(2.0 * l1 * l2 / ls)
-        mass = 0.5 * (erf((X_MAX - mu) / root_2s) - erf((-X_MAX - mu) / root_2s))
-        mass = jnp.maximum(mass, jnp.finfo(mass.dtype).tiny)  # finite log for atoms off the box
-        log_scale = 0.5 * jnp.log(l1 * l2 / ls) + jnp.where(wraps, 0.0, jnp.log(mass))
-    else:
-        # deconvolved atom variances: infinite if any atom does not fit the ambient rkhs
-        v1 = l1 - l0 / 2
-        v2 = l2 - l0 / 2
-        if not jnp.all((v1 > 0.0) & (v2 > 0.0)):
-            return jnp.inf
-        ls = v1 + v2
-        log_scale = 0.5 * jnp.log(l1 * l2 / (l0 * ls))
-
-    K = jnp.exp(jnp.sum(log_scale, axis=-1) + log_rbf(x1 - x2, ls, periodic))
-    return jnp.einsum("ij,i,j->", K, f1.a, f2.a)
+# The original API's free functions.
 
 
-@fn(lift=True)
-def distance[M1, M2, D](
-    f1: RBFMixture[M1, D],
-    f2: RBFMixture[M2, D],
-    l0: Float[D] | None = None,
-    periodic: Periodic = None,
-) -> Float:
-    """Distance between RBF mixtures in the rkhs of phi(.; l0), in L2 on the box if l0 is None."""
-    norms = inner(f1, f1, l0, periodic) + inner(f2, f2, l0, periodic)
-    d2 = norms - 2.0 * inner(f1, f2, l0, periodic)
-    if jnp.isinf(d2) or jnp.isnan(d2):  # inf - inf gives nan
-        return jnp.inf
-    return utils.safe_sqrt(d2)
+def inner(f1: RBFMixture, f2: RBFMixture, l0=None, periodic: Periodic = None):
+    return f1.inner(f2, l0, periodic)
+
+
+def distance(f1: RBFMixture, f2: RBFMixture, l0=None, periodic: Periodic = None):
+    return f1.distance(f2, l0, periodic)

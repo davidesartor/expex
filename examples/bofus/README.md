@@ -14,30 +14,61 @@ python -m typax examples/bofus/bofus/kernels.py             # shape proofs
 
 ## What changed in the code
 
+The two core objects are modules (`@tx.struct`) with methods:
+
+```python
+@tx.struct(lift=True)
+class RBFMixture[M, D]:          # one mixture; a set of them is Batch[RBFMixture[M, D], N, O]
+    l: Float[M, D]
+    x: Float[M, D]
+    a: Float[M]
+
+    def __call__(self, x: Float[D], periodic: Periodic = None) -> Float: ...
+    def inner[K](self, other: "RBFMixture[K, D]", l0=None, periodic=None) -> Float: ...
+    def distance[K](self, other: "RBFMixture[K, D]", l0=None, periodic=None) -> Float: ...
+    @fn(lift=True, K="m", where="m >= M")
+    def pad_to[K](self, m: int) -> "RBFMixture[K, D]": ...
+
+@tx.struct
+class GaussianProcess[N, O, M, D]:
+    ...
+    f: Batch[RBFMixture[M, D], N, O]
+    def __init__(self, key, f, y, *, l0=None, ...): ...     # fits the GP
+    @fn(jit=True)
+    def predict_joint[Q](self, f: Batch[RBFMixture[M, D], Q, O]) -> tuple[Float[Q], Float[Q, Q]]: ...
+```
+
+Methods are written for one mixture (or one pair) and map over any leading
+axes of `self` and the arguments, so `f1.distance(f2)` on sets of shapes
+`(n, 1, o)` and `(1, k, o)` gives an `(n, k, o)` distance table. The original
+API stays as aliases (`rkhs.inner(f1, f2)`, `rkhs.distance(...)`,
+`GaussianProcess.fit(...)`, `f._replace(...)`) so its tests run unchanged.
+
 | Original | Port |
 |---|---|
-| `Float[Array, "*b m d"]` strings (jaxtyping), not checked at run time | `Float[*B, M, D]` with real dimensions, checked on every call |
-| `RBFMixture["*b m d"]` through a `__class_getitem__` that only documents | `class RBFMixture[*B, M, D](NamedTuple)`, checked field by field |
+| `Float[Array, "*b m d"]` strings (jaxtyping), not checked at run time | `Float[M, D]` on a module, `Batch[RBFMixture[M, D], N, O]` for sets, checked on every call |
+| `RBFMixture["*b m d"]` through a `__class_getitem__` that only documents | `@tx.struct class RBFMixture[M, D]`, checked field by field |
+| `GaussianProcess.fit(...)` building a NamedTuple | `GaussianProcess(key, f, y, ...)`: a module whose constructor fits it; the result is checked against its annotations |
+| Free functions over mixtures with `[..., None, :]` indexing for any leading axes | Methods written for one mixture, lifted over the rest |
 | Sanitised double `where` for every piecewise function (`rbf`, the log-EI branches, `safe_sqrt`, the periodic series) | A plain `if` on one element, then `lift`; the gradient is NaN-free without sanitising inputs |
-| Functions written for arbitrary leading axes with `[..., None, :]` indexing | Functions written for one pair of mixtures, `@fn(lift=True)` broadcasts the rest |
 | `eqx.filter_jit` to keep functions and tuples out of the trace | `@fn(jit=True)`: non-array values are static automatically, and parameters annotated `int`, `float`, `tuple[...]`... are static by type |
 | `jax.lax.map(f, xs, batch_size=k)` and `jax.vmap(solve)(starts)` | `for x in tx.rows(xs, chunk=k): out.append(f(x))` |
 | `eqx.error_if(x, cond, msg)` | `assert not cond, msg` |
 | `logits.at[i].set(jnp.inf)` | `logits[i] = jnp.inf` |
-| `pad_to(m)` returns "some mixture" | `-> RBFMixture[*B, K, D]` with `K="m"`, checked |
+| `pad_to(m)` returns "some mixture" | `-> RBFMixture[K, D]` with `K="m"` and `where="m >= M"`, checked |
 
 The port does not depend on equinox or jaxtyping.
 
 ## Results
 
 - 42 `jnp.where` calls in the original, 13 in the port (the ones left apply
-  masks to data); 789 lines against 741.
+  masks to data).
 - The original's 74 tests (kernels, utils, rkhs, gp, acquisition) pass against
   the port without changes to the tests.
 - `parity.py` compares 164 arrays of values and gradients on identical inputs
   and keys, in float64. Largest relative difference per module: utils 0
   (identical), rkhs 1e-15, gp 3e-15 (four L-BFGS fits included), kernels
-  6e-13, acquisition 4e-7 (the L-BFGS acquisition optimizer, whose stopping
+  6e-13, acquisition 6e-7 (the L-BFGS acquisition optimizer, whose stopping
   tolerance is 1e-5). NaN and infinity patterns are identical.
 - Speed, same machine, CPU, float64 (first call includes compilation; "then"
   is the median of repeated calls). Run-to-run noise is around 10-20%.
