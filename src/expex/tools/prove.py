@@ -399,6 +399,25 @@ def format_reports(reports: list[Report], verbose: bool = False) -> str:
     return "\n".join(lines)
 
 
+def import_target(t: str) -> types.ModuleType:
+    """Import a module/package name, or a path to a .py file or package folder."""
+    import os
+
+    if t.endswith(".py") or os.sep in t or os.path.isdir(t):
+        # a file or folder: find the top of its package, so relative imports work
+        path = os.path.abspath(t)
+        parts = [] if os.path.isdir(path) else [os.path.splitext(os.path.basename(path))[0]]
+        folder = path if os.path.isdir(path) else os.path.dirname(path)
+        while os.path.exists(os.path.join(folder, "__init__.py")):
+            parts.insert(0, os.path.basename(folder))
+            folder = os.path.dirname(folder)
+        if parts and parts[-1] == "__init__":
+            parts.pop()
+        sys.path.insert(0, folder)
+        return importlib.import_module(".".join(parts))
+    return importlib.import_module(t)
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     import os
@@ -417,20 +436,6 @@ def main(argv: list[str] | None = None) -> int:
     reports: list[Report] = []
     sys.path.insert(0, os.getcwd())
     for t in args.targets:
-        if t.endswith(".py") or os.sep in t or os.path.isdir(t):
-            # a file or folder: find the top of its package, so relative imports work
-            path = os.path.abspath(t)
-            parts = [] if os.path.isdir(path) else [os.path.splitext(os.path.basename(path))[0]]
-            folder = path if os.path.isdir(path) else os.path.dirname(path)
-            while os.path.exists(os.path.join(folder, "__init__.py")):
-                parts.insert(0, os.path.basename(folder))
-                folder = os.path.dirname(folder)
-            if parts and parts[-1] == "__init__":
-                parts.pop()
-            sys.path.insert(0, folder)
-            mod = importlib.import_module(".".join(parts))
-        else:
-            mod = importlib.import_module(t)
-        reports += prove(mod)
+        reports += prove(import_target(t))
     print(format_reports(reports, args.verbose))
     return 1 if any(r.status in (FAILED, ERROR) for r in reports) else 0
