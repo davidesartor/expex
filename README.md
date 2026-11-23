@@ -71,7 +71,7 @@ def example[*Batch, H, W](
 | Kind | Annotations |
 |---|---|
 | Arrays | `f16 f32 f64 i8 … i64 u8 … u64 c64 c128`, categories `Float Int UInt Bool Complex Num Arr` |
-| Sizes | the function's type parameters (`def f[B, T]`), `Literal[3]`, `class RGB(Dim, size=3)`, `*Rest`, `Any` |
+| Sizes | the function's type parameters (`def f[B, T]`), `Literal[3]`, `class RGB(Dim, size=3)`, `*Rest` (any number of axes, the same wherever it appears), `...` (any number of axes, unchecked), `Any` (one unchecked axis) |
 | Containers | `tuple[...]`, `list[X]`, `dict[str, X]`, `X \| None`, NamedTuples and dataclasses, generic ones too (`class Mix[*B, M, D]`) |
 | Stacked | `Batch[Transition, T, N]`: a `Transition` whose arrays all have leading axes `T, N` |
 | Static | `int`, `float`, `bool`, `str`, `Literal`, enums, callables, configuration NamedTuples. In a struct field, wrap numbers in `Static[...]` |

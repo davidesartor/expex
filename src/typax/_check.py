@@ -32,7 +32,7 @@ import numpy as np
 from jax import export
 
 from . import _rng
-from ._dims import DAny, DConst, DEtc, DExpr, DName, DVar, Env
+from ._dims import DAny, DConst, DEllipsis, DExpr, DName, DVar, Env
 from ._errors import ShapeError, StageError
 from ._expr import to_jax_constraint
 from ._fn import REGISTRY, BoundFn, Fn, unwrap
@@ -144,7 +144,7 @@ class _Ctx:
                 out.append(self.fresh())
             elif isinstance(d, DVar):
                 out.extend(self.var(d.name))
-            elif isinstance(d, DEtc):
+            elif isinstance(d, DEllipsis):
                 out.append(self.fresh())
             elif isinstance(d, DExpr):
                 v = d.expr({n: self.dim(n) for n in d.expr.names})

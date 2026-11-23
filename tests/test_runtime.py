@@ -12,7 +12,7 @@ import jax.random as jr
 
 import typax as tx
 from typax import (
-    Arr, Bool, Dim, Etc, Float, Int, Key, ShapeError, StageError, Static, config, f32, fn, i32,
+    Arr, Bool, Dim, Float, Int, Key, ShapeError, StageError, Static, config, f32, fn, i32,
 )  # fmt: skip
 
 
@@ -175,13 +175,13 @@ def test_variadic():
         f(jnp.ones((2, 3, 4)), jnp.ones((2,)))
 
     @fn
-    def g[D](x: f32[Etc, D], y: f32[D, Etc]) -> f32[Etc]:
+    def g[*R, D](x: f32[*R, D]) -> f32[*R, D]:
         return x
 
-    g(jnp.ones((1, 2, 3)), jnp.ones(3))
-    g(jnp.ones(3), jnp.ones((3, 7)))
+    g(jnp.ones((1, 2, 3)))
+    g(jnp.ones(3))
     with pytest.raises(ShapeError, match="expected at least 1 axes, got 0"):
-        g(jnp.float32(1), jnp.ones(3))
+        g(jnp.float32(1))
 
 
 def test_two_variadics_rejected():
@@ -441,13 +441,21 @@ def test_bad_annotation_reported_at_definition():
         def f(x: f32[3.5]) -> f32: ...  # type: ignore[valid-type]
 
 
-def test_string_dims_at_runtime():
-    # Not accepted by static checkers, but supported for those who do not use one.
-    @fn
-    def pad(x: f32["B", "T"]) -> f32["B", "T + 1"]:  # type: ignore  # noqa: F821
-        return jnp.pad(x, ((0, 0), (0, 1)))
+def test_string_sizes_point_to_type_parameters_and_ellipsis_works():
+    with pytest.raises(TypeError, match="sizes are type parameters"):
 
-    assert pad(jnp.ones((2, 3))).shape == (2, 4)
+        @fn
+        def pad(x: f32["B", "T"]) -> f32["B", "T + 1"]: ...  # type: ignore  # noqa: F821
+
+
+    @fn
+    def last[D](x: f32[..., D], y: f32[D, ...]) -> f32[...]:  # type: ignore[misc]
+        return x
+
+    last(jnp.ones((1, 2, 3)), jnp.ones(3))
+    last(jnp.ones(3), jnp.ones((3, 7)))
+    with pytest.raises(ShapeError, match="expected at least 1 axes, got 0"):
+        last(jnp.float32(1), jnp.ones(3))
 
 
 def test_notes_on_exceptions():

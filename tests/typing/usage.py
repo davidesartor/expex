@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import jax.random as jr
 
 import typax as tx
-from typax import Dim, Etc, Float, Int, Key, Static, f32, fn, i32
+from typax import Dim, Float, Int, Key, Static, f32, fn, i32
 
 
 class RGB(Dim, size=3): ...
@@ -47,7 +47,6 @@ def step[B](x: f32[B], lr: f32, n: int, key: Key, mode: str = "a") -> f32[B]:
 def misc[*Batch, H, W](
     img: f32[*Batch, H, W, RGB],
     idx: Int[*Batch],
-    any_: Float[Etc, Hidden],
     fixed: f32[Literal[2], Any],
     scalar: f32,
     p: Params[Hidden],

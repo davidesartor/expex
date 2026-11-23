@@ -12,7 +12,7 @@ import jax.random as jr
 
 import typax as tx
 from typax._spec import StaticSpec
-from typax import Dim, Etc, Key, Static, f32, f64, fn, i32, prove
+from typax import Dim, Key, Static, f32, f64, fn, i32, prove
 from typax._check import format_reports
 
 
@@ -278,7 +278,7 @@ def test_structs_keys_containers_and_64_bit():
         return x if m is None else x * m
 
     @fn
-    def lst[D](xs: list[f32[D]], d: dict[str, f32[D]], e: f32[Etc, D]) -> f32[D]:
+    def lst[*R, D](xs: list[f32[D]], d: dict[str, f32[D]], e: f32[*R, D]) -> f32[D]:
         return sum(xs)  # type: ignore[return-value]
 
     for f in (dense, noise, legacy, dbl, gray, opt, lst):

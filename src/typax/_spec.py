@@ -22,9 +22,9 @@ import numpy as np
 from jax.core import Tracer
 
 from ._dims import (
+    DEllipsis,
     _SCALARS,
     DConst,
-    DEtc,
     DExpr,
     DName,
     DVar,
@@ -703,7 +703,7 @@ def _prepend(spec: Spec, lead: tuple[Any, ...]) -> Spec:
     """``spec`` with the axes ``lead`` in front of every array (for ``Batch[...]``)."""
     if isinstance(spec, (ArraySpec, KeySpec)):
         dims = lead + spec.dims
-        var = [i for i, d in enumerate(dims) if isinstance(d, (DVar, DEtc))]
+        var = [i for i, d in enumerate(dims) if isinstance(d, (DVar, DEllipsis))]
         if len(var) > 1:
             raise TypeError("Batch[...] would give a shape with more than one variadic")
         v = var[0] if var else None

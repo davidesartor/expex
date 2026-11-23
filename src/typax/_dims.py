@@ -16,7 +16,7 @@ import numpy as np
 
 from ._errors import Mismatch
 from ._expr import Expr
-from ._types import SHORT_NAMES, Dim, Etc
+from ._types import SHORT_NAMES, Dim
 
 
 class DName:
@@ -65,13 +65,16 @@ class DVar:
         return "*" + self.name
 
 
-class DEtc:
-    """Zero or more unchecked axes (``Etc``)."""
+class DEllipsis:
+    """Zero or more unchecked axes: the ``...`` in ``f32[..., D]``."""
 
     __slots__ = ()
 
     def __str__(self) -> str:
-        return "Etc"
+        return "..."
+
+
+_ELLIPSIS = DEllipsis()
 
 
 class DExpr:
@@ -88,9 +91,6 @@ class DExpr:
 
 
 _ANY = DAny()
-
-
-_ETC = DEtc()
 
 
 def parse_dim(item: Any, subst: dict[Any, Any]) -> Any:
@@ -122,20 +122,20 @@ def parse_dim(item: Any, subst: dict[Any, Any]) -> Any:
         return d
     if item is typing.Any:
         return _ANY
-    if item is Etc or item is Ellipsis:
-        return _ETC
+    if item is Ellipsis:
+        return _ELLIPSIS
     if isinstance(item, type) and issubclass(item, Dim):
         if item.size is not None:
             return DConst(item.size, item.__name__)
         return DName(item.__name__)
     if isinstance(item, str):
-        e = Expr(item)
-        if item.strip().isidentifier():
-            return DName(item.strip())
-        return DExpr(e)
+        raise TypeError(
+            f"{item!r}: sizes are type parameters, not strings. Declare it in the "
+            f"signature (def f[T](...)), and a derived size with @tx.fn(U=\"T + 1\")."
+        )
     raise TypeError(
         f"{item!r} is not a valid dimension. Use a type parameter, Literal[n], "
-        f"a Dim subclass, Any or Etc."
+        f"a Dim subclass, Any or `...`."
     )
 
 
@@ -157,9 +157,9 @@ def _parse_dims(items: tuple[Any, ...], subst: dict[Any, Any]) -> tuple[tuple[An
             dims.extend(d)
         else:
             dims.append(d)
-    var = [i for i, d in enumerate(dims) if isinstance(d, (DVar, DEtc))]
+    var = [i for i, d in enumerate(dims) if isinstance(d, (DVar, DEllipsis))]
     if len(var) > 1:
-        raise TypeError("a shape can contain at most one variadic (*Name or Etc)")
+        raise TypeError("a shape can contain at most one variadic (*Name or ...)")
     return tuple(dims), (var[0] if var else None)
 
 

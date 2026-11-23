@@ -18,7 +18,6 @@ from ._types import (
     Bool,
     Complex,
     Dim,
-    Etc,
     Float,
     Inexact,
     Int,
@@ -47,7 +46,7 @@ __all__ = [
     # annotate
     "f16", "f32", "f64", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "c64", "c128",
     "Arr", "Bool", "Int", "UInt", "Float", "Complex", "Inexact", "Num",
-    "Key", "Static", "Batch", "Dim", "Etc",
+    "Key", "Static", "Batch", "Dim",
     # inside functions
     "key", "rng", "seed", "rows", "stack",
     # tools

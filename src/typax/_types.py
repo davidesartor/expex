@@ -14,7 +14,7 @@ import jax.numpy as jnp
 import numpy as np
 
 __all__ = [
-    "Dim", "Etc", "DType", "ArrayAnn", "StaticAnn", "KeyAnn",
+    "Dim", "DType", "ArrayAnn", "StaticAnn", "KeyAnn",
     "Arr", "Bool", "Int", "UInt", "Float", "Complex", "Inexact", "Num",
     "f16", "f32", "f64", "i8", "i16", "i32", "i64",
     "u8", "u16", "u32", "u64", "c64", "c128",
@@ -35,10 +35,6 @@ class Dim:
         super().__init_subclass__(**kw)
         if size is not None:
             cls.size = int(size)
-
-
-class Etc:
-    """Zero or more unchecked axes: ``f32[Etc, D]`` is "anything ending in D"."""
 
 
 class ArrayAnn:
