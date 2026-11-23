@@ -69,6 +69,11 @@ class Config:
         #: Turn ``for`` loops into ``lax.scan`` / ``vmap`` when tracing. With False,
         #: loops over arrays and ranges are unrolled, as in plain JAX.
         self.lower_loops: bool = os.environ.get("EXPEX_LOWER_LOOPS", "1") not in ("0", "false", "")
+        #: A loop over a list of identical layers is traced once, as one ``lax.scan``;
+        #: lists of up to this many layers are unrolled in the compiled program
+        #: (``lax.scan(unroll=True)``), which runs faster (no stacked activations,
+        #: fusion across layers) but compiles in time growing with the depth. 0: never.
+        self.unroll_layers: int = int(os.environ.get("EXPEX_UNROLL_LAYERS", "16"))
         #: Map a call over extra leading axes of its arguments, when that is all that
         #: keeps them from matching (``@expex.fn(vectorize=False)`` opts one function out).
         self.vectorize: bool = os.environ.get("EXPEX_VECTORIZE", "1") not in ("0", "false", "")

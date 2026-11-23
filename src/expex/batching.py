@@ -385,7 +385,7 @@ class _Compiled:
             return _UNCACHED
         f = self.owner()
         assert f is not None
-        settings = (config.checked, config.lower_loops, config.notes, config.vectorize)
+        settings = (config.checked, config.lower_loops, config.notes, config.vectorize, config.unroll_layers)
         sig = _signature(f, args, kwargs, settings)
         if sig is None:
             return _UNCACHED
