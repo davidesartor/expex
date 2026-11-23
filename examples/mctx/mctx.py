@@ -225,7 +225,7 @@ def search_keys(key: Key, simulations: int) -> tuple[Key[simulations], Key[simul
         key, s, m = jr.split(key, 3)
         select.append(s)
         model.append(m)
-    return jnp.stack(select), jnp.stack(model)
+    return jnp.asarray(select), jnp.asarray(model)
 
 
 # ------------------------------------------------------------------ q-value transforms
