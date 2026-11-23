@@ -575,8 +575,8 @@ COLORS = {
     "panel": ("#f2f2f2", "#1d2026"), "panel2": ("#fafafa", "#23272e"), "frame": ("#666666", "#5d636d"),
     "h0": ("#f5f5f5", "#252830"), "h1": ("#fff0d9", "#3b2d1a"), "h2": ("#ffd7a6", "#5b3915"),
     "h3": ("#ffae66", "#8a4912"), "h4": ("#ff7a1a", "#c4590b"),
-    "p0": ("#f5f5f5", "#1f2228"), "p1": ("#fff8ee", "#2a241c"), "p2": ("#fff0dc", "#33271a"),
-    "p3": ("#ffe4c6", "#3f2a16"), "p4": ("#ffd5aa", "#4d2d12"),
+    "p0": ("#f5f5f5", "#1f2228"), "p1": ("#fff9f1", "#28231d"), "p2": ("#fff3e5", "#30261b"),
+    "p3": ("#ffecd6", "#3a2918"), "p4": ("#ffe3c4", "#462c15"),
     "err": ("#ffd9d9", "#5a1c1c"), "errline": ("#c62828", "#ff6b6b"),
 }  # fmt: skip
 _SANS = "Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif"
@@ -1657,7 +1657,7 @@ class _Figure:
         """Swatches for the colours used, wrapped to the figure's width; returns the bottom."""
         m, sc, cv = self.m, self.scene, self.cv
         items: list[tuple[str, str, str | None]] = []  # (fill, text, stroke)
-        roles = set(sc.role.values())
+        roles = {op[5] for op in cv.ops if op[0] == "rect"}  # the fills drawn
         if m.get("timing"):
             lo, hi = [0.0, *HEAT], [*HEAT, 1.0]
             pct = lambda s: f"{s:.0%}"
@@ -1674,18 +1674,24 @@ class _Figure:
             items.append(("norm", "normalization", None))
         if "op" in roles:
             items.append(("op", "primitive op", None))
-        items.append(("io", "input / output", None))
+        if "io" in roles:
+            items.append(("io", "input / output", None))
         if sc.conts:
             items.append(("panel", "call opened · loop (dashed)", "frame"))
         if m.get("error"):
-            items += [("err", "failing call", "errline"), ("bg", "path into it", "errline")]
+            items += [("err", "failing call", "errline"), ("", "path into it", "errline")]
         x = x0
         for fill, text, stroke in items:
             w = max(_tw(text, "tl") + 24, 64)
             if x + w > right and x > x0:
                 x, y = x0, y + 30
-            cv.rect(x, y, w, 22, fill, stroke or "edge", 1.4 if stroke == "errline" else 1.0, r=5)
-            cv.text(x + w / 2, y + 15, [(text, "tl")])
+            if not fill:  # a line, not a box
+                w = _tw(text, "tl") + 40
+                cv.line([(x, y + 11), (x + 26, y + 11)], stroke or "edge", 1.8)
+                cv.text(x + 32, y + 15, [(text, "tl")], anchor="start")
+            else:
+                cv.rect(x, y, w, 22, fill, stroke or "edge", 1.4 if stroke == "errline" else 1.0, r=5)
+                cv.text(x + w / 2, y + 15, [(text, "tl")])
             x += w + 8
         return y + 22
 

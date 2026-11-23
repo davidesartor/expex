@@ -48,8 +48,6 @@ compile again on their next call.
 
 import contextlib
 import html
-import itertools
-import json
 import math
 import re
 import statistics
@@ -64,11 +62,8 @@ import numpy as np
 from jax.custom_batching import custom_vmap
 
 from .. import function
-from . import summary
+from . import pages
 from ..annotations.dims import fmt_dim, short_dtype
-
-_ids = itertools.count()
-
 
 @dataclass
 class Row:
@@ -290,7 +285,7 @@ class Watch:
     __repr__ = __str__
 
     def _repr_html_(self) -> str:
-        uid, groups, parents, body = f"txw{next(_ids)}", dict[str, list[Row]](), list[int](), []
+        groups, parents, body = dict[str, list[Row]](), list[int](), []
         for r in self.rows:
             groups.setdefault(r.group, []).append(r)
 
@@ -314,7 +309,6 @@ class Watch:
             while parents and self.rows[parents[-1]].depth >= r.depth:
                 parents.pop()
             kids = i + 1 < len(self.rows) and self.rows[i + 1].depth > r.depth
-            tog = '<button class="tg" aria-expanded="true" aria-label="collapse">▾</button>' if kids else '<span class="tg"></span>'  # fmt: skip
             data = dict(i=i, p=parents[-1] if parents else "", rms=num(r.out, "rms"), grms=num(r.grad, "rms"),
                         max=num(r.out, "absmax"), gmax=num(r.grad, "absmax"), n=r.count, f=len(r.flags))  # fmt: skip
             up = self.rows[parents[-1]].path if parents else None
@@ -323,30 +317,23 @@ class Watch:
             cells[6], cells[12] = spark(r, "out"), spark(r, "grad")
             body.append(
                 "<tr " + " ".join(f'data-{k}="{v}"' for k, v in data.items()) + (' class="flag">' if r.flags else ">")
-                + f'<td class="m" style="--d:{r.depth}" title="{html.escape(r.name)}">{tog}{html.escape(label)}</td>'
+                + f'<td class="m" style="--d:{r.depth}" title="{html.escape(r.name)}">{pages.toggle(kids)}{html.escape(label)}</td>'
                 + "".join(f'<td class="{c[1]}">{x}</td>' for c, x in zip(_COLS[1:], cells))
                 + '<td class="f">' + "".join(f'<span title="{html.escape(f)}">{f.split(":")[0]}</span>' for f in r.flags)
                 + "</td></tr>"
             )  # fmt: skip
             parents.append(i)
         head = "".join(f'<th class="{c}"' + (f' data-k="{k}"' if k else "") + f">{t}</th>" for t, c, k in _COLS)
-        return (
-            f'<div class="txs" id="{uid}"><style>{(summary._CSS + _CSS).replace("#ID", "#" + uid)}</style>'
+        return pages.table(pages.uid("txw"), _CSS, (
             f'<div class="hd"><b>{html.escape(self._title())}</b></div><div class="sc"><table><thead><tr>'
             '<th colspan="3"></th><th colspan="6" class="gh">output</th><th colspan="7" class="gh g">d loss / d output</th>'
             f"</tr><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody></table></div>"
-            f'<script>{summary._JS.replace("ID", json.dumps(uid))}</script></div>'
-        )
+        ))
 
     def save(self, path: str | Path) -> Path:
         """Write the table as a standalone page (inline CSS and JS)."""
         path = Path(path)
-        path.write_text(
-            "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, "
-            f"initial-scale=1'><title>watch {html.escape(self.name)}</title><style>body{{margin:16px;background:Canvas;"
-            f"color:CanvasText;color-scheme:light dark}}</style></head><body>{self._repr_html_()}</body></html>",
-            encoding="utf-8",
-        )
+        path.write_text(pages.document(f"watch {self.name}", self._repr_html_()), encoding="utf-8")
         return path
 
 

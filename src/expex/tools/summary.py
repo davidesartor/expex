@@ -17,8 +17,6 @@ interactive one (collapsible, sortable, formulas on hover), and
 """
 
 import html
-import itertools
-import json
 import math
 import pathlib
 from dataclasses import dataclass, field
@@ -28,6 +26,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
+from . import pages
 from .cost import Poly, arrays, cost
 from ..annotations.dims import DConst, DExpr, DName, Env
 from ..function import Fn, unwrap
@@ -84,7 +83,6 @@ class Summary:
     __repr__ = __str__
 
     def _repr_html_(self) -> str:
-        uid = f"txs{next(_ids)}"
         total = max(self.total.params, 1)
 
         def tr(i: Any, r: Row) -> str:
@@ -92,13 +90,12 @@ class Summary:
             share = r.params * r.weight / total if i != "" else 0
             kids = any(x.parent == i for x in self.rows)
             name = html.escape(r.path.rsplit(".", 1)[-1] if i != "" else "total")
-            tog = '<button class="tg" aria-expanded="true" aria-label="collapse">▾</button>' if kids else '<span class="tg"></span>'  # fmt: skip
             tip = lambda s: f' title="{html.escape(s)}"' if s else ""
             ptip = f"{c[3]}" + (f"\n{r.weight} × {r.params:,} = {r.params * r.weight:,}" if r.weight > 1 else "") + (f"\n{share:.1%} of parameters" if share else "")  # fmt: skip
             return (
                 f'<tr data-i="{i}" data-p="{"" if r.parent < 0 else r.parent}" data-params="{r.params * r.weight}" '
                 f'data-flops="{r.flops_value if r.flops_value is not None else -1}"><td class="m" '
-                f'style="--d:{r.depth}" title="{html.escape(r.path)}">{tog}{name}</td><td class="c">{html.escape(c[0])}'
+                f'style="--d:{r.depth}" title="{html.escape(r.path)}">{pages.toggle(kids)}{name}</td><td class="c">{html.escape(c[0])}'
                 f'<span class="x">{html.escape(c[1])}</span></td><td class="n bar" style="--s:{share:.4f}"{tip(ptip)}>'
                 f'{c[2]}</td><td class="f">{html.escape(c[3])}</td><td class="n b">{c[4]}</td>'
                 f'<td class="n"{tip(c[6])}>{c[5] or ("—" if not c[6] else "ƒ")}</td><td class="f">{html.escape(c[6])}</td></tr>'
@@ -107,23 +104,17 @@ class Summary:
         sizes = " ".join(f"<span>{html.escape(k)}={v}</span>" for k, v in self.sizes.items())
         body = "".join(tr(i, r) for i, r in enumerate(self.rows))
         notes = "".join(f"<li>{html.escape(n)}</li>" for n in self.notes)
-        return (
-            f'<div class="txs" id="{uid}"><style>{_CSS.replace("#ID", "#" + uid)}</style>'
+        return pages.table(pages.uid("txs"), _CSS, (
             f'<div class="hd"><b>{html.escape(self.name)}</b> {sizes}</div><div class="sc"><table><thead><tr>'
             '<th>module</th><th>class</th><th data-k="params" class="n" title="parameters (click to sort)">params</th>'
             '<th class="f">formula</th><th class="n b">bytes</th><th data-k="flops" class="n" title="FLOPs of one call of __call__ (click to sort)">'
             'FLOPs</th><th class="f">formula</th></tr></thead>'
-            f'<tbody>{body}</tbody><tfoot>{tr("", self.total)}</tfoot></table></div>'
-            f'<ul>{notes}</ul><script>{_JS.replace("ID", json.dumps(uid))}</script></div>'
-        )
+            f'<tbody>{body}</tbody><tfoot>{tr("", self.total)}</tfoot></table></div><ul>{notes}</ul>'
+        ))  # fmt: skip
 
     def save(self, path: str | pathlib.Path) -> None:
         """Write the HTML table as a standalone page."""
-        page = (f"<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' "
-                f"content='width=device-width, initial-scale=1'><title>{html.escape(self.name)} summary"
-                f"</title><style>body{{margin:16px;background:Canvas;color:CanvasText;color-scheme:light dark}}"
-                f"</style></head><body>{self._repr_html_()}</body></html>")  # fmt: skip
-        pathlib.Path(path).write_text(page, encoding="utf-8")
+        pathlib.Path(path).write_text(pages.document(f"{self.name} summary", self._repr_html_()), encoding="utf-8")
 
 
 def summary(model: Any, /, **sizes: int) -> Summary:
@@ -299,27 +290,4 @@ def _bytes(v: int) -> str:
     return _si(v) + "B" if v >= 1000 else f"{v} B"
 
 
-_ids = itertools.count()
-
-_CSS = """#ID{--fg:#1f2328;--mu:#656d76;--ln:#d0d7de;--bg:#fff;--hd:#f6f8fa;--ac:#2f6fdb;--br:rgba(47,111,219,.16);
-color:var(--fg);background:var(--bg);font:13px/1.45 system-ui,-apple-system,Segoe UI,sans-serif;max-width:100%;container-type:inline-size;border:1px solid var(--ln);border-radius:8px;padding:10px 12px}
-@media (prefers-color-scheme:dark){#ID{--fg:#e6edf3;--mu:#8d96a0;--ln:#30363d;--bg:#0d1117;--hd:#161b22;--ac:#58a6ff;--br:rgba(88,166,255,.22)}}
-#ID .hd{margin-bottom:8px;display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline}#ID .hd span{color:var(--mu);font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
-#ID .sc{overflow-x:auto}#ID table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
-#ID th,#ID td{padding:3px 10px;border-bottom:1px solid var(--ln);text-align:left;white-space:nowrap;vertical-align:baseline}
-#ID th{background:var(--hd);font-weight:600;color:var(--mu);font-size:12px;position:sticky;top:0}#ID th[data-k]{cursor:pointer;color:var(--ac)}
-#ID th[data-k]::after{content:" ↕";opacity:.5}#ID th[data-dir="1"]::after{content:" ↓";opacity:1}#ID th[data-dir="-1"]::after{content:" ↑";opacity:1}
-#ID .n{text-align:right}#ID .m{padding-left:calc(6px + var(--d)*16px);font-weight:500}#ID .c,#ID .f{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
-#ID .f{color:var(--mu);white-space:normal;min-width:12ch}#ID .x{color:var(--ac);margin-left:6px;font-weight:600}
-#ID .bar{background:linear-gradient(to left,var(--br) calc(var(--s)*100%),transparent 0)}#ID tbody tr:hover{background:var(--hd)}
-#ID tfoot td{font-weight:600;border-top:2px solid var(--ln);border-bottom:0}#ID .tg{display:inline-block;width:16px;margin-right:2px;border:0;background:none;color:var(--mu);cursor:pointer;padding:0;font:inherit}
-#ID tr.shut .tg{transform:rotate(-90deg)}#ID ul{margin:6px 0 0;padding-left:18px;color:var(--mu);font-size:12px}#ID ul:empty{display:none}
-@container (max-width:720px){#ID .f{display:none}#ID th,#ID td{padding:3px 6px}}@container (max-width:480px){#ID .b{display:none}#ID .c{white-space:normal}#ID .m{padding-left:calc(2px + var(--d)*10px)}}"""
-
-_JS = """(()=>{const root=document.getElementById(ID),body=root.querySelector("tbody"),rows=[...body.rows],by={},kids={};
-rows.forEach(r=>{by[r.dataset.i]=r;(kids[r.dataset.p]??=[]).push(r)});let key=null,dir=1;
-const vis=()=>rows.forEach(r=>{let p=r.dataset.p,h=false;while(p!==""){if(by[p].classList.contains("shut")){h=true;break}p=by[p].dataset.p}r.hidden=h});
-const order=()=>{const out=[],walk=p=>{const c=[...(kids[p]||[])];if(key)c.sort((a,b)=>dir*(b.dataset[key]-a.dataset[key]));c.forEach(r=>{out.push(r);walk(r.dataset.i)})};walk("");out.forEach(r=>body.appendChild(r))};
-root.addEventListener("click",e=>{const b=e.target.closest("button.tg");if(b){const r=b.closest("tr"),shut=r.classList.toggle("shut");b.setAttribute("aria-expanded",String(!shut));vis();return}
-const h=e.target.closest("th[data-k]");if(!h)return;if(key===h.dataset.k){if(dir===1)dir=-1;else key=null}else{key=h.dataset.k;dir=1}
-root.querySelectorAll("th[data-k]").forEach(t=>t.dataset.dir=t.dataset.k===key?dir:"");order()})})();"""
+_CSS = """@container (max-width:720px){#ID .f{display:none}#ID th,#ID td{padding:3px 6px}}@container (max-width:480px){#ID .b{display:none}#ID .c{white-space:normal}#ID .m{padding-left:calc(2px + var(--d)*10px)}}"""

@@ -19,9 +19,7 @@ source line that created it::
   self-contained page with a heat map (FLOPs or bytes) and the formulas on hover.
 """
 
-import html
 import inspect
-import json
 import linecache
 import os
 import re
@@ -31,6 +29,7 @@ from typing import Any
 
 import numpy as np
 
+from . import pages
 from .cost import Poly, _num, _numel, cost, flops
 from .trace import _HERE, resolve, sub_jaxprs
 
@@ -136,8 +135,8 @@ class Profile:
                      "cs": self.share(ln.calls, self.flops), "loops": ln.loops, "shapes": ln.shapes[-4:],
                      "hot": bool(ln.flops.terms or ln.bytes.terms or ln.calls.terms)} for ln in s.lines]  # fmt: skip
             data["sections"].append({"name": s.name, "file": f"{_short(s.file)}:{s.lines[0].number}", "share": self.share(s.flops, self.flops), "bshare": self.share(sum((ln.bytes for ln in s.lines), Poly()), self.bytes), "rows": rows})  # fmt: skip
-        blob = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
-        return _PAGE.replace("%TITLE%", html.escape(self.name)).replace("%DATA%", blob)
+        style = pages.tokens(":root", _LIGHT, _DARK) + _CSS
+        return pages.document(f"{self.name} profile", _BODY.replace("%DATA%", pages.data(data)), style)
 
     def save(self, path: str) -> str:
         """Write the HTML page to ``path``; returns the path."""
@@ -314,29 +313,27 @@ def profile(target: Any, /, **sizes: Any) -> Profile:
                    [sections[k] for k in main + rest], other, total.notes)  # fmt: skip
 
 
-_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>%TITLE% profile</title><style>
-:root{--bg:#fbfbfa;--fg:#1d1d1f;--mute:#6b6b70;--line:#e4e4e2;--card:#fff;--heat:255,110,40;--mem:40,120,255;--tip:#1d1d1f;--tipfg:#fafafa}
-@media (prefers-color-scheme:dark){:root{--bg:#141416;--fg:#e8e8ea;--mute:#9a9aa2;--line:#2c2c30;--card:#1c1c1f;--heat:255,120,60;--mem:90,150,255;--tip:#f2f2f4;--tipfg:#141416}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif}
+_LIGHT = "--heat:255,110,40;--mem:40,120,255"
+_DARK = "--heat:255,120,60;--mem:90,150,255"
+_CSS = """*{box-sizing:border-box}body{margin:0;padding:0;background:var(--hd);color:var(--fg);font:14px/1.45 system-ui,sans-serif}
 main{max-width:1180px;margin:0 auto;padding:20px 16px 48px}h1{font-size:18px;margin:0 0 4px;overflow-wrap:anywhere}
-.meta{color:var(--mute);margin-bottom:14px;overflow-wrap:anywhere}.meta b{color:var(--fg)}
+.meta{color:var(--mu);margin-bottom:14px;overflow-wrap:anywhere}.meta b{color:var(--fg)}
 .bar{display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
-button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--fg);padding:4px 12px;border-radius:6px;cursor:pointer}
+button{font:inherit;border:1px solid var(--ln);background:var(--bg);color:var(--fg);padding:4px 12px;border-radius:6px;cursor:pointer}
 button[aria-pressed=true]{border-color:currentColor;font-weight:600}
-details{background:var(--card);border:1px solid var(--line);border-radius:8px;margin-bottom:12px;overflow:hidden}
+details{background:var(--bg);border:1px solid var(--ln);border-radius:8px;margin-bottom:12px;overflow:hidden}
 summary{padding:8px 12px;cursor:pointer;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
-summary .nm{font-weight:600;font-family:ui-monospace,monospace}summary .fl{color:var(--mute);font-size:12px}summary .pc{margin-left:auto;font-variant-numeric:tabular-nums}
-.code{overflow-x:auto;border-top:1px solid var(--line)}
+summary .nm{font-weight:600;font-family:ui-monospace,monospace}summary .fl{color:var(--mu);font-size:12px}summary .pc{margin-left:auto;font-variant-numeric:tabular-nums}
+.code{overflow-x:auto;border-top:1px solid var(--ln)}
 .row{display:grid;grid-template-columns:3.2em minmax(28em,1fr) 17em;font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;min-width:min-content}
-.row>*{padding:0 8px;white-space:pre}.no{color:var(--mute);text-align:right;user-select:none}
+.row>*{padding:0 8px;white-space:pre}.no{color:var(--mu);text-align:right;user-select:none}
 .src{background:rgba(var(--heat),var(--a,0))}.mem .src{background:rgba(var(--mem),var(--b,0))}
-#s:not(.mem) .vb,.mem .vf{display:none}.cost b{font-weight:500}.cost{color:var(--mute);text-align:right;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis}.hot .cost{color:var(--fg)}
-.loop{font-size:11px;border:1px solid var(--line);border-radius:4px;padding:0 4px;margin-right:6px;color:var(--mute)}
+#s:not(.mem) .vb,.mem .vf{display:none}.cost b{font-weight:500}.cost{color:var(--mu);text-align:right;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis}.hot .cost{color:var(--fg)}
+.loop{font-size:11px;border:1px solid var(--ln);border-radius:4px;padding:0 4px;margin-right:6px;color:var(--mu)}
 #tip{position:fixed;pointer-events:none;background:var(--tip);color:var(--tipfg);padding:8px 10px;border-radius:6px;font:12px/1.5 ui-monospace,monospace;max-width:min(520px,calc(100vw - 24px));white-space:pre-wrap;display:none;z-index:9}
 @media (max-width:700px){.row{grid-template-columns:2.6em minmax(24em,1fr) 10em}.cost .f{display:none}
-.cost{position:sticky;right:0;background:var(--card);box-shadow:-6px 0 8px -6px rgba(0,0,0,.25)}}
-</style></head><body><main><h1 id="t"></h1><div class="meta" id="m"></div>
+.cost{position:sticky;right:0;background:var(--bg);box-shadow:-6px 0 8px -6px rgba(0,0,0,.25)}}"""
+_BODY = """<main><h1 id="t"></h1><div class="meta" id="m"></div>
 <div class="bar"><span>Heat by</span><button id="bf" aria-pressed="true">FLOPs</button><button id="bm" aria-pressed="false">bytes written</button></div>
 <div id="s"></div></main><div id="tip"></div><script>
 const D=%DATA%,$=id=>document.getElementById(id),pct=x=>(100*x).toFixed(x<0.001?2:1)+"%";
@@ -361,4 +358,4 @@ root.addEventListener("pointerdown",ev=>{const e=ev.target.closest(".row[data-ti
 root.addEventListener("pointerleave",()=>tip.style.display="none");
 const mode=m=>{root.classList.toggle("mem",m);$("bf").setAttribute("aria-pressed",!m);$("bm").setAttribute("aria-pressed",m)};
 $("bf").onclick=()=>mode(false);$("bm").onclick=()=>mode(true);
-</script></body></html>"""
+</script>"""

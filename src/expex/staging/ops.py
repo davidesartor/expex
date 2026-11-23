@@ -104,8 +104,8 @@ def cmp_(left: Any, ops: tuple[str, ...], *rights: Callable[[], Any]) -> Any:
         r = _CMP[op](left, right)
         if acc is not None:
             r = jnp.logical_and(acc, r)
-        if isinstance(r, Tracer):
-            acc = r  # cannot short-circuit on a traced value
+        if isinstance(r, Tracer) or jnp.ndim(r) > 0:
+            acc = r  # cannot short-circuit on a traced value, or elementwise on arrays
         elif not r:
             return r
         left = right

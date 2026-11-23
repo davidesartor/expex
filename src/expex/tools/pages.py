@@ -3,7 +3,7 @@
 ``expex.summary``, ``debug.watch``, ``expex.diff`` and ``debug.profile`` render
 to self-contained HTML (inline CSS and JS, nothing from a CDN). Notebook
 output is a fragment whose styles are scoped to its own id (:func:`uid`), so
-several can share a page; ``save(path)`` wraps it in :func:`page`. Each tool
+several can share a page; ``save(path)`` wraps it in :func:`document`. Each tool
 keeps only what is its own: its markup, its extra styles and its script.
 
 - :func:`tokens`: the palette as CSS custom properties on a selector, switched
@@ -38,7 +38,7 @@ def tokens(scope: str, light: str = "", dark: str = "") -> str:
     return f"{scope}{{{_LIGHT};{light}}}@media (prefers-color-scheme:dark){{{scope}{{{_DARK};{dark}}}}}"
 
 
-def page(title: str, body: str, style: str = "") -> str:
+def document(title: str, body: str, style: str = "") -> str:
     """A standalone page around ``body``; ``style`` is added to its stylesheet."""
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" "
@@ -83,8 +83,8 @@ def table(scope: str, style: str, markup: str) -> str:
             f'<script>{TABLE_JS.replace("ID", json.dumps(scope))}</script></div>')  # fmt: skip
 
 
-def toggle(open_: bool) -> str:
+def toggle(has_children: bool) -> str:
     """The collapse button of a tree row that has children, else a spacer."""
-    if open_:
+    if has_children:
         return '<button class="tg" aria-expanded="true" aria-label="collapse">▾</button>'
     return '<span class="tg"></span>'

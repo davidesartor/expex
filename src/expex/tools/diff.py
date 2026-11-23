@@ -15,7 +15,6 @@ strings, ...) by equality. Other pytrees are named by ``jax.tree_util.keystr``.
 
 import html
 import io
-import itertools
 import json
 import math
 import os
@@ -26,12 +25,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from . import pages
 from ..annotations.dims import describe
 from ..io import _META, _decode, save
 from ..annotations.spec import StructSpec, parse_owner
 
 _STRUCTURAL = ("removed", "added", "reshaped", "static")
-_ids = itertools.count()
 
 
 @dataclass(frozen=True)
@@ -97,13 +96,13 @@ class Diff:
 
     def _repr_html_(self) -> str:
         top = max([f.rel for f in self.changed if math.isfinite(f.rel)] or [1.0]) or 1.0
-        uid = f"txdiff{next(_ids)}"
+        uid = pages.uid("txdiff")
         legend = "".join(f'<span class="lg k-{k}"><i></i>{n} {w}</span>' for k, w, n in (
             ("changed", "changed values", len(self.changed)), ("reshaped", "shape / dtype", len(self.reshaped)),
             ("added", "added", len(self.added)), ("removed", "removed", len(self.removed)),
             ("static", "static", len(self.static)), ("same", "unchanged", len(self.unchanged))) if n)  # fmt: skip
         names = " → ".join(html.escape(n) for n in self.names)
-        return (f'<div class="txdiff" id="{uid}"><style>{_CSS}</style><header><b>{names}</b>'
+        return (f'<div class="txdiff" id="{uid}"><style>{pages.tokens("#" + uid, _LIGHT, _DARK)}{_CSS}</style><header><b>{names}</b>'
                 f'<span class="sum">{html.escape(self.summary())}</span><div class="legend">{legend}</div>'
                 f'<div class="ctl"><label><input type="checkbox" class="hide"> Hide unchanged</label>'
                 f'<label>Order <select class="order"><option value="i">model order</option>'
@@ -113,11 +112,8 @@ class Diff:
 
     def save(self, path: Any) -> None:
         """Write the HTML report to ``path`` as a self-contained page."""
-        page = (f'<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" '
-                f'content="width=device-width,initial-scale=1"><title>Model diff</title>'
-                f"<style>{_PAGE}</style></head><body>{self._repr_html_()}</body></html>")  # fmt: skip
         with open(path, "w", encoding="utf-8") as f:
-            f.write(page)
+            f.write(pages.document("Model diff", self._repr_html_()))
 
 
 def diff(a: Any, b: Any, *, atol: float = 0.0, rtol: float = 0.0) -> Diff:
@@ -235,35 +231,34 @@ def _leaves(v: Any) -> Any:
             yield from _leaves(c)
 
 
-_PAGE = "body{margin:0;background:#fbfbfa}@media (prefers-color-scheme:dark){body{background:#17181b}}"
+#: The colour of each kind of change, light and dark.
+_LIGHT = "--same:#9aa0a8;--changed:#b45309;--reshaped:#7c3aed;--added:#15803d;--removed:#c2410c;--static:#1d4ed8"
+_DARK = "--same:#6b7079;--changed:#f0a83c;--reshaped:#a78bfa;--added:#4ade80;--removed:#fb7f5a;--static:#60a5fa"
 _CSS = """
-.txdiff{--bg:#fbfbfa;--fg:#1d1f23;--mute:#6b7079;--line:#e4e4e0;--same:#9aa0a8;--changed:#b45309;--reshaped:#7c3aed;
---added:#15803d;--removed:#c2410c;--static:#1d4ed8;--barbg:#ecebe6;background:var(--bg);color:var(--fg);
-font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;padding:16px;max-width:980px;box-sizing:border-box}
-@media (prefers-color-scheme:dark){.txdiff{--bg:#17181b;--fg:#e6e6e3;--mute:#9a9ea6;--line:#2c2e33;--same:#6b7079;
---changed:#f0a83c;--reshaped:#a78bfa;--added:#4ade80;--removed:#fb7f5a;--static:#60a5fa;--barbg:#26282d}}
+.txdiff{background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;
+padding:16px;max-width:980px;box-sizing:border-box}
 .txdiff header{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:baseline;
-padding-bottom:12px;border-bottom:1px solid var(--line)}
-.txdiff header>b{font-size:16px}.txdiff .sum{color:var(--mute)}
+padding-bottom:12px;border-bottom:1px solid var(--ln)}
+.txdiff header>b{font-size:16px}.txdiff .sum{color:var(--mu)}
 .txdiff .legend,.txdiff .ctl{display:flex;flex-wrap:wrap;gap:4px 14px;width:100%}
-.txdiff .lg{display:inline-flex;align-items:center;gap:6px;font-size:13px}.txdiff .ctl{color:var(--mute);font-size:13px}
+.txdiff .lg{display:inline-flex;align-items:center;gap:6px;font-size:13px}.txdiff .ctl{color:var(--mu);font-size:13px}
 .txdiff select,.txdiff input{font:inherit;accent-color:var(--changed)}
-.txdiff select{background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:4px}
+.txdiff select{background:var(--bg);color:var(--fg);border:1px solid var(--ln);border-radius:4px}
 .txdiff i{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--c);flex:none}
 .txdiff .k-same{--c:var(--same)}.txdiff .k-changed{--c:var(--changed)}.txdiff .k-reshaped{--c:var(--reshaped)}
 .txdiff .k-added{--c:var(--added)}.txdiff .k-removed{--c:var(--removed)}.txdiff .k-static{--c:var(--static)}
-.txdiff .kids .kids{margin-left:9px;padding-left:12px;border-left:1px solid var(--line)}
+.txdiff .kids .kids{margin-left:9px;padding-left:12px;border-left:1px solid var(--ln)}
 .txdiff summary{cursor:pointer;padding:3px 0;display:flex;align-items:center;gap:8px;list-style:none}
-.txdiff summary::-webkit-details-marker{display:none}.txdiff summary::before{content:"▸";color:var(--mute);width:10px}
-.txdiff details[open]>summary::before{content:"▾"}.txdiff .note{color:var(--mute);font-size:12px}
+.txdiff summary::-webkit-details-marker{display:none}.txdiff summary::before{content:"▸";color:var(--mu);width:10px}
+.txdiff details[open]>summary::before{content:"▾"}.txdiff .note{color:var(--mu);font-size:12px}
 .txdiff .f{display:flex;flex-wrap:wrap;align-items:center;gap:2px 8px;padding:3px 0 3px 18px}
 .txdiff .f b,.txdiff summary b{font-weight:600}
-.txdiff .k-same>b,.txdiff .k-same>summary b{font-weight:400;color:var(--mute)}
+.txdiff .k-same>b,.txdiff .k-same>summary b{font-weight:400;color:var(--mu)}
 .txdiff .tag{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--c)}
-.txdiff code{font:12.5px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--mute);overflow-wrap:anywhere}
+.txdiff code{font:12.5px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--mu);overflow-wrap:anywhere}
 .txdiff .k-reshaped>code,.txdiff .k-static>code,.txdiff .k-added>code,.txdiff .k-removed>code{color:var(--fg)}
-.txdiff .st{margin-left:auto;font-size:12px;color:var(--mute);font-variant-numeric:tabular-nums}
-.txdiff .bar{flex:1 1 80px;max-width:160px;min-width:60px;height:6px;border-radius:3px;background:var(--barbg)}
+.txdiff .st{margin-left:auto;font-size:12px;color:var(--mu);font-variant-numeric:tabular-nums}
+.txdiff .bar{flex:1 1 80px;max-width:160px;min-width:60px;height:6px;border-radius:3px;background:var(--hd)}
 .txdiff .bar span{display:block;height:100%;border-radius:3px;background:var(--changed)}
 .txdiff.hide-same .k-same{display:none}
 """
