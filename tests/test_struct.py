@@ -146,8 +146,8 @@ def test_loops_over_identical_layers_are_scanned():
 
     assert jnp.allclose(jax.jit(lambda m, x: m(x))(deep, x), unrolled(deep, x), atol=1e-5)
     assert any("lax.scan" in how for how in Deep.__call__.flow.values())
-    staged = tx.debug.summary(lambda m, x: m(x), deep, x).ops
-    plain = tx.debug.summary(unrolled, deep, x).ops
+    staged = tx.debug.ops(lambda m, x: m(x), deep, x).count
+    plain = tx.debug.ops(unrolled, deep, x).count
     assert staged * 5 < plain
     g = jax.grad(lambda m: m(x).sum())(deep)
     g_ref = jax.grad(lambda m: unrolled(m, x).sum())(deep)

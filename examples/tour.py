@@ -78,9 +78,9 @@ if __name__ == "__main__":
     step = jax.jit(jax.value_and_grad(loss))
     value, grads = step(p, xs, xs)
     print(f"loss = {value:.4f}; the loop ran as: {rnn.flow}")
-    print("traced program:", debug.summary(loss, p, xs, xs).ops, "operations")
+    print("traced program:", debug.ops(loss, p, xs, xs).count, "operations")
     plain = fn(convert=False)(rnn.raw)
-    print("without conversion:", debug.summary(plain, p, xs).ops, "operations (unrolled)")
+    print("without conversion:", debug.ops(plain, p, xs).count, "operations (unrolled)")
 
     @fn
     def collatz(n: i32) -> i32:

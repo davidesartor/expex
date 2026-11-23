@@ -696,7 +696,7 @@ attention[B, T, D](q: f32[B, T, D], k: f32[B, T, D]) -> f32[B, T, T]   [symbolic
 | `tx.debug.shapes(f[, *args])` | every line with its shapes, symbolic or concrete |
 | `tx.debug.memory(f, *args)` | peak memory, and which values on which lines make it up |
 | `tx.debug.timing(f, *args)` | trace, compile and run time |
-| `tx.debug.summary(f, *args)` | operations by kind and line; flags unrolled loops and big constants |
+| `tx.debug.ops(f, *args)` | operations by kind and line; flags unrolled loops and big constants |
 | `f.info()` | everything typax knows about a function |
 | `tx.show(tree)` | a pytree as shapes: `Params(w=f32[3, 3], b=f32[3])` |
 

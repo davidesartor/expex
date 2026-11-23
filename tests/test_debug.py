@@ -99,8 +99,8 @@ def test_summary_counts_and_lints():
             x = jnp.sin(x) + 1
         return x
 
-    s = debug.summary(unrolled, jnp.ones(3))
-    assert s.ops == 200 and dict(s.by_op)["sin"] == 100
+    s = debug.ops(unrolled, jnp.ones(3))
+    assert s.count == 200 and dict(s.by_op)["sin"] == 100
     assert any("unrolled" in w for w in s.warnings)
     assert "by source line" in str(s)
 
@@ -110,7 +110,7 @@ def test_summary_counts_and_lints():
             x = jnp.sin(x) + 1
         return x
 
-    s2 = debug.summary(staged, jnp.ones(3))
+    s2 = debug.ops(staged, jnp.ones(3))
     assert s2.top_level_ops < 10 and not s2.warnings
 
 
@@ -120,7 +120,7 @@ def test_summary_flags_large_constants_and_reports_intermediates():
     def f(x):
         return (table * x).sum()
 
-    s = debug.summary(f, 2.0)
+    s = debug.ops(f, 2.0)
     assert any("captured as constants" in w for w in s.warnings)
     assert s.largest and s.largest[0][0] == 600 * 600 * 4
 
@@ -152,7 +152,7 @@ def test_debug_tools_keep_static_arguments_static():
             x = jnp.log(x) if mode == "log" else x
         return x.sum()
 
-    assert debug.summary(rep, jnp.ones(3), 2).ops >= 2
+    assert debug.ops(rep, jnp.ones(3), 2).count >= 2
     assert debug.timing(rep, jnp.ones(3), n=2, repeat=1).ops >= 2
     r = debug.find_nan(rep, jnp.full(3, 0.5), 2)
     assert r is not None and r.op == "log"

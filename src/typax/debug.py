@@ -5,7 +5,7 @@
     that produces a NaN from NaN-free inputs: the source line, the operation,
     which loop iteration / branch it was in, and statistics of its inputs.
 
-``summary(f, *args)``
+``ops(f, *args)``
     Size and shape of the traced program: operation counts by kind and by
     source line, the largest intermediates, and a few lints (unrolled loops,
     large captured constants, accidental 64-bit values).
@@ -39,8 +39,8 @@ from ._fn import BoundFn, Fn, unwrap
 from ._jaxpr import iter_eqns, source_key, source_of, sub_jaxprs
 
 __all__ = [
-    "find_nan", "shapes", "summary", "timing", "memory",
-    "NanReport", "ShapeTrace", "Summary", "Timing", "Memory",
+    "find_nan", "shapes", "ops", "timing", "memory",
+    "NanReport", "ShapeTrace", "Ops", "Timing", "Memory",
     "profile",
 ]  # fmt: skip
 
@@ -356,10 +356,10 @@ def _mb(n: int) -> str:
 
 
 @dataclass
-class Summary:
-    """Statistics of a traced program. ``str()`` gives a readable report."""
+class Ops:
+    """The operations of a traced program. ``str()`` gives a readable report."""
 
-    ops: int
+    count: int
     top_level_ops: int
     by_op: list[tuple[str, int]]
     by_line: list[tuple[str, int, str]]
@@ -368,7 +368,7 @@ class Summary:
     warnings: list[str]
 
     def __str__(self) -> str:
-        out = [f"{self.ops} operations ({self.top_level_ops} at top level)"]
+        out = [f"{self.count} operations ({self.top_level_ops} at top level)"]
         out.append("  by kind:  " + ", ".join(f"{n} {k}" for k, n in self.by_op[:8]))
         out.append("  by source line:")
         for where, n, text in self.by_line[:6]:
@@ -382,8 +382,11 @@ class Summary:
         return "\n".join(out)
 
 
-def summary(f: Callable[..., Any], *args: Any, **kwargs: Any) -> Summary:
-    """Describe the program JAX traces for ``f(*args, **kwargs)``."""
+def ops(f: Callable[..., Any], *args: Any, **kwargs: Any) -> Ops:
+    """The operations JAX traces for ``f(*args, **kwargs)``: by kind and source line.
+
+    Flags unrolled loops and large constants baked into the program.
+    """
     closed, _ = _trace(f, args, kwargs)
     top = closed.jaxpr.eqns
     by_op: Counter[str] = Counter()
@@ -437,7 +440,7 @@ def summary(f: Callable[..., Any], *args: Any, **kwargs: Any) -> Summary:
         )
     if wide:
         warnings.append(f"64-bit floats appear although no input is 64-bit, first at {wide}.")
-    return Summary(total, len(top), by_op.most_common(), lines, largest[:8], consts[:8], warnings)
+    return Ops(total, len(top), by_op.most_common(), lines, largest[:8], consts[:8], warnings)
 
 
 # -------------------------------------------------------------------- timing
