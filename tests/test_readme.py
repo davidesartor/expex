@@ -1,4 +1,4 @@
-"""Every Python block in the README and the guide must run."""
+"""Every Python block in the README and the guide pages must run."""
 
 import pathlib
 import re
@@ -10,10 +10,15 @@ import jax.random as jr
 ROOT = pathlib.Path(__file__).parent.parent
 
 
-def run_blocks(doc: str, tmp_path: pathlib.Path) -> dict:
-    blocks = re.findall(r"```python\n(.*?)```", (ROOT / doc).read_text(), flags=re.S)
+GUIDE = ["functions", "modules", "compiling", "cost-and-diagrams", "debugging", "reference"]
+
+
+def run_blocks(doc: str | list[str], tmp_path: pathlib.Path) -> dict:
+    docs = [doc] if isinstance(doc, str) else doc
+    text = "\n".join((ROOT / d).read_text() for d in docs)
+    blocks = re.findall(r"```python\n(.*?)```", text, flags=re.S)
     # written to a real file so that @fn can read the source it converts
-    path = tmp_path / (pathlib.Path(doc).stem + "_blocks.py")
+    path = tmp_path / (pathlib.Path(docs[0]).stem + "_blocks.py")
     path.write_text("\n\n".join(blocks))
     return runpy.run_path(str(path))
 
@@ -47,9 +52,15 @@ def test_readme_comparisons_agree(tmp_path):
     assert jnp.allclose(ns["stack"](params, x), model(x), atol=1e-4)
 
 
+def test_guide_lists_every_page():
+    index = (ROOT / "docs/README.md").read_text()
+    assert sorted(GUIDE) == sorted(p.stem for p in (ROOT / "docs").glob("*.md") if p.stem != "README")
+    assert all(f"]({page}.md)" in index for page in GUIDE)
+
+
 def test_guide_blocks_run(tmp_path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path)  # the examples save files
-    ns = run_blocks("docs/guide.md", tmp_path)
+    ns = run_blocks([f"docs/{page}.md" for page in GUIDE], tmp_path)
     out = capsys.readouterr().out
     assert "B is 2 (from `q: f32[2, 3, 4]`), but axis 0 of `k` is 5." in out
     assert "axis 0 of `return` should be T, but is T - 1." in out

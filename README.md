@@ -195,4 +195,4 @@ to 6e-7, 4.5x faster forward, 3x faster gradients).
 
 ## More
 
-The full guide, with every feature and its examples: [docs/guide.md](docs/guide.md).
+The full guide, with every feature and its examples: [docs/](docs/README.md).
