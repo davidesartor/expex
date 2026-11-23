@@ -59,9 +59,6 @@ def ld(thunk: Callable[[], Any]) -> Any:
         return UNDEF
 
 
-# ------------------------------------------------------------ checked locals
-
-
 # ------------------------------------------------------------------ values
 
 
@@ -124,13 +121,17 @@ def _boolean(v: Any) -> bool:
 
 
 def _check_pred(pred: Any, what: str, site: str) -> None:
-    if pred.shape != ():
-        raise StageError(
-            f"the condition of the `{what}` at {site} is a traced array of shape "
-            f"{tuple(pred.shape)}, not a single True/False.\n"
-            f"    - to test all/any elements:   cond.all()  /  cond.any()\n"
-            f"    - to choose per element:      jnp.where(cond, a, b)"
-        )
+    """A condition must be one True/False; an array of them has no single answer."""
+    if isinstance(pred, Tracer) or _is_arr(pred):
+        shape = tuple(pred.shape)
+        if shape != () and (isinstance(pred, Tracer) or pred.size != 1):
+            raise StageError(
+                f"the condition of the `{what}` at {site} is an array of shape {shape}, "
+                f"not a single True/False.\n"
+                f"    - to choose per element:      write the function for one element and\n"
+                f"                                  use @expex.fn(vectorize=True), or jnp.where(cond, a, b)\n"
+                f"    - to test all/any elements:   cond.all()  /  cond.any()"
+            )
 
 
 def _cond(
@@ -369,10 +370,10 @@ def if_(
     site: str,
 ) -> tuple[Any, ...]:
     k = keys.sub()
+    _check_pred(pred, "if", site)
     if not isinstance(pred, Tracer):
         with keys.child(k):
             return (true_fn if pred else false_fn)(*state)
-    _check_pred(pred, "if", site)
     check = _guard_lists(state, names, "if", site)
     taken = _truth(pred)
 
@@ -390,6 +391,7 @@ def if_(
 
 
 def ifexp(pred: Any, a: Callable[[], Any], b: Callable[[], Any], site: str) -> Any:
+    _check_pred(pred, "... if ... else ...", site)
     if not isinstance(pred, Tracer):
         k = keys.sub()
         with keys.child(k):
@@ -413,7 +415,7 @@ def _select_expr(pred: Any, a: Callable[[], Any], b: Callable[[], Any], site: st
     return _cond(pred, (side(a, taken), side(b, ~taken)), ("<the expression>",), site)[0]
 
 
-# -------------------------------------------------------------------- while
+# ------------------------------------------------------------- traced depth
 
 
 class _CannotLower(StageError):
@@ -435,10 +437,7 @@ class _staged:
         _STAGE.depth -= 1
 
 
-# ------------------------------------------------------- in-place updates
-
-
-# --------------------------------------------------------- staged builtins
+# -------------------------------------------------------------------- while
 
 
 def while_(
@@ -456,6 +455,7 @@ def while_(
             c = test_fn(*state)
         if isinstance(c, Tracer):
             break
+        _check_pred(c, "while", site)
         if not c:
             return state
         with keys.child(k, 2 * it + 1):

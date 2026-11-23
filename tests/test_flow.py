@@ -168,8 +168,39 @@ def test_non_scalar_condition():
             return x
         return -x
 
-    with pytest.raises(StageError, match=r"(?s)traced array of shape \(3,\).*jnp.where"):
+    with pytest.raises(StageError, match=r"(?s)array of shape \(3,\).*vectorize=True.*jnp.where"):
         jax.jit(f)(jnp.ones(3))
+    with pytest.raises(StageError, match=r"(?s)`if` at .*array of shape \(3,\)"):
+        f(jnp.ones(3))  # eagerly too, instead of Python's "truth value ... is ambiguous"
+
+
+def test_non_scalar_ternary_and_while():
+    @fn
+    def relu[N](x: f32[N]) -> f32[N]:
+        return x if x > 0 else 0.0 * x
+
+    @fn
+    def halve[N](x: f32[N]) -> f32[N]:
+        while x > 1:
+            x = x / 2
+        return x
+
+    for call in (lambda: relu(jnp.ones(3)), lambda: jax.jit(relu)(jnp.ones(3))):
+        with pytest.raises(StageError, match=r"(?s)`\.\.\. if \.\.\. else \.\.\.` at .*shape \(3,\).*vectorize=True"):
+            call()
+    with pytest.raises(StageError, match=r"(?s)`while` at .*shape \(3,\)"):
+        halve(jnp.full(3, 4.0))
+
+
+def test_ternary_per_element_with_vectorize():
+    @fn(vectorize=True)
+    def relu(x: f32) -> f32:
+        return x if x > 0 else 0.0 * x
+
+    x = jnp.array([-1.0, 2.0])
+    assert jnp.array_equal(relu(x), jnp.array([0.0, 2.0]))
+    assert jnp.array_equal(jax.grad(lambda v: relu(v).sum())(x), jnp.array([0.0, 1.0]))
+    assert relu(jnp.ones((1,))).shape == (1,)  # a size-1 condition is still fine
 
 
 def test_append_in_traced_if_is_refused():
