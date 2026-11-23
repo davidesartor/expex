@@ -1,5 +1,6 @@
 """Every Python block in the README and the guide pages must run."""
 
+import importlib.util
 import pathlib
 import re
 import runpy
@@ -10,13 +11,15 @@ import jax.random as jr
 ROOT = pathlib.Path(__file__).parent.parent
 
 
-GUIDE = ["functions", "modules", "compiling", "cost-and-diagrams", "debugging", "reference", "tools", "porting", "errors"]
+GUIDE = ["functions", "modules", "compiling", "cost-and-diagrams", "debugging", "reference", "tools", "porting", "errors", "interop"]
 
 
 def run_blocks(doc: str | list[str], tmp_path: pathlib.Path) -> dict:
     docs = [doc] if isinstance(doc, str) else doc
     text = "\n".join((ROOT / d).read_text() for d in docs)
-    blocks = re.findall(r"```python\n(.*?)```", text, flags=re.S)
+    # ```python equinox: a block that needs a library (top-level names: equinox, flax, orbax), skipped without it
+    found = re.findall(r"```python([^\n]*)\n(.*?)```", text, flags=re.S)
+    blocks = [code for needs, code in found if all(map(importlib.util.find_spec, needs.split()))]
     # written to a real file so that @fn can read the source it converts
     path = tmp_path / (pathlib.Path(docs[0]).stem + "_blocks.py")
     path.write_text("\n\n".join(blocks))
