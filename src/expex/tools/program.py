@@ -14,11 +14,10 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 import jax
-import jax.random as jr
 import numpy as np
 
 from ..annotations.dims import describe
-from .trace import iter_eqns, keyed, make_jaxpr, source_key, source_of
+from .trace import iter_eqns, keyed, make_jaxpr, source_key, source_of, with_key
 
 
 def _nbytes(aval: Any) -> int:
@@ -76,7 +75,7 @@ def ops(f: Callable[..., Any], *args: Any, **kwargs: Any) -> Ops:
     closed, _ = make_jaxpr(f, args, kwargs)
     top = closed.jaxpr.eqns
     by_op: Counter[str] = Counter()
-    by_line: Counter[tuple[str, int, str]] = Counter()
+    by_line: Counter[tuple[str, int]] = Counter()
     largest: list[tuple[int, str, str]] = []
     wide = None
     total = 0
@@ -84,7 +83,8 @@ def ops(f: Callable[..., Any], *args: Any, **kwargs: Any) -> Ops:
     for eqn in iter_eqns(closed.jaxpr):
         total += 1
         by_op[eqn.primitive.name] += 1
-        by_line[source_key(eqn)] += 1
+        if (at := source_key(eqn))[1]:  # expex's own bookkeeping has no user line
+            by_line[at[:2]] += 1
         for v in eqn.outvars:
             aval = getattr(v, "aval", None)
             if aval is None or not hasattr(aval, "dtype"):
@@ -100,7 +100,7 @@ def ops(f: Callable[..., Any], *args: Any, **kwargs: Any) -> Ops:
                 wide = source_of(eqn)
     largest.sort(key=lambda t: -t[0])
     lines = [
-        (f"{fn}:{ln}", n, linecache.getline(fn, ln).strip()) for (fn, ln, _), n in by_line.most_common()
+        (f"{fn}:{ln}", n, linecache.getline(fn, ln).strip()) for (fn, ln), n in by_line.most_common()
     ]
     consts = sorted(
         ((_nbytes(c), describe(c)) for c in closed.consts if hasattr(c, "shape")), reverse=True
@@ -161,10 +161,9 @@ class Timing:
 def timing(f: Callable[..., Any], *args: Any, repeat: int = 5, **kwargs: Any) -> Timing:
     """Time tracing, compilation and execution of ``jit(f)(*args, **kwargs)`` separately."""
     run, args, kwargs = keyed(f, args, kwargs)
-    key = jr.key(0)
     jf = jax.jit(run)
     t0 = time.perf_counter()
-    traced = jf.trace(key, *args, **kwargs)
+    key, traced = with_key(lambda k: (k, jf.trace(k, *args, **kwargs)), f)
     t1 = time.perf_counter()
     compiled = traced.lower().compile()
     t2 = time.perf_counter()
@@ -224,9 +223,7 @@ def memory(f: Callable[..., Any], *args: Any, **kwargs: Any) -> Memory:
     ``jax.checkpoint`` on a layer reduces it.
     """
     run, args, kwargs = keyed(f, args, kwargs)
-    key = jr.key(0)
-
-    traced = jax.jit(run).trace(key, *args, **kwargs)
+    traced = with_key(lambda k: jax.jit(run).trace(k, *args, **kwargs), f)
     stats = traced.lower().compile().memory_analysis()
     arg_b = int(getattr(stats, "argument_size_in_bytes", 0) or 0)
     out_b = int(getattr(stats, "output_size_in_bytes", 0) or 0)

@@ -55,7 +55,7 @@ from .annotations.spec import (
     ArraySpec, KeySpec, NoneSpec, SeqSpec, Spec, StructSpec, UnionSpec,
     _class_annotations, join, parse, parse_owner, rebuild, static_type,
 )  # fmt: skip
-from .decorators import fn
+from .decorators import CompiledMethod, fn
 from .function import Fn, unwrap
 
 T = TypeVar("T", bound=type)
@@ -118,6 +118,8 @@ def struct(cls: Any = None, /, **moved: Any) -> Any:
             inner = unwrap(value)
             if inner is not value and isinstance(inner, Fn):  # e.g. @jax.jit over @expex.fn
                 inner.__set_name__(cls, name)
+                if hasattr(value, "vectorize") and wrapper is None:  # @expex.jit: bind .vectorize too
+                    setattr(cls, name, CompiledMethod(value))
                 continue
             if inspect.isfunction(getattr(value, "__wrapped__", None)) and hasattr(value, "lower"):
                 raise TypeError(

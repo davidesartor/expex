@@ -343,6 +343,9 @@ def signature_names(fdef: ast.FunctionDef) -> set[str]:
     return out
 
 
+_SIZE_OPS = (ast.Add, ast.Sub, ast.Mult, ast.FloorDiv, ast.Mod, ast.Pow)
+
+
 def size_asserts(
     fdef: ast.FunctionDef,
     sizes: set[str],
@@ -352,12 +355,14 @@ def size_asserts(
     """The leading ``assert``s and size definitions of the body.
 
     ``assert D % heads == 0`` becomes the constraint ``D % heads == 0``: checked
-    before the body runs, and assumed by the prover. ``H, K = heads, D // heads``,
-    for names used in the signature, defines those sizes (recorded in ``defs``).
+    before the body runs, and assumed by the prover. ``H, K = heads, D // heads``
+    defines those sizes (recorded in ``defs``) for names used in the signature,
+    and for names computed from sizes that the body does not assign again.
     Both may only involve sizes, int parameters and fields of ``self``.
     """
     a = fdef.args
     params = {x.arg for x in a.posonlyargs + a.args + a.kwonlyargs}
+    ints = {x.arg for x in a.posonlyargs + a.args + a.kwonlyargs if isinstance(x.annotation, ast.Name) and x.annotation.id == "int"}
     in_signature = signature_names(fdef)
     allowed = sizes | params
 
@@ -383,15 +388,29 @@ def size_asserts(
     out: list[tuple[ast.Assert, list[str]]] = []
     body = fdef.body
     start = 1 if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) else 0
-    for s in body[start:]:
+    for k, s in enumerate(body[start:], start):
         if isinstance(s, ast.Assign) and defs is not None and len(s.targets) == 1:
             target, value = s.targets[0], s.value
             names = [target] if isinstance(target, ast.Name) else getattr(target, "elts", None)
             values = [value] if isinstance(target, ast.Name) else getattr(value, "elts", None)
+            later = assigned(body[k + 1 :])
+
+            def size(n: ast.AST, v: ast.AST) -> bool:
+                """A size of the signature, or a name computed once from sizes and int parameters."""
+                if not isinstance(n, ast.Name):
+                    return False
+                if n.id in in_signature:
+                    return True
+                used = [x for x in ast.walk(v) if isinstance(x, (ast.Name, ast.Attribute))]
+                return (
+                    n.id not in later and bool(used)
+                    and all(isinstance(x.op, _SIZE_OPS) for x in ast.walk(v) if isinstance(x, ast.BinOp))
+                    and all(not isinstance(x, ast.Name) or x.id in sizes or x.id in defs or x.id in ints for x in used)
+                )  # fmt: skip
+
             if (
                 names and values and len(names) == len(values)
-                and all(isinstance(n, ast.Name) and n.id in in_signature for n in names)
-                and all(plain(v) for v in values)
+                and all(plain(v) and size(n, v) for n, v in zip(names, values))
             ):  # fmt: skip
                 for n, v in zip(names, values):
                     defs[n.id] = ast.unparse(Unself().visit(copy.deepcopy(v)))

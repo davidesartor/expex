@@ -20,7 +20,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import lax
-from jax.core import Tracer
+from jax.core import Tracer, eval_jaxpr
 
 from .. import keys
 from ..annotations.errors import StageError
@@ -166,7 +166,7 @@ def _cond(
 
     def replay(k: int) -> Callable[[], tuple[Any, ...]]:
         def run() -> tuple[Any, ...]:
-            values = iter(jax.core.eval_jaxpr(jaxprs[k].jaxpr, jaxprs[k].consts))
+            values = iter(eval_jaxpr(jaxprs[k].jaxpr, jaxprs[k].consts))
             out: list[Any] = []
             for i, (kind, v) in enumerate(recs[k]):
                 p = plan.get(i)

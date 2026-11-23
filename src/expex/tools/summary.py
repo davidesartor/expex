@@ -27,10 +27,12 @@ import jax.random as jr
 
 from ..annotations.dims import DConst, DExpr, DName, Env
 from ..annotations.spec import ArraySpec, NoneSpec, SeqSpec, StructSpec, UnionSpec, join, parse_owner
+from .. import function
 from ..function import Fn, unwrap
 from ..modules import _all_fields
 from . import pages
 from .cost import Poly, arrays, cost, si
+from .trace import resolve
 
 
 @dataclass
@@ -142,7 +144,7 @@ def summary(model: Any, /, **sizes: int) -> Summary:
     known = {k: int(v) for k, v in env.dims.items() if isinstance(v, int) and k.isidentifier()}
     rows: list[Row] = []
     lists: dict[str, int] = {}
-    s = _Walk(rows, lists, known, sizes, [])
+    s = _Walk(rows, lists, known, sizes, [], seen=_call_sizes(model, sizes))
     s.fields(spec, model, "", 0, -1, 1)
     if lists:
         known["L"] = max(lists.values())
@@ -172,6 +174,7 @@ class _Walk:
     given: dict[str, int]
     notes: list[str]
     fallback: list[str] = field(default_factory=list)  # rows whose class formula does not apply
+    seen: dict[type, dict[str, int]] = field(default_factory=dict)  # sizes of each class's call, in the model's call
     _own: dict[type, Poly | None] = field(default_factory=dict)
 
     def fields(self, spec: StructSpec, obj: Any, path: str, depth: int, parent: int, weight: int) -> None:
@@ -219,8 +222,46 @@ class _Walk:
                 self.fallback.append(row.path)
                 own = None
         row.flops = own if own is not None else bound
-        v = bound.subs(self.given).value
-        row.flops_value = None if v is None else int(v)
+        number = bound.subs({**self.seen.get(cls, {}), **self.given})
+        row.flops_value = None if number.value is None else int(number.value)
+        if number.value is None and (self.given or self.seen):
+            self.notes.append(f"{row.path or 'total'}: no FLOP count without {', '.join(sorted(number.names()))}")
+
+
+def _call_sizes(model: Any, sizes: dict[str, int]) -> dict[type, dict[str, int]]:
+    """The sizes each module's ``__call__`` is called with when the model's is: ``S`` of a cache, say.
+
+    The model's call is traced with the given sizes; a hook matches the
+    arguments of every module call it makes. Empty if that call cannot be traced.
+    """
+    seen: dict[type, dict[str, int]] = {}
+
+    def hook(fn: Any, args: Any, kwargs: Any, run: Any) -> Any:
+        if fn._lazy:
+            fn._resolve_owner()
+        owner = getattr(fn, "_owner_cls", None)
+        if owner is not None and getattr(fn.raw, "__name__", "") == "__call__":
+            env = Env()
+            try:
+                bound = fn._sig.bind(*args, **kwargs).arguments
+                for name, spec in fn._check_inputs:
+                    if name in bound and name != "self":
+                        spec.match(bound[name], name, env)
+            except Exception:
+                pass
+            seen.setdefault(owner, {}).update({k: int(v) for k, v in env.dims.items() if isinstance(v, int)})
+        return run(args, kwargs)
+
+    if not isinstance(unwrap(getattr(type(model), "__call__", None)), Fn):
+        return seen
+    token = function.CALL_HOOK.set(hook)
+    try:
+        resolve(model.__call__, dict(sizes)).trace(preset={k: int(v) for k, v in sizes.items()})
+    except Exception:
+        return {}
+    finally:
+        function.CALL_HOOK.reset(token)
+    return seen
 
 
 def _pick(spec: Any, value: Any) -> Any:

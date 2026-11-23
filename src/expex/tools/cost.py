@@ -39,13 +39,13 @@ What is counted, and what is approximate:
 import math
 from dataclasses import dataclass, field
 from fractions import Fraction
-from typing import Any
+from typing import Any, Iterator
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .trace import Target, iter_eqns, resolve, source_of, sub_jaxprs
+from .trace import Target, resolve, source_of, sub_jaxprs
 
 type Mono = tuple[tuple[str, int], ...]  # ((name, power), ...) sorted by name
 
@@ -246,11 +246,25 @@ def _count(s: Target, n: int) -> tuple[Poly, Poly | None, tuple[str, Poly] | Non
     params = None
     if first in ("self", "cls") and getattr(f, "_owner_cls", None) is not None:
         params = sum((_numel(x.shape) for x in arrays(getattr(arguments[first], "obj", arguments[first]))), Poly())
-    values = [v.aval for e in iter_eqns(jaxpr) for v in e.outvars]
+    values = [v.aval for e in _user_eqns(jaxpr) for v in e.outvars]
     values = [a for a in values if hasattr(a, "shape") and not jnp.issubdtype(a.dtype, jax.dtypes.prng_key)]
     big = max(values, key=lambda a: _numel(a.shape).sample(), default=None)
     largest = None if big is None else (big.str_short(short_dtypes=True), _numel(big.shape))
     return total, params, largest, notes, lists
+
+
+def _user_eqns(jaxpr: Any) -> Iterator[Any]:
+    """The equations of a jaxpr and of its nested ones, but not inside JAX's own helpers.
+
+    A private helper (``jit`` of ``_roll_dynamic``, say) may build values the
+    program does not have at concrete sizes: with a symbolic shift, ``jnp.roll``
+    concatenates the array with itself.
+    """
+    for eqn in getattr(jaxpr, "jaxpr", jaxpr).eqns:
+        yield eqn
+        if not str(eqn.params.get("name", "")).startswith("_"):
+            for _, sub in sub_jaxprs(eqn.params):
+                yield from _user_eqns(sub)
 
 
 def cost(target: Any, /, **sizes: Any) -> Cost:

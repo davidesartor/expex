@@ -12,13 +12,14 @@ import functools
 import inspect
 import linecache
 import sys
+from collections.abc import Iterator, Mapping
 from typing import Any, Callable, overload
 
 import jax
 
 from . import keys
 from .annotations.spec import StaticSpec
-from .function import REGISTRY, Fn, P, Param, R, unwrap
+from .function import REGISTRY, BoundCompiled, Fn, P, Param, R, unwrap
 
 
 @overload
@@ -199,8 +200,28 @@ def jit(f: Callable[P, R] | None = None, /, **options: Any) -> Any:
         compiled: Any = _AutoDonate(f, g, static_names, options)
     else:
         compiled = jax.jit(f, static_argnames=static_names, **options)
-    if not g.random:
-        return compiled
+    vectorized = jax.jit(_vectorizer(g), static_argnames=static_names, **{k: v for k, v in options.items() if k != "donate_argnames"})
+    if g.random:
+        compiled, vectorized = _fresh_key(compiled, g), _fresh_key(vectorized, g)
+    # the Fn's API on the compiled function: f.vectorize(...) compiled too, f.flow, f.info(), f.check()
+    compiled.vectorize, compiled.flow, compiled.info, compiled.check = vectorized, _Flow(g), g.info, g.check
+    return compiled
+
+
+def _vectorizer(g: Fn[Any, Any]) -> Callable[..., Any]:
+    """``g.vectorize``, as a function with ``g``'s signature (for ``jax.jit``)."""
+
+    def vectorize(*args: Any, **kwargs: Any) -> Any:
+        __tracebackhide__ = True
+        return g.vectorize(*args, **kwargs)
+
+    vectorize.__signature__ = g._sig  # type: ignore[attr-defined]
+    vectorize.__qualname__ = f"{g.name}.vectorize"
+    return vectorize
+
+
+def _fresh_key(compiled: Any, g: Fn[Any, Any]) -> Any:
+    """A compiled random function that draws a fresh key outside the compiled code, unless given one."""
 
     @functools.wraps(compiled)
     def call(*args: Any, **kwargs: Any) -> Any:
@@ -210,6 +231,36 @@ def jit(f: Callable[P, R] | None = None, /, **options: Any) -> Any:
         return compiled(*args, **kwargs)
 
     return call
+
+
+class _Flow(Mapping[int, str]):
+    """``f.flow`` of a compiled ``f``: read from the ``Fn`` whenever it is used."""
+
+    def __init__(self, g: Fn[Any, Any]):
+        self.g = g
+
+    def __getitem__(self, line: int) -> str:
+        return self.g.flow[line]
+
+    def __iter__(self) -> Iterator[int]:
+        return iter(self.g.flow)
+
+    def __len__(self) -> int:
+        return len(self.g.flow)
+
+    def __repr__(self) -> str:
+        return repr(self.g.flow)
+
+
+class CompiledMethod:
+    """A compiled method of a struct: ``model.step(...)`` and ``model.step.vectorize(...)`` bound alike."""
+
+    def __init__(self, compiled: Any):
+        self.compiled = self.__wrapped__ = compiled
+        self.__doc__ = compiled.__doc__
+
+    def __get__(self, obj: Any, cls: Any = None) -> Any:
+        return self.compiled if obj is None else BoundCompiled(self.compiled, obj)
 
 
 #: ``jit``, for ``fn``, whose option of that name hides it.

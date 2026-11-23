@@ -18,6 +18,7 @@ callable and arguments to trace (``Static`` arguments closed over), and
 import dataclasses
 import enum
 import inspect
+import math
 import os
 import types
 import typing
@@ -31,7 +32,7 @@ from jax import export
 from .. import keys
 from ..annotations.dims import DAny, DConst, DEllipsis, DExpr, DName, DVar, Env
 from ..annotations.errors import ShapeError, StageError
-from ..annotations.expr import to_jax_constraint
+from ..annotations.expr import divisibility, to_jax_constraint
 from ..annotations.spec import KeySpec, Spec, StaticSpec, Unsynthesizable
 from ..function import BoundFn, Fn, unwrap
 
@@ -72,6 +73,7 @@ class Sizes:
         var_rank: dict[str, int],
         preset: dict[str, int] | None = None,
         list_length: int = 2,
+        multiples: dict[str, int] | None = None,
     ):
         self.scope = scope
         self.sizes = sizes
@@ -82,6 +84,7 @@ class Sizes:
         self.need_x64 = False
         self.legacy_keys = False
         self.list_length = list_length
+        self.multiples = multiples or {}
         self.lists: list[str] = []
         #: The arguments of the last trace (examples as given, as :class:`Template` if so).
         self.arguments: dict[str, Any] = {}
@@ -96,7 +99,8 @@ class Sizes:
 
     def dim(self, name: str) -> Any:
         if name not in self.dims:
-            self.dims[name] = self._sym(name)
+            m = self.multiples.get(name) if self.scope is not None else None
+            self.dims[name] = m * self._sym(f"{name}_div{m}") if m else self._sym(name)
         return self.dims[name]
 
     def fresh(self) -> Any:
@@ -235,13 +239,16 @@ def statics(f: Fn[Any, Any], fixed: dict[str, Any]) -> dict[str, int]:
 
 
 def constraints(f: Fn[Any, Any], statics: dict[str, int]) -> tuple[list[str], list[str]]:
-    """``where`` constraints in jax.export syntax, and those that cannot be expressed."""
+    """``where`` constraints in jax.export syntax, and those that cannot be expressed.
+
+    Divisibility (``K % 2 == 0``) is neither: the prover makes it hold by construction (:func:`multiples`).
+    """
     good, dropped = [], []
     inputs = {n for n in f.input_names if not n.startswith("*")} | statics.keys()
     for w in [*f.where, *f.assumed]:
         if not w.names <= inputs:
             continue
-        if w.names <= statics.keys():
+        if w.names <= statics.keys() or divisibility(w, statics):
             continue  # no free sizes: checked directly when the function is called
         j = to_jax_constraint(w, statics)
         try:
@@ -252,6 +259,19 @@ def constraints(f: Fn[Any, Any], statics: dict[str, int]) -> tuple[list[str], li
         except Exception:
             dropped.append(w.src)
     return good, dropped
+
+
+def multiples(f: Fn[Any, Any], statics: dict[str, int]) -> dict[str, int]:
+    """Sizes the constraints say are multiples: ``{"K": 2}`` for ``assert K % 2 == 0``.
+
+    Traced as ``2·K_div2``, so that ``K // 2 * 2`` simplifies to ``K``.
+    """
+    inputs = {n for n in f.input_names if not n.startswith("*")}
+    out: dict[str, int] = {}
+    for w in [*f.where, *f.assumed]:
+        if (d := divisibility(w, statics)) is not None and d[0] in inputs:
+            out[d[0]] = math.lcm(out.get(d[0], 1), d[1])
+    return out
 
 
 # ------------------------------------------------------------------ tracing
@@ -414,7 +434,7 @@ def keyed(
     """The un-jitted callable behind ``f``, taking a random key first, and the arguments to trace it with.
 
     ``run(key, *args, **kwargs)`` runs ``f`` with ``expex.key()`` drawing from
-    ``key``. ``Static`` arguments of an ``@fn`` are closed over, so that tracing
+    ``key`` (with no key scope if ``key`` is None: see :func:`with_key`). ``Static`` arguments of an ``@fn`` are closed over, so that tracing
     does not turn them into traced values.
     """
     f = unwrap(f)
@@ -441,17 +461,39 @@ def keyed(
             g = with_static
 
     def run(key: Any, *a: Any, **k: Any) -> Any:
+        if key is None:
+            return g(*a, **k)
         with keys.rng(key):
             return g(*a, **k)
 
     return run, args, kwargs
 
 
+def with_key[T](trace: Callable[[Any], T], f: Callable[..., Any], key: Any = None) -> T:
+    """``trace(key)``, or ``trace(None)`` (no key scope) unless ``f`` draws random numbers.
+
+    A key scope makes every traced ``if`` and loop derive a key, so it is opened
+    only for a random ``@fn``, or when the function asks for a key without one.
+    """
+    g = unwrap(f)
+    g = g.fn if isinstance(g, BoundFn) else g
+    key = jr.key(0) if key is None else key
+    if isinstance(g, Fn) and g.random:
+        return trace(key)
+    try:
+        return trace(None)
+    except StageError as e:
+        if "needs a key" not in str(e):
+            raise
+    return trace(key)
+
+
 def make_jaxpr(f: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[Any, list[Any]]:
     """Trace ``f`` on its arguments: the closed jaxpr and the flat list of traced inputs."""
     run, args, kwargs = keyed(f, args, kwargs)
-    key = keys.current().next() if keys.current() else jr.key(0)  # type: ignore[union-attr]
-    return jax.make_jaxpr(lambda *a, **k: run(key, *a, **k))(*args, **kwargs), jax.tree.leaves((args, kwargs))
+    key = keys.current().next() if keys.current() else None  # type: ignore[union-attr]
+    trace = lambda key: jax.make_jaxpr(lambda *a, **k: run(key, *a, **k))(*args, **kwargs)  # noqa: E731
+    return with_key(trace, f, key), jax.tree.leaves((args, kwargs))
 
 
 # ------------------------------------------------------------------ jaxprs

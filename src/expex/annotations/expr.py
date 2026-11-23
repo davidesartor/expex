@@ -173,6 +173,23 @@ def to_jax_constraint(expr: Expr, consts: Mapping[str, int] | None = None) -> st
     return None
 
 
+def divisibility(expr: Expr, consts: Mapping[str, int] | None = None) -> tuple[str, int] | None:
+    """``("K", 2)`` for the constraint ``K % 2 == 0`` (the modulus may be a name in ``consts``), else None."""
+    tree, consts = expr._tree, consts or {}
+    if not (isinstance(tree, ast.Compare) and isinstance(tree.ops[0], ast.Eq)):
+        return None
+    left, right = tree.left, tree.comparators[0]
+    if isinstance(left, ast.Constant):
+        left, right = right, left
+    if not (isinstance(right, ast.Constant) and right.value == 0 and isinstance(left, ast.BinOp)):
+        return None
+    if not (isinstance(left.op, ast.Mod) and isinstance(left.left, ast.Name)) or left.left.id in consts:
+        return None
+    m = left.right
+    k = m.value if isinstance(m, ast.Constant) else consts.get(m.id) if isinstance(m, ast.Name) else None
+    return (left.left.id, k) if isinstance(k, int) and k > 1 else None
+
+
 def _balanced(s: str) -> bool:
     depth = 0
     for ch in s:

@@ -11,12 +11,11 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 import jax
-import jax.random as jr
 import numpy as np
 
 from ..annotations.dims import describe, show
 from ..function import BoundFn, Fn, unwrap
-from .trace import keyed, resolve
+from .trace import keyed, resolve, with_key
 
 
 @dataclass
@@ -125,7 +124,7 @@ def shapes(f: Callable[..., Any], *args: Any, **kwargs: Any) -> ShapeTrace:
     try:
         if args or kwargs or not isinstance(target, Fn):
             run, a, k = keyed(f, args, kwargs)
-            jax.eval_shape(lambda *x, **y: run(jr.key(0), *x, **y), *a, **k)
+            with_key(lambda key: jax.eval_shape(lambda *x, **y: run(key, *x, **y), *a, **k), f)
             title = f"{getattr(raw, '__qualname__', raw.__name__)} at {fname}:{start}"
         else:
             title = _symbolic_run(target)

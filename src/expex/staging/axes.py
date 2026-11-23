@@ -50,9 +50,10 @@ def _size_of(name: str, env: Any, fn: Any) -> Any:
     if name in env.dims:
         return env.dims[name]
     expr = getattr(fn, "defs", {}).get(name)
-    if expr is not None and expr.names <= env.dims.keys():
-        return expr(env.dims)
-    return None
+    if expr is None:
+        return None
+    values = {n: _size_of(n, env, fn) for n in expr.names}  # R = H // G, with G = groups
+    return None if any(v is None for v in values.values()) else expr(values)
 
 
 def dim_(name: str) -> Any:
@@ -134,7 +135,7 @@ def resolve(name: str, arr: Any, site: str, var: str | None, fixed: int | None =
 
     # 1. the variable's annotation
     spec = None
-    if var is not None and env is not None:
+    if isinstance(var, str) and env is not None:
         spec = env.locals.get(var)
         if spec is None and fn is not None and var in fn.params:
             spec = fn.params[var].spec
@@ -143,6 +144,10 @@ def resolve(name: str, arr: Any, site: str, var: str | None, fixed: int | None =
         pos = _from_dims(name, dims, getattr(spec, "var_index", None), len(shape), env)
         if pos is not None:
             return pos
+    names = _given_names(arr, var, env)
+    if names is not None and len(names) == len(shape) and names.count(name) == 1:
+        return names.index(name)
+    var = var if isinstance(var, str) else None
 
     # 2. the sizes
     where = f"{var or 'the array'}: {describe(arr)}"
@@ -245,7 +250,21 @@ def einsum_(operands: tuple[Any, ...], variables: tuple[str | None, ...], to: An
     missing = [n for n in outs if n not in letters]
     if missing:
         raise ShapeError(f"{site}: `to` names {', '.join(missing)}, which no operand has.")
-    return jnp.einsum(",".join(specs) + "->" + "".join(letters[n] for n in outs), *operands)
+    return _named_result(jnp.einsum(",".join(specs) + "->" + "".join(letters[n] for n in outs), *operands), outs, env)
+
+
+def _named_result(out: Any, names: list[str], env: Any) -> Any:
+    """Remember the axis names of an ``einsum`` / ``rearrange`` result, as if it were annotated."""
+    env.locals[id(out)] = (out, names)
+    return out
+
+
+def _given_names(x: Any, var: Any, env: Any) -> list[str] | None:
+    """Names the converter read off the expression (``to=`` of a nested einsum), or that ``x`` was made with."""
+    if isinstance(var, tuple):
+        return list(var)
+    hit = env.locals.get(id(x)) if env is not None else None
+    return hit[1] if hit is not None and hit[0] is x else None
 
 
 def _names(items: Any, env: Any) -> list[str]:
@@ -264,6 +283,10 @@ def _names(items: Any, env: Any) -> list[str]:
 def _operand_names(x: Any, var: str | None, env: Any, fn: Any, site: str) -> list[str]:
     """The axis names of one operand: from its annotation, else from its sizes."""
     shape = tuple(jnp.shape(x))
+    names = _given_names(x, var, env)
+    if names is not None and len(names) == len(shape):
+        return names
+    var = var if isinstance(var, str) else None
     spec = None
     if var is not None:
         head, _, field = var.partition(".")  # `self.w`: the field's annotation
@@ -350,4 +373,4 @@ def rearrange_(x: Any, var: str | None, to: Any, site: str) -> Any:
         )
     y = jnp.reshape(x, tuple(size[n] for n in fine))
     y = jnp.transpose(y, tuple(fine.index(n) for n in target))
-    return jnp.reshape(y, tuple(size[n] for n in tgt))
+    return _named_result(jnp.reshape(y, tuple(size[n] for n in tgt)), tgt, env)

@@ -5,6 +5,7 @@ and ``reversed_`` stand in for the builtins so that a loop over them can be
 staged; ``rows`` and ``stack`` are the public helpers for pytrees.
 """
 
+import warnings
 from typing import Any, Callable
 
 import jax
@@ -233,6 +234,7 @@ def for_(
         except Exception as e:  # e.g. the loop index is used as a Python int
             first = (str(e).strip().splitlines() or [""])[0]
             LOG[site] = f"for -> unrolled ({type(e).__name__}: {first[:120]})"
+        _warn_unrolled(site, it.n)
     elif keys.tracing() and site not in LOG:
         LOG[site] = f"for -> unrolled (iterating over a {type(iterable).__name__})"
     for i, item in enumerate(iterable):
@@ -244,6 +246,22 @@ def for_(
         if brk_i is not None and state[brk_i] is True:
             break  # a real `break`; a traced flag masks the remaining iterations instead
     return state
+
+
+#: Loops longer than this that cannot be staged are unrolled with a warning (once per site).
+UNROLL_QUIETLY = 16
+_WARNED: set[str] = set()
+
+
+def _warn_unrolled(site: str, n: Any) -> None:
+    if n > UNROLL_QUIETLY and site not in _WARNED:
+        _WARNED.add(site)
+        why = LOG[site].removeprefix("for -> unrolled (").removesuffix(")")
+        warnings.warn(
+            f"the `for` loop at {site} is unrolled into {n} copies of its body: {why}. "
+            f"Tracing and compiling grow with the length (f.flow lists how each loop ran).",
+            stacklevel=2,
+        )
 
 
 def _lower_for(

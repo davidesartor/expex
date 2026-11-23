@@ -270,7 +270,9 @@ def _prove_case(
             f,
             fixed,
             abstract,
-            lambda: trace.Sizes(export.SymbolicScope(constraints), None, var_rank, statics),
+            lambda: trace.Sizes(
+                export.SymbolicScope(constraints), None, var_rank, statics, multiples=trace.multiples(f, statics)
+            ),
         )
     except Unsynthesizable as u:
         return Report(

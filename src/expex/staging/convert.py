@@ -218,7 +218,7 @@ class _Exprs(ast.NodeTransformer):
             if to is not None and len(node.keywords) == 1:
                 self.named += 1
                 ops = [self.visit(a) for a in node.args]
-                variables: list[ast.expr] = [ast.Constant(_operand_name(a)) for a in node.args]
+                variables: list[ast.expr] = [_constant(_operand_name(a) or self._names(a)) for a in node.args]
                 if which == "rearrange" and len(ops) == 1:
                     call = _call("rearrange_", ops[0], variables[0], to, self.site(node))
                 else:
@@ -257,24 +257,44 @@ class _Exprs(ast.NodeTransformer):
             node.func = ast.copy_location(_flow_attr(node.func.id + "_"), node.func)
         return node
 
+    def _names(self, e: ast.expr | None) -> tuple[str, ...] | None:
+        """The axis names of an expression, when its syntax says: an einsum or rearrange's ``to``,
+        also through ``jnp.where`` and arithmetic (``jnp.where(m, expex.einsum(..., to=X), -inf)``)."""
+        operands: list[ast.expr] = []
+        if isinstance(e, ast.Call):
+            to = next((k.value for k in e.keywords if k.arg == "to"), None) if self._by_name(e.func) else None
+            if isinstance(e.func, ast.Attribute) and e.func.attr in ("einsum_", "rearrange_") and len(e.args) > 2:
+                to = e.args[2]  # already rewritten
+            if to is not None:
+                elts = to.elts if isinstance(to, (ast.Tuple, ast.List)) else [to]
+                names = tuple(x.id for x in elts if isinstance(x, ast.Name))
+                return names if len(names) == len(elts) else None
+            if isinstance(e.func, ast.Attribute) and e.func.attr == "where":
+                operands = e.args[1:]
+        elif isinstance(e, ast.BinOp):
+            operands = [e.left, e.right]
+        elif isinstance(e, ast.UnaryOp):
+            operands = [e.operand]
+        return next((n for o in operands if (n := self._names(o))), None)
+
     def _named(self, node: ast.Call) -> ast.expr:
         """``x.sum(T)`` -> ``named_(x, "sum", (T,), {}, site, "x")``."""
         self.named += 1
         if isinstance(node.func, ast.Attribute) and node.func.attr in axes.AXIS_METHODS:
             target: ast.expr = node.func.value
             attr: ast.expr = ast.Constant(node.func.attr)
-            var = target.id if isinstance(target, ast.Name) else None
+            var = target.id if isinstance(target, ast.Name) else self._names(target)
         else:
             target, attr = node.func, ast.Constant(None)
             first = node.args[0] if node.args else None
-            var = first.id if isinstance(first, ast.Name) else None
+            var = first.id if isinstance(first, ast.Name) else self._names(first)
         kwargs = ast.Dict(
             keys=[ast.Constant(k.arg) for k in node.keywords],
             values=[k.value for k in node.keywords],
         )
         args = ast.Tuple(elts=list(node.args), ctx=ast.Load())
         return ast.copy_location(
-            _call("named_", target, attr, args, kwargs, self.site(node), ast.Constant(var)), node
+            _call("named_", target, attr, args, kwargs, self.site(node), _constant(var)), node
         )
 
     def visit_Compare(self, node: ast.Compare) -> Any:
@@ -408,12 +428,42 @@ class _Converter:
                 seq = getattr(m, fld, None)
                 if not isinstance(seq, list):
                     continue
-                for i, s in enumerate(seq):
+                out: list[ast.stmt] = []
+                for s in seq:
                     new = self._inplace(s)
-                    if new is not None:
-                        seq[i] = _locate(new, s)
+                    out += [s] if new is None else [_locate(n, s) for n in new]
+                seq[:] = out
 
-    def _inplace(self, s: ast.stmt) -> ast.stmt | None:
+    def _inplace(self, s: ast.stmt) -> list[ast.stmt] | None:
+        if isinstance(s, ast.Assign) and (len(s.targets) > 1 or isinstance(s.targets[0], (ast.Tuple, ast.List))):
+            # `a[i] = b[j] = v`, `a[i], b[j] = v, w`: the value once, then each target in order
+            parts = [n for t in s.targets for n in ast.walk(t)]
+            if not any(self._updatable(n) for n in parts) or any(isinstance(n, ast.Starred) for n in parts):
+                return None
+            value = self.fresh("value")
+            out: list[ast.stmt] = [ast.Assign(targets=[_name(value, store=True)], value=s.value)]
+            for t in s.targets:
+                out += self._assign(t, value)
+            return out
+        new = self._update(s)
+        return None if new is None else [new]
+
+    def _updatable(self, t: ast.AST) -> bool:
+        """``x[i]`` or ``x.a`` of a local variable ``x``."""
+        return isinstance(t, (ast.Subscript, ast.Attribute)) and isinstance(t.value, ast.Name) and t.value.id in self.locals
+
+    def _assign(self, target: ast.expr, value: str) -> list[ast.stmt]:
+        """``target = value``, with tuples unpacked one element at a time and in-place updates rewritten."""
+        if isinstance(target, (ast.Tuple, ast.List)):
+            items = [self.fresh("item") for _ in target.elts]
+            out: list[ast.stmt] = [ast.Assign(targets=[_tuple(items, store=True)], value=_name(value))]
+            for t, item in zip(target.elts, items):
+                out += self._assign(t, item)
+            return out
+        plain = ast.Assign(targets=[target], value=_name(value))
+        return [self._update(plain) or plain]
+
+    def _update(self, s: ast.stmt) -> ast.stmt | None:
         if isinstance(s, ast.Assert):
             msg = _thunk(s.msg) if s.msg is not None else ast.Constant(None)
             return ast.Expr(value=_call("assert_", s.test, msg, self.site(s)))
@@ -781,6 +831,11 @@ class _Converter:
 
 
 # ----------------------------------------------------------------- top level
+
+
+def _constant(v: str | tuple[str, ...] | None) -> ast.expr:
+    """A name, or a tuple of names, as a literal."""
+    return ast.Tuple(elts=[ast.Constant(x) for x in v], ctx=ast.Load()) if isinstance(v, tuple) else ast.Constant(v)
 
 
 def _operand_name(a: ast.expr) -> str | None:

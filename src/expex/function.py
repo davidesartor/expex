@@ -181,8 +181,6 @@ class Fn(Generic[P, R]):
         prove: bool = True,
         convert: bool = True,
         examples: dict[str, Any] | None = None,
-        where: str | list[str] | tuple[str, ...] = (),
-        defs: dict[str, str] | None = None,
     ):
         functools.update_wrapper(self, raw)
         self.raw = raw
@@ -212,12 +210,9 @@ class Fn(Generic[P, R]):
         # annotations would fail on size arithmetic such as f32[n] or f32[T + 1]
         self.__signature__ = self._sig
 
-        defs = {**getattr(self._impl, "__expex_defs__", {}), **(defs or {})}  # H = heads in the body
-        self.defs = {k: Expr(v) for k, v in defs.items()}
-        if isinstance(where, str):
-            where = [where]
-        self.where = [Expr(w, constraint=True) for w in where]
-        #: Leading `assert`s on sizes in the body: constraints like `where`.
+        #: Sizes defined in the body: ``H = heads``.
+        self.defs = {k: Expr(v) for k, v in getattr(self._impl, "__expex_defs__", {}).items()}
+        #: Leading `assert`s on sizes in the body: constraints.
         self._groups: list[list[Expr]] = []
         for group in getattr(self._impl, "__expex_where__", ()):
             try:
@@ -227,7 +222,7 @@ class Fn(Generic[P, R]):
         #: Which leading asserts are constraints (the body skips those).
         self._lifted = {i for i, g in enumerate(self._groups) if g}
         self._asserted = [e for g in self._groups for e in g]
-        self.where += self._asserted
+        self.where = list(self._asserted)
 
         derived = self.defs
 
@@ -282,14 +277,6 @@ class Fn(Generic[P, R]):
         for name in self._sig.parameters:
             parse(anns.get(name, inspect.Parameter.empty)).names(declared)
         parse(anns.get("return", inspect.Parameter.empty)).names(declared)
-        type_params = {t.__name__ for t in getattr(raw, "__type_params__", ())}
-        for k in self.defs:
-            # a size may also be declared as a type parameter and used only in the body
-            if k not in declared and k not in type_params and not self._pending:
-                raise TypeError(
-                    f"{self.name}: `{k}=...` was given to @fn, but `{k}` does not appear "
-                    f"in the signature."
-                )
 
         self._owner: type | None = None  # set by __set_name__ when defined in a class
         self.static_names = [n for n, p in self.params.items() if isinstance(p.spec, StaticSpec)]
@@ -326,7 +313,7 @@ class Fn(Generic[P, R]):
         owner = getattr(self, "_owner_cls", None)
         fields = set(_struct_fields(owner) or ()) if owner is not None else set()
         self.field_refs = sorted((used - dims - set(self.static_names)) & fields)
-        known = declared | set(self.static_names) | set(self.field_refs)
+        known = declared | set(self.defs) | set(self.static_names) | set(self.field_refs)
         first = next(iter(self.params), None)
         pending_owner = first in ("self", "cls") and not getattr(self, "_resolved", False)
         if self._asserted and not pending_owner:
@@ -340,7 +327,7 @@ class Fn(Generic[P, R]):
             used = set().union(*(e.names for e in [*self.defs.values(), *self.where]))
             if used:
                 self.static_refs = [n for n in self.static_names if n in used or n in self.static_refs]
-        unknown = used - declared - set(self.static_names) - set(self.field_refs)
+        unknown = used - declared - set(self.defs) - set(self.static_names) - set(self.field_refs)
         maybe_method = self._owner is None and first in ("self", "cls")
         if unknown and not (maybe_method and not getattr(self, "_resolved", False)):
             raise TypeError(
@@ -751,7 +738,7 @@ class Fn(Generic[P, R]):
 
 
 class BoundFn(Generic[P, R]):
-    """An ``@fn`` method bound to an instance (or a compiled one: ``fn`` is then its ``jax.jit``)."""
+    """An ``@fn`` method bound to an instance."""
 
     __slots__ = ("fn", "obj")
 
@@ -782,14 +769,30 @@ class BoundFn(Generic[P, R]):
         return f"<bound {self.fn!r} of {type(self.obj).__name__}>"
 
 
+class BoundCompiled(functools.partial):  # type: ignore[type-arg]
+    """A compiled method bound to an instance: called as directly as ``jax.jit``'s own, ``.vectorize`` bound too."""
+
+    @property
+    def __func__(self) -> Any:
+        return self.func
+
+    @property
+    def __self__(self) -> Any:
+        return self.args[0]
+
+    def vectorize(self, *args: Any, **kwargs: Any) -> Any:
+        __tracebackhide__ = True
+        return getattr(self.func, "vectorize")(self.args[0], *args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.func, name)
+
+
 def unwrap(f: Any) -> Any:
     """The ``Fn`` (or ``BoundFn``) under wrappers such as ``jax.jit``, else ``f`` itself."""
-    if isinstance(f, types.MethodType):  # e.g. a jitted method, bound to an instance
+    if isinstance(f, (types.MethodType, BoundCompiled)):  # e.g. a jitted method, bound to an instance
         inner = unwrap(f.__func__)
         return inner.__get__(f.__self__) if isinstance(inner, Fn) else f
-    if isinstance(f, BoundFn) and not isinstance(f.fn, Fn):  # a compiled method
-        inner = unwrap(f.fn)
-        return inner.__get__(f.obj) if isinstance(inner, Fn) else f
     g = f
     for _ in range(16):
         if isinstance(g, (Fn, BoundFn)):
