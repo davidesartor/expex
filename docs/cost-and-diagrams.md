@@ -92,15 +92,19 @@ expex.diagram(Stack.__call__, depth=2)             # every call opened one level
 expex.diagram(Stack.__call__, B=64, blocks=24)     # sizes and list lengths, as for expex.cost
 ```
 
-For the transformer in `examples/`, `expex.diagram(Transformer.__call__)` draws
-`tokens` at the top, then `index`, a stack of cards `Block × L`, `LayerNorm`,
-`matmul` and `return`, with `i32[T]`, `f32[T, D]` and `f32[T, Vocab]` written
-under the boxes where the shape changes. A header names the function and its
-sizes (`T · D · Vocab · L = len(blocks)`), and a "Component internals" column
-on the right draws each call one level down as a stack of its steps: `Block` is
-`LayerNorm → Attention → residual + → LayerNorm → MLP → residual +`. With
-`depth=2` the block is a grey panel titled `Block × L` with those steps inside,
-the residual connections drawn as `+` joins. `print(d)` gives the outline:
+For the transformer in `examples/`, `expex.diagram(Transformer.__call__, depth=2)`
+draws the flow from left to right: the input `tokens` (`T (i32)`), `index`,
+then a rounded container titled `Block × L` holding `LayerNorm → Attention → ⊕
+→ LayerNorm → MLP → ⊕`, then the final `LayerNorm`, `matmul` and `return`
+(`T × Vocab`). Each box has its name in bold and, in grey, what it produces
+(`per element · T × D` for a call made with `.vectorize`). A header names the
+function and its sizes (`T · D · Vocab · L = len(blocks)`). `print(d)` gives
+an outline:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/transformer_dark.png">
+  <img src="images/transformer.png" alt="The transformer drawn at depth 2">
+</picture>
 
 ```
 Transformer.__call__
@@ -112,41 +116,40 @@ Transformer.__call__
   LayerNorm.__call__ · vectorized      f32[D] → f32[D]
 ```
 
-- Each call to an `@expex.fn` is a rounded box. `depth=2`, or a click on the page,
-  opens it into a panel holding the calls inside. A loop over identical layers
-  is `Name × L` (a stack of cards while closed). The selective scan in
-  `examples/mamba/` is a panel `loop × T`. A traced `if` or `while` is a dashed
-  panel too.
+- Each call to an `@expex.fn` is a rounded box. `depth=2`, or a click on the
+  page, opens it into a container holding the calls inside. A loop over
+  identical layers is `Name × L`. While closed, it is drawn as a stack of
+  layers. The selective scan in `examples/mamba/` is a container `loop × T`.
+  A traced `if` or `while` is a dashed container too.
 - Between calls, only operations that say what the model does are drawn
-  (`matmul`, `index`, `sum`, `conv`, ...), plus `+` where two computed values
-  of one shape are added, which is a residual or skip connection. Reshapes and
-  other elementwise arithmetic are skipped, with arrows drawn straight across
-  them.
-- Shapes are written in blue under the box that produces them, where they
-  change. Where an array is sliced on its way into a call, the type it enters
-  with is written by the arrow.
-- Colours follow roles. Each input is a stream with its own colour, so the
-  calls it reaches are blue, orange and so on. Norms are yellow, primitive
-  operations white, and inputs and outputs green. An extra input that feeds
-  several boxes is a side input (conditioning, say). It is purple, and so are
-  its arrows, which are dashed.
-- The layout is computed in Python, so it needs no browser and no CDN. Calls
-  are placed in rows by dependency depth, with parallel branches side by side.
-  Text is sized from Inter's metrics. `d.save("x.png")` rasterises the figure
-  at 2x with Playwright or a headless Chromium if one is installed, and
-  otherwise with matplotlib.
+  (`matmul`, `index`, `sum`, `conv`, ...). So is a `⊕` where two computed
+  values of one shape are added. When that is a residual, its skip is a thin
+  line in the stream's colour that loops over the row into the `⊕`. Reshapes
+  and other elementwise arithmetic are skipped, with arrows drawn straight
+  across them.
+- Where an array is sliced on its way into a call, the shape it enters with is
+  written by the arrow.
+- Each input is a stream with its own colour (blue, violet, green, ...), and
+  the boxes it reaches take it. A box reached by several streams is grey. An
+  extra input that feeds several boxes is a side input (conditioning, say). It
+  is orange, and its arrows are dashed.
+- The layout is computed in Python, so it needs no browser and no CDN. The SVG
+  carries a light and a dark palette and follows the viewer's colour scheme.
+  `d.save("x.png")` rasterises the figure at 2x with Playwright or a headless
+  Chromium if one is installed, and otherwise with matplotlib. Pass
+  `theme="dark"` for a dark PNG.
 - The page embeds the figure for each depth, and for the views a click
   reaches. You can pan and zoom it. A click on a call opens it in place, and a
-  click on a panel's title folds it. Hovering shows the signature, types and
-  file and line, and a click also shows the source. It follows the system's
-  light or dark mode, or a toggle.
+  click on a container's title folds it. Hovering shows the signature, types
+  and file and line, and a click also shows the source. It follows the
+  system's light or dark mode, or a toggle.
 
 
 ### Where the time goes, and where shapes fail
 
 `expex.diagram.timed` draws the same diagram from a run on real arguments. It
 compiles the function with `jax.jit`, runs it under `jax.profiler`, and colours
-each call and loop by its share of the measured time. Shape errors get a
+each call and loop by its share of the measured time (amber, darker for more). Shape errors get a
 diagram too. A `ShapeError` raised inside a typed call carries `e.diagram`,
 which is the trace up to the call that failed:
 
@@ -184,6 +187,15 @@ Probe.__call__   ShapeError: traced up to the failing call
   Stack.__call__(): argument `x` does not match its annotation.
   ...
 ```
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/transformer_timed_dark.png">
+  <img src="images/transformer_timed.png" alt="The transformer timed: each call coloured by its share of the time">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/transformer_error_dark.png">
+  <img src="images/transformer_error.png" alt="The transformer whose MLP is called without .vectorize: the failing call and the path into it in red">
+</picture>
 
 - The profiler names XLA instructions, not Python calls. expex looks each one
   up in the compiled program, where it carries the scopes of the calls it came

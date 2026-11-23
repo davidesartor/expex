@@ -11,7 +11,7 @@ nested in, and the calls become nodes::
      ('b1', 'call', 'Block.__call__\nf32[T, D] → f32[T, D]', 0), ...]
     >>> d.boxes
     {'b0': '× L'}
-    >>> d.save("transformer.svg")               # the figure; .png and .html (interactive) too
+    >>> d.save("transformer.svg")               # the figure; .png (light or dark) and .html too
     >>> print(d)                                # an outline of the calls
 
 - A call deeper than ``depth`` is one node, labelled with its input and output
@@ -33,15 +33,16 @@ nested in, and the calls become nodes::
 Drawing (``_Scene``, ``_Figure``): the layout and the SVG are computed here, in
 Python, so a figure needs no browser and the page no CDN (an earlier version
 drew Mermaid text with Mermaid loaded from a CDN, which offline pages and
-sandboxes cannot reach). The main flow is laid out in rows by dependency
-depth, container by container (see ``_Scene``); shapes are written under the
-boxes that produce them; colours follow roles (a colour per input stream,
-norms, primitive operations, inputs and outputs, side inputs). A column on the
-right draws each closed call one level down as a stack of its steps. The
-figure is a display list (``_Canvas``) written as SVG, or drawn with
-matplotlib when a PNG is wanted and no browser is installed. The page
-(``_diagram.html``) embeds an SVG per view: each depth, and the views clicks
-reach from them, up to a budget (a click past it shows the nearest depth).
+sandboxes cannot reach). The style is a paper's architecture figure: the flow
+runs left to right in columns by dependency depth, each input a stream with its
+own colour (pale boxes, inner ones paler), a box's name in bold over what it
+produces in grey, residuals as ``⊕`` with the skip looping over the row, a loop
+over layers as a ``Block × L`` container, side inputs as dashed orange lines.
+The figure is a display list (``_Canvas``) written as SVG with a light and a dark
+palette in CSS variables, or drawn with matplotlib when a PNG is wanted and no
+browser is installed. The page (``_diagram.html``) embeds an SVG per view: each
+depth, and the views clicks reach from them, up to a budget (a click past it
+shows the nearest depth).
 
 Measured time, ``diagram.timed(f, *args)``: the same trace, but on real
 arguments under ``jax.jit``, compiled and run under ``jax.profiler``. The
@@ -569,36 +570,50 @@ def _outline(m: dict[str, Any]) -> str:
 
 # ------------------------------------------------------------------ drawing: colours, fonts, display list
 
-#: Colour tokens, light then dark. The SVG uses them through CSS variables (``--xd-<name>``) whose
-#: fallbacks are the light colours, so a saved ``.svg`` is a light paper figure and the page can
-#: switch to dark by setting the variables.
-COLORS = {
-    "bg": ("#ffffff", "#15171c"), "fg": ("#1a1a1a", "#e6e7ea"), "muted": ("#555555", "#9da3ad"),
-    "edge": ("#333333", "#c3c7ce"), "shape": ("#0057b7", "#7cb7ff"), "rule": ("#bbbbbb", "#3a3f48"),
-    "s0": ("#cfe8ff", "#1d3a5a"), "s1": ("#ffe0cc", "#5a3621"), "s2": ("#d2f0ea", "#1b4841"),
-    "s3": ("#fbd8e6", "#552639"), "s4": ("#ecedc8", "#45481f"), "mix": ("#eceff3", "#2b3038"),
-    "norm": ("#fff6cc", "#4a421c"), "op": ("#ffffff", "#262a31"), "io": ("#d6f5d6", "#1d4a29"),
-    "side": ("#e5d4ff", "#3b2c5e"), "sideline": ("#8850cc", "#b48cf2"),
-    "panel": ("#f2f2f2", "#1d2026"), "panel2": ("#fafafa", "#23272e"), "frame": ("#666666", "#5d636d"),
-    "h0": ("#f5f5f5", "#252830"), "h1": ("#fff0d9", "#3b2d1a"), "h2": ("#ffd7a6", "#5b3915"),
-    "h3": ("#ffae66", "#8a4912"), "h4": ("#ff7a1a", "#c4590b"),
-    "p0": ("#f5f5f5", "#1f2228"), "p1": ("#fff9f1", "#28231d"), "p2": ("#fff3e5", "#30261b"),
-    "p3": ("#ffecd6", "#3a2918"), "p4": ("#ffe3c4", "#462c15"),
-    "err": ("#ffd9d9", "#5a1c1c"), "errline": ("#c62828", "#ff6b6b"),
-}  # fmt: skip
+
+def _mix(color: str, p: float, base: str) -> str:
+    """``color`` at ``p`` over ``base`` (TikZ's ``color!p``), as hex."""
+    a, b = (tuple(int(c[i : i + 2], 16) for i in (1, 3, 5)) for c in (color, base))
+    return "#" + "".join(f"{round(x * p + y * (1 - p)):02X}" for x, y in zip(a, b))
+
+
+_INK = {"bg": ("#FFFFFF", "#151519"), "ink": ("#16161A", "#ECECEF"), "ink2": ("#55555C", "#A4A4AC"),
+        "axis": ("#B8B8BF", "#4C4C55"), "wash": ("#F2F2F4", "#232329"), "panel2": ("#FAFAFB", "#1A1A1F")}  # fmt: skip
+#: The streams' hues (light; dark mode lightens them): blue, violet, green, magenta; muted for a box
+#: several streams reach, orange for side inputs (conditioning), red for errors, amber for time.
+_HUES = {"s0": "#2A78D6", "s1": "#6250D6", "s2": "#1BAF7A", "s3": "#C2418F", "mix": "#909098",
+         "side": "#EB6834", "err": "#D43A3A"}  # fmt: skip
+_AMBER = "#F29D0C"
+
+
+def _palette() -> dict[str, tuple[str, str]]:
+    """Colour tokens, light then dark: each hue as a stroke, a box fill (12%) and a chip fill (6%)."""
+    out = dict(_INK)
+    white, dark = _INK["bg"]
+    for k, hue in _HUES.items():
+        lit = _mix(hue, 0.78, "#FFFFFF")  # lighter on a dark background
+        out[k] = (hue, lit)
+        out[k + "f"] = (_mix(hue, 0.12, white), _mix(lit, 0.2, dark))
+        out[k + "c"] = (_mix(hue, 0.06, white), _mix(lit, 0.12, dark))
+    out["mixf"], out["mixc"] = out["wash"], (white, _mix("#FFFFFF", 0.04, dark))
+    for k, (p, q) in enumerate([(0.0, 0.0), (0.12, 0.16), (0.28, 0.3), (0.5, 0.48), (0.78, 0.7)]):
+        out[f"h{k}"] = (_mix(_AMBER, p, white), _mix(_AMBER, q, dark))  # boxes by their share of the time
+        out[f"p{k}"] = (_mix(_AMBER, p / 8, white), _mix(_AMBER, q / 6, dark))  # panels, fainter
+    return out
+
+
+COLORS = _palette()
 _SANS = "Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif"
 _MONO = "'JetBrains Mono', 'DejaVu Sans Mono', Menlo, Consolas, monospace"
 #: Text styles: size (px), weight, italic, monospace, colour token.
 FONTS = {
-    "tn": (12, 400, False, False, "fg"), "tb": (12, 600, False, False, "fg"),
-    "ts": (10, 400, True, False, "muted"), "tsh": (10.5, 400, False, True, "shape"),
-    "tp": (13, 600, False, False, "fg"), "tpm": (12, 400, False, False, "muted"),
-    "th": (21, 700, False, False, "fg"), "tl": (12, 400, False, False, "muted"),
-    "tc": (16, 700, False, False, "fg"), "tst": (12.5, 600, False, False, "fg"),
-    "tsg": (10, 400, False, True, "muted"), "tstep": (11, 400, False, False, "fg"),
-    "tnote": (11, 400, True, False, "muted"), "te": (12, 600, False, False, "errline"),
-    "tem": (10.5, 400, False, True, "errline"), "tplus": (15, 500, False, False, "fg"),
-    "tred": (12, 400, False, False, "errline"), "tx": (10.5, 600, False, False, "fg"),
+    "tb": (13, 600, False, False, "ink"), "ts": (11.5, 400, False, False, "ink2"),
+    "ti": (13.5, 400, True, False, "ink"), "tsh": (11.5, 400, False, False, "ink2"),
+    "tp": (12, 600, False, False, "ink"), "tpm": (12, 400, False, False, "ink2"),
+    "th": (13, 600, False, False, "ink"), "tl": (12, 400, False, False, "ink2"),
+    "te": (12, 600, False, False, "err"), "tem": (10.5, 400, False, False, "err"),
+    "tred": (12, 400, False, False, "err"), "tlab": (10, 400, False, False, "ink2"),
+    "tplus": (12, 400, False, False, "ink"),
 }  # fmt: skip
 # Inter's advance widths (1/100 em) for ' ' to '~', regular and semi-bold: boxes are sized to their text.
 _W = [int(w) / 100 for w in (
@@ -609,7 +624,7 @@ _WB = [int(w) / 100 for w in (
     "25 32 52 64 64 100 66 32 37 37 54 67 31 46 31 37 65 42 62 63 66 62 63 57 64 63 31 32 67 67 67 54 99 72 65 "
     "73 72 60 58 74 74 27 58 70 56 92 75 76 64 77 65 64 66 73 72 102 72 71 65 37 37 37 48 46 35 57 62 58 62 59 38 "
     "62 61 26 26 56 26 89 61 60 62 62 39 54 35 61 58 83 56 58 56 45 35 45 67").split()]
-_WIDE = {"→": 0.96, "×": 0.67, "·": 0.32, "✗": 0.88, "‖": 0.5, "…": 0.7, "≤": 0.67, "≥": 0.67, "µ": 0.6, "⋯": 0.9}
+_WIDE = {"→": 0.96, "×": 0.67, "·": 0.32, "✗": 0.88, "‖": 0.5, "…": 0.7, "≤": 0.67, "≥": 0.67, "µ": 0.6, "⊕": 0.9}
 
 
 def _tw(text: str, cls: str) -> float:
@@ -627,24 +642,24 @@ Run = tuple[str, str]  # (text, style)
 class _Canvas:
     """A display list: rectangles, text, polylines and arrow heads in one coordinate system.
 
-    ``svg()`` writes it as SVG; ``_png_matplotlib`` draws the same list with matplotlib.
+    ``_svg`` writes it as SVG; ``_png_matplotlib`` draws the same list with matplotlib.
     """
 
     def __init__(self) -> None:
         self.ops: list[tuple[Any, ...]] = []
 
-    def rect(self, x: float, y: float, w: float, h: float, fill: str, stroke: str | None = "edge",
-             sw: float = 1.1, r: float = 6.0, dash: str | None = None) -> None:  # fmt: skip
+    def rect(self, x: float, y: float, w: float, h: float, fill: str, stroke: str | None = "ink2",
+             sw: float = 1.0, r: float = 3.0, dash: str | None = None) -> None:  # fmt: skip
         self.ops.append(("rect", x, y, w, h, fill, stroke, sw, r, dash))
 
     def text(self, x: float, y: float, runs: list[Run], anchor: str = "middle", halo: str | None = None) -> None:
         self.ops.append(("text", x, y, runs, anchor, halo))
 
-    def line(self, pts: list[tuple[float, float]], stroke: str = "edge", sw: float = 1.2, dash: str | None = None,
-             radius: float = 5.0) -> None:  # fmt: skip
+    def line(self, pts: list[tuple[float, float]], stroke: str = "ink2", sw: float = 1.0, dash: str | None = None,
+             radius: float = 4.0) -> None:  # fmt: skip
         self.ops.append(("line", pts, stroke, sw, dash, radius))
 
-    def head(self, x: float, y: float, dx: float, dy: float, color: str = "edge", size: float = 7.5) -> None:
+    def head(self, x: float, y: float, dx: float, dy: float, color: str = "ink2", size: float = 5.0) -> None:
         """A filled arrow head with its tip at (x, y), pointing along (dx, dy)."""
         self.ops.append(("head", x, y, dx, dy, color, size))
 
@@ -676,17 +691,27 @@ def _rounded(pts: list[tuple[float, float]], r: float) -> str:
 
 
 def _css() -> str:
-    """The SVG's style sheet: colour classes over the ``--xd-*`` variables, and the text styles."""
-    out = [f".f-{k}{{fill:var(--xd-{k},{v[0]})}}.k-{k}{{stroke:var(--xd-{k},{v[0]})}}" for k, v in COLORS.items()]
+    """The SVG's style sheet: the colour variables for light and dark, colour classes over them, text styles.
+
+    Dark follows ``prefers-color-scheme``; ``data-theme="light"`` or ``"dark"`` on the SVG or on an
+    element around it (the page's ``<html>``) overrides it.
+    """
+    light = ";".join(f"--xd-{k}:{v[0]}" for k, v in COLORS.items())
+    dark = ";".join(f"--xd-{k}:{v[1]}" for k, v in COLORS.items())
+    out = [f"svg.expex-diagram{{{light}}}",
+           f"@media (prefers-color-scheme: dark){{svg.expex-diagram{{{dark}}}}}",
+           f"[data-theme=light] svg.expex-diagram,svg.expex-diagram[data-theme=light]{{{light}}}",
+           f"[data-theme=dark] svg.expex-diagram,svg.expex-diagram[data-theme=dark]{{{dark}}}"]  # fmt: skip
+    out += [f".f-{k}{{fill:var(--xd-{k})}}.k-{k}{{stroke:var(--xd-{k})}}" for k in COLORS]
     for cls, (size, weight, italic, mono, color) in FONTS.items():
         out.append(f".{cls}{{font-family:{_MONO if mono else _SANS};font-size:{size}px;font-weight:{weight};"
-                   f"{'font-style:italic;' if italic else ''}fill:var(--xd-{color},{COLORS[color][0]})}}")  # fmt: skip
-    out.append("text{white-space:pre}.halo{paint-order:stroke;stroke-width:5px;stroke-linejoin:round}")
+                   f"{'font-style:italic;' if italic else ''}fill:var(--xd-{color})}}")  # fmt: skip
+    out.append("text{white-space:pre}.halo{paint-order:stroke;stroke-width:4px;stroke-linejoin:round}")
     return "".join(out)
 
 
 def _svg(c: _Canvas, w: float, h: float) -> str:
-    """The display list as a standalone SVG document."""
+    """The display list as a standalone SVG document (light or dark with the viewer's colour scheme)."""
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {_num(w)} {_num(h)}" width="{_num(w)}" '
            f'height="{_num(h)}" class="expex-diagram"><style>{_css()}</style>',
            f'<rect class="f-bg" x="0" y="0" width="{_num(w)}" height="{_num(h)}"/>']  # fmt: skip
@@ -709,13 +734,7 @@ def _svg(c: _Canvas, w: float, h: float) -> str:
             extra = f' stroke-dasharray="{dash}"' if dash else ""
             out.append(f'<path class="k-{stroke}" fill="none" stroke-width="{sw}"{extra} d="{_rounded(pts, radius)}"/>')
         elif kind == "head":
-            _, x, y, dx, dy, color, size = op
-            n = math.hypot(dx, dy) or 1.0
-            ux, uy = dx / n, dy / n
-            bx, by = x - ux * size, y - uy * size
-            px, py = -uy * size * 0.42, ux * size * 0.42
-            pts = f"{_num(x)},{_num(y)} {_num(bx + px)},{_num(by + py)} {_num(bx - px)},{_num(by - py)}"
-            out.append(f'<polygon class="f-{color}" points="{pts}"/>')
+            out.append(f'<polygon class="f-{op[5]}" points="{" ".join(f"{_num(x)},{_num(y)}" for x, y in _head(op))}"/>')
         elif kind == "g":
             attrs = "".join(f' {k.rstrip("_").replace("_", "-")}="{html.escape(str(v))}"' for k, v in op[1].items())
             out.append(f"<g{attrs}>")
@@ -723,6 +742,29 @@ def _svg(c: _Canvas, w: float, h: float) -> str:
             out.append("</g>")
     out.append("</svg>")
     return "\n".join(out)
+
+
+def _head(op: tuple[Any, ...]) -> list[tuple[float, float]]:
+    """The points of an arrow head: a small stealth shape, tip first."""
+    _, x, y, dx, dy, _, size = op
+    n = math.hypot(dx, dy) or 1.0
+    ux, uy = dx / n, dy / n
+    bx, by = x - ux * size, y - uy * size
+    px, py = -uy * size * 0.45, ux * size * 0.45
+    ix, iy = x - ux * size * 0.72, y - uy * size * 0.72  # the notch
+    return [(x, y), (bx + px, by + py), (ix, iy), (bx - px, by - py)]
+
+
+_DTYPE = re.compile(r"\b(f16|bf16|f32|f64|i8|i16|i32|i64|u8|u32|bool|c64|c128)(?:\[([^\]]*)\])?")
+
+
+def _shape(t: str) -> str:
+    """``T × D`` for ``f32[T, D]``; other dtypes are named (``T (i32)``), a 0-d array is ``scalar``."""
+    def one(m: re.Match[str]) -> str:
+        dims = " × ".join(d.strip() for d in m.group(2).split(",")) if m.group(2) else "scalar"
+        return dims if m.group(1) == "f32" else f"{dims} ({m.group(1)})"
+
+    return _DTYPE.sub(one, t)
 
 
 # ------------------------------------------------------------------ drawing: the scene
@@ -753,13 +795,15 @@ class _Scene:
     inner containers, each a rectangle by then) are placed in layers by
     dependency depth, ordered to cross few edges (barycentre sweeps), and given
     x positions that keep edges straight (an order-preserving least-squares fit).
-    An edge that crosses a container's border goes through a port on its top
-    (or bottom) edge, which takes part in the container's layout like a node;
-    an edge that skips layers goes through one dummy per layer, shared by all
-    edges from the same value, so fan-out draws as a tree.
+    An edge that crosses a container's border goes through a port on its
+    leading (or trailing) edge, which takes part in the container's layout like
+    a node; an edge that skips layers goes through one dummy per layer, shared
+    by all edges from the same value, so fan-out draws as a tree, except a
+    residual into a ``+``, which loops over the row. The layout's x runs across
+    the flow and y along it; it is drawn transposed, left to right.
     """
 
-    PAD, TITLE, GAP, LANE = 14.0, 30.0, 30.0, 6.0
+    PAD, TOP, GAP, LANE, LANES = 12.0, 36.0, 26.0, 5.0, 24.0
 
     def __init__(self, m: dict[str, Any], expanded: set[int]):
         self.m, self.expanded = m, set(expanded)
@@ -825,6 +869,7 @@ class _Scene:
     # -- roles and labels
 
     def _roles(self) -> None:
+        """Each node's colour: the input stream that reaches it, ``mix`` if several do, ``side`` for side inputs."""
         kinds = {n: self.nodes[n][1] for n in self.order}
         succ: dict[str, list[str]] = defaultdict(list)
         for u, v, *_ in self.edges:
@@ -844,26 +889,18 @@ class _Scene:
         primary = max(ins, key=lambda n: len(reached[n])) if ins else None
         self.side = {n for n in ins if n != primary and len(succ[n]) >= 2}
         streams = [n for n in ins if n not in self.side]
-        self.stream = {n: f"s{min(k, 4)}" for k, n in enumerate(streams)}
+        self.stream = {n: f"s{min(k, 3)}" for k, n in enumerate(streams)}
         self.role: dict[str, str] = {}
         for n in self.order:
-            kind, label = kinds[n], self.nodes[n][2]
             by = {s for s in streams if n in reached[s]}
-            from_side = not by and any(n in reached[s] for s in self.side)
-            if kind in ("in", "out"):
-                role = "side" if n in self.side else "io"
-            elif kind == "op":
-                role = "op"
-            elif "norm" in self.B[int(n[1:])]["l"].lower():
-                role = "norm"
-            elif from_side:
+            if n in self.side or (not by and any(n in reached[s] for s in self.side)):
                 role = "side"
             elif len(by) == 1:
                 role = self.stream[next(iter(by))]
             else:
                 role = "mix"
             self.role[n] = role
-        self.sidenodes = {n for n in self.order if self.role[n] == "side" and kinds[n] != "in"} | self.side
+        self.sidenodes = {n for n in self.order if self.role[n] == "side"}
 
     def outtypes(self, n: str) -> list[str]:
         """The types of the values a node produces, as its outgoing edges carry them."""
@@ -875,13 +912,12 @@ class _Scene:
             kind, label = self.nodes[n][1], self.nodes[n][2]
             if kind == "out":
                 out = [label.removeprefix("return ")]
+            elif kind == "in":
+                out = [label.split(": ", 1)[-1]]
             elif kind == "call":
                 b = self.B[int(n[1:])]
                 out = [b["outs"]] if b["outs"] and b.get("err") != 2 else []
         return out
-
-    def intypes(self, n: str) -> list[str]:
-        return [t for u, v, _, _, t in self.edges if v == n]
 
     def heat_of(self, i: int) -> str | None:
         b = self.B[i]
@@ -890,15 +926,17 @@ class _Scene:
     # -- node and container sizes
 
     def lines(self, n: str) -> list[list[Run]]:
+        """A node's text: a bold title, then grey lines (what it produces, how long it took, what failed)."""
         kind, label = self.nodes[n][1], self.nodes[n][2]
+        shape = _shape(", ".join(self.outtypes(n)))
         if kind == "in":
-            return [[(label.split(": ", 1)[0], "tb")]]
+            return [[(label.split(": ", 1)[0], "ti")], [(shape, "tsh")]]
         if kind == "out":
-            return [[("return", "tb")]]
+            return [[("return", "ti")], [(shape, "tsh")]]
         if kind == "op":
             if n == self.fail:
                 return [[(label, "te")]]
-            return [[("+", "tplus")]] if label == "+" else [[(label, "tn")]]
+            return [[(label, "tb")]] + ([[(shape, "ts")]] if shape else [])
         i = int(n[1:])
         b, err = self.B[i], self.m.get("error")
         name = _display(b["l"])
@@ -906,54 +944,51 @@ class _Scene:
             out = [[("✗ " + name, "te")]]
             if err["got"]:
                 arg = "return value" not in err["head"]
-                out += [[(f"received {err['got']}" if arg else f"returned {err['got']}", "tem")],
+                out += [[(f"received {_shape(err['got'])}" if arg else f"returned {_shape(err['got'])}", "tem")],
                         [(f"declared {err['declared']}", "tem")]]  # fmt: skip
             return out
-        first: list[Run] = [(name, "tn")]
+        first: list[Run] = [(name, "tb")]
         if n in self.card:
-            first.append(("  " + self.B[self.card[n]]["l"], "tx"))
+            first.append(("  " + self.B[self.card[n]]["l"], "tpm"))
         out = [first]
-        if b.get("vectorize"):
-            out.append([("vectorized", "ts")])
+        sub = ("per element · " if b.get("vectorize") else "") + shape
+        if sub:
+            out.append([(sub, "ts")])
         if t := _timing(self.m, b):
             out.append([(t, "ts")])
         return out
 
-    def node_size(self, n: str) -> tuple[float, float, float]:
-        """(width, height, room below for the shape)"""
-        lines = self.lines(n)
-        below = 15.0 if self.shown(n) else 0.0
-        if self.nodes[n][2] == "+" and self.nodes[n][1] == "op":
-            return 24.0, 24.0, below
-        w = max(sum(_tw(t, c) for t, c in line) for line in lines) + 28
-        h = 16 + sum(16 if line[0][1] in ("tn", "tb", "te") else 13 for line in lines)
-        kind = self.nodes[n][1]
-        w = max(w, {"call": 110, "in": 84, "out": 84}.get(kind, 64))
-        h = max(h, 32)
-        if n in self.card:
-            w, h = w + 5, h + 5
-        return w, h, below
+    @staticmethod
+    def _lh(line: list[Run]) -> float:
+        return 16.0 if line[0][1] in ("tb", "te", "ti") else 14.0
 
-    def shown(self, n: str) -> bool:
-        """Whether a node's shape is written under it: inputs, outputs, and where the shape changes."""
+    def node_size(self, n: str) -> tuple[float, float, float]:
+        """(height, width, 0): the layout runs across, then along the flow (see ``place``)."""
         kind = self.nodes[n][1]
-        outs = self.outtypes(n)
-        if not outs or (kind == "op" and self.nodes[n][2] == "+"):
-            return False
-        return kind in ("in", "out") or not set(outs) <= set(self.intypes(n))
+        if kind == "op" and self.nodes[n][2] == "+" and n != self.fail:
+            return 17.0, 17.0, 0.0
+        lines = self.lines(n)
+        w = max(sum(_tw(t, c) for t, c in line) for line in lines)
+        h = sum(self._lh(line) for line in lines)
+        if kind in ("in", "out"):
+            return h + 2, w + 4, 0.0
+        w, h = max(w + 18, 52.0), max(h + 12, 34.0)
+        if n in self.card:
+            w, h = w + 4, h + 4
+        return h, w, 0.0
 
     def title(self, c: int) -> list[Run]:
         b = self.B[c]
         if c in self.alias.values():
             inner = next(k for k, v in self.alias.items() if v == c)
-            runs = [(_display(self.B[inner]["l"]), "tp"), ("  " + b["l"], "tp")]
+            runs = [(_display(self.B[inner]["l"]) + "  " + b["l"], "tp")]
             b = self.B[inner]
         elif b["k"] == "call":
             runs = [(_display(b["l"]), "tp")]
         else:
             runs = [(("loop  " if b["l"].startswith("×") else "") + b["l"], "tp")]
         if b.get("vectorize"):
-            runs.append(("  vectorized", "tpm"))
+            runs.append(("  per element", "tpm"))
         if self.m.get("timing") and "s" in self.B[c]:
             runs.append(("  " + _timing(self.m, self.B[c]), "tpm"))
         if self.B[c].get("err") == 1:
@@ -969,6 +1004,7 @@ class _Scene:
         self.E: dict[int, dict[tuple[str, str], dict[str, Any]]] = defaultdict(dict)
         self.segs: dict[int, dict[tuple[str, str], list[tuple[float, float]]]] = {}
         self.layer: dict[int, dict[str, int]] = {}
+        self.skipped: set[tuple[str, str]] = set()
         for n in self.order:
             self.items[self.ncont[n]].append(n)
             self.size[n] = self.node_size(n)
@@ -1067,8 +1103,10 @@ class _Scene:
         hops: list[tuple[str, str, str]] = []  # (from, to, value) between consecutive layers
         dummies: set[str] = set()
         by_value: dict[str, list[str]] = defaultdict(list)
+        skips = self._skips(c, src, L)
         for (u, t), s in src.items():
-            by_value[u].append(t)
+            if (u, t) not in skips:
+                by_value[u].append(t)
         for u, targets in by_value.items():
             s = src[(u, targets[0])]
             for t in targets:
@@ -1093,21 +1131,29 @@ class _Scene:
         for d in dummies:
             u = d.split(":")[1]
             rank[d] = rank.get(src[(u, by_value[u][0])], 0) + 0.5
+        for (u, t) in skips:  # a skip keeps its source in the order, without dummies
+            by_value.setdefault(u, [])
         for it in sorted(L, key=lambda x: rank.get(x, 0)):
             layers[L[it]].append(it)
         self._order(layers, hops)
         xs = self._xs(c, layers, hops)
         ys, H, gaps = self._ys(c, layers, hops, xs, panel)
         self.layer[c] = L
-        at = {it: (xs[it] + (self.PAD if panel else 0.0), ys[L[it]]) for it in L}
-        width = max([xs[it] + self.size[it][0] for it in L] + [0.0]) + (2 * self.PAD if panel else 0.0)
+        # the layout's x runs across the streams and y along the flow: drawn transposed, left to right
+        at = {it: (xs[it] + (self.TOP if panel else 0.0), ys[L[it]]) for it in L}
+        width = max([xs[it] + self.size[it][0] for it in L] + [0.0]) + (self.TOP + self.PAD if panel else 0.0)
         if panel:
-            width = max(width, sum(_tw(t, s) for t, s in self.title(c)) + 2 * self.PAD)
-            content = max([xs[it] + self.size[it][0] for it in L] + [0.0]) + 2 * self.PAD
-            shift = (width - content) / 2
-            at = {it: (x + shift, y) for it, (x, y) in at.items()}
+            need = sum(_tw(t, s) for t, s in self.title(c)) + 2 * self.PAD + 12
+            if H < need:  # a wide title: a longer panel, the flow centred in it
+                shift = (need - H) / 2
+                at = {it: (x, y + (shift if not it.startswith("i:") else 0.0)) for it, (x, y) in at.items()}
+                at.update({it: (x, need) for it, (x, y) in at.items() if it.startswith("o:")})
+                ys = [y + shift for y in ys]
+                gaps = [(g + shift, {k: v + shift for k, v in d.items()}) for g, d in gaps]
+                H = need
         self.at[c] = at
         self._route(c, layers, hops, L, at, gaps)
+        self._skip_routes(c, skips, src, L, layers, at)
         return width, H
 
     @staticmethod
@@ -1175,7 +1221,7 @@ class _Scene:
 
     def _xs(self, c: int, layers: list[list[str]], hops: list[tuple[str, str, str]]) -> dict[str, float]:
         """x of each item: packed, then moved towards its neighbours' edge ends (order kept) a few times."""
-        gap = lambda a, b: 26.0 if a[1] != ":" and b[1] != ":" else 12.0  # boxes apart, dummies and ports closer
+        gap = lambda a, b: self.LANES if a[1] != ":" and b[1] != ":" else 10.0  # boxes apart, dummies and ports closer
         xs: dict[str, float] = {}
         for layer in layers:
             x = 0.0
@@ -1265,8 +1311,8 @@ class _Scene:
                     tracks[t] = hi
                 slot[(u, k)] = t
             top = y + heights[k]
-            lead = self.TITLE if (panel and k == 0) else 12.0
-            tail = 24.0 if k in labelled else 16.0
+            lead = self.PAD if (panel and k == 0) else 9.0
+            tail = 30.0 if k in labelled else 13.0
             span = lead + max(len(tracks) - 1, 0) * self.LANE + tail
             if not jogs[k] and not (panel and k == 0):
                 span = max(span, self.GAP - 6)
@@ -1339,6 +1385,38 @@ class _Scene:
         self.segs[c] = segs
         nxt.clear()
 
+    def _skips(self, c: int, src: dict[tuple[str, str], str], L: dict[str, int]) -> set[tuple[str, str]]:
+        """Edges into a ``+`` from further back than its other input: residual connections, drawn as loops."""
+        into: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        for (u, t), s in src.items():
+            if t in self.nodes and self.nodes[t][2] == "+" and s in L:
+                into[t].append((u, s))
+        out = set()
+        for t, srcs in into.items():
+            if len(srcs) >= 2:
+                last = max(L[s] for _, s in srcs)
+                out |= {(u, t) for u, s in srcs if L[s] < last and L[s] < L[t]}
+        return out
+
+    def _skip_routes(self, c: int, skips: set[tuple[str, str]], src: dict[tuple[str, str], str], L: dict[str, int],
+                     layers: list[list[str]], at: dict[str, tuple[float, float]]) -> None:  # fmt: skip
+        """A residual leaves its source's arrow just after it, runs above the row, and drops into the ``+``."""
+        for u, t in skips:
+            s = src[(u, t)]
+            sx, sy = at[s]
+            if not s.startswith("i:"):
+                sx += self.attach(c, s, u, False)
+                sy += self.size[s][1]
+            tx, ty = at[t]
+            mid = ty + self.size[t][1] / 2
+            between = [it for k in range(L[s] + 1, L[t]) for it in layers[k] if it[1] != ":"]
+            lo, hi = min(sx, tx), max(sx, tx + self.size[t][0])
+            over = [at[it][0] for it in between if at[it][0] < hi and at[it][0] + self.size[it][0] > lo]
+            above = min(over + [min(sx, tx)]) - 9
+            branch = sy + (4 if s.startswith("i:") else 5)
+            self.segs[c][(u, t)] = [(sx, sy), (sx, branch), (above, branch), (above, mid), (tx, mid)]
+            self.skipped.add((u, t))
+
     def absolute(self, c: int, x0: float, y0: float) -> None:
         self.origin[c] = (x0, y0)
         for it, (x, y) in self.at[c].items():
@@ -1373,7 +1451,12 @@ class _Scene:
                 out.append(pts[k])
         return out + pts[-1:] if len(pts) > 1 else pts
 
-    # -- painting
+    # -- painting (the layout's (x, y) is drawn as (y, x): left to right)
+
+    def rect_of(self, it: str) -> tuple[float, float, float, float]:
+        """The drawn rectangle (x, y, w, h) of a node or container item."""
+        o, a, wo, ha = self.box_at(it)
+        return a + self.x0, o + self.y0, ha, wo
 
     def paint(self, cv: _Canvas, x0: float, y0: float) -> None:
         """Draw the main flow with its top left at (x0, y0)."""
@@ -1381,12 +1464,15 @@ class _Scene:
         self.titles: list[Any] = []
         self.fills: dict[int, str] = {-1: "bg"}
         self._panels(cv, -1, 0)
-        edges = sorted(self.edges, key=lambda e: ((e[0], e[1]) in self.path, e[0] in self.sidenodes))
-        for u, v, *_ in edges:
+        rank = lambda e: ((e[0], e[1]) not in self.skipped, (e[0], e[1]) in self.path, e[0] in self.sidenodes)
+        self.labels: list[Any] = []
+        for u, v, *_ in sorted(self.edges, key=rank):
             self._edge(cv, u, v)
-        for x, y, runs, fill, inner, i in self.titles:  # over the edges that enter the panel
+        for x, y, runs, fill in self.labels:  # the types arrays enter calls with, over the edges
+            cv.text(x, y, runs, anchor="end", halo=fill)
+        for x, y, runs, anchor, fill, inner, i in self.titles:  # over the edges that enter the panel
             cv.group(class_="pt", data_box=inner, data_loop=i)
-            cv.text(x, y, runs, anchor="start", halo=fill)
+            cv.text(x, y, runs, anchor=anchor, halo=fill)
             cv.end()
         for n in self.order:
             self._node(cv, n)
@@ -1396,132 +1482,93 @@ class _Scene:
             if it[0] != "c":
                 continue
             i = int(it[1:])
-            x, y, w, h = self.box_at(it)
-            x, y = x + self.x0, y + self.y0
+            x, y, w, h = self.rect_of(it)
             b = self.B[i]
             inner = next((k for k, v in self.alias.items() if v == i), i)
-            fill = "panel" if depth % 2 == 0 else "panel2"
-            self.fills[i] = fill
-            stroke, sw, dash = "frame", 1.0, None
+            fill = "bg" if depth % 2 == 0 else "panel2"
+            stroke, sw, dash = "axis", 1.0, None
             if (hk := self.heat_of(i)) is not None:
                 fill = "p" + hk[1:]
-                self.fills[i] = fill
             if b.get("err") == 1 or self.B[inner].get("err") == 1:
-                stroke, sw = "errline", 1.4
+                stroke, sw = "err", 1.2
             if b["k"] != "call" and i not in self.alias.values():
-                dash = "5 3"  # a loop or branch around its contents
-            openable = self.B[inner]["k"] == "call"
-            cv.group(class_="pn" + (" fold" if openable else ""), data_box=inner, data_loop=i)
-            cv.rect(x, y, w, h, fill, stroke, sw, r=10, dash=dash)
+                dash = "4 2.5"  # a loop or branch around its contents
+            self.fills[i] = fill
+            cv.group(class_="pn", data_box=inner, data_loop=i)
+            cv.rect(x, y, w, h, fill, stroke, sw, r=6, dash=dash)
             cv.end()
-            self.titles.append((x + self.PAD, y + 20, self.title(i), fill, inner, i))
+            right = b["k"] == "loop" and b["l"].startswith("×")  # "block × N" goes top right, as in a paper
+            tx = x + w - self.PAD + 4 if right else x + self.PAD - 4
+            self.titles.append((tx, y + 16, self.title(i), "end" if right else "start", fill, inner, i))
             self._panels(cv, i, depth + 1)
 
     def _edge(self, cv: _Canvas, u: str, v: str) -> None:
-        pts = [(x + self.x0, y + self.y0) for x, y in self.edge_path(u, v)]
+        pts = [(a + self.x0, o + self.y0) for o, a in self.edge_path(u, v)]
         if len(pts) < 2:
             return
-        red, side = (u, v) in self.path, u in self.sidenodes
-        color = "errline" if red else "sideline" if side else "edge"
+        red, side, skip = (u, v) in self.path, u in self.sidenodes, (u, v) in self.skipped
+        color = "err" if red else "side" if side else self.role.get(v, "mix") if skip else "ink2"
+        if skip and color == "mix":
+            color = "mix"
         (xa, ya), (xb, yb) = pts[-2], pts[-1]
         n = math.hypot(xb - xa, yb - ya) or 1.0
         tip = pts[-1]
-        pts[-1] = (xb - (xb - xa) / n * 6.5, yb - (yb - ya) / n * 6.5)
-        cv.line(pts, color, 1.8 if red else 1.2, "5 3" if side and not red else None)
-        cv.head(tip[0], tip[1], xb - xa, yb - ya, color)
+        pts[-1] = (xb - (xb - xa) / n * 3.5, yb - (yb - ya) / n * 3.5)
+        width = 1.5 if red else 0.9 if skip else 1.0
+        cv.line(pts, color, width, "4 2.4" if side and not red else None)
+        cv.head(tip[0], tip[1], xb - xa, yb - ya, color, 5.5 if red else 5.0)
         info = next((e for e in self.edges if e[0] == u and e[1] == v), None)
-        if info and info[4] and info[4] != info[3] and abs(xb - xa) < 0.5 and self.nodes[v][1] == "call":
-            cv.text(xb + 5, yb - 9, [(info[4], "tsh")], anchor="start", halo=self.fills[self.ncont[v]])
+        if info and info[4] and info[4] != info[3] and abs(yb - ya) < 0.5 and self.nodes[v][1] == "call":
+            self.labels.append((xb - 7, yb - 4, [(_shape(info[4]), "tlab")], self.fills[self.ncont[v]]))
 
     def _node(self, cv: _Canvas, n: str) -> None:
-        x, y, w, h = self.box_at(n)
-        x, y = x + self.x0, y + self.y0
+        x, y, w, h = self.rect_of(n)
         kind, label = self.nodes[n][1], self.nodes[n][2]
-        fill, stroke, sw = self.role[n], "edge", 1.1
+        role = self.role[n]
+        inside = self.ncont[n] >= 0
+        fill, stroke, sw = role + ("c" if inside else "f"), role, 0.9 if inside else 1.1
         box = int(n[1:]) if kind == "call" else -1
         if box >= 0 and (hk := self.heat_of(box)) is not None:
             fill = hk
         if n == self.fail:
-            fill, stroke, sw = "err", "errline", 2.0
+            fill, stroke, sw = "errf", "err", 1.8
         elif n in self.feeds:
-            stroke, sw = "errline", 1.5
+            stroke, sw = "err", 1.4
         cv.group(class_="nd" + (" open" if box >= 0 and self.B[box]["o"] and n != self.fail else ""),
                  data_id=n, data_box=box)  # fmt: skip
-        if kind == "op" and label == "+":
-            cv.rect(x, y, w, h, fill, stroke, sw, r=w / 2)
-            cv.text(x + w / 2, y + h / 2 + 5, [("+", "tplus")])
+        lines = self.lines(n)
+        if kind in ("in", "out"):  # a symbol and its shape, no box
+            ax = x + w if kind == "in" else x
+            ty = y + 12
+            for line in lines:
+                cv.text(ax, ty, line, anchor="end" if kind == "in" else "start")
+                ty += self._lh(line)
+        elif kind == "op" and label == "+" and n != self.fail:
+            cv.rect(x, y, w, h, "bg", stroke, sw, r=w / 2)
+            cx, cy, k = x + w / 2, y + h / 2, w * 0.27
+            cv.line([(cx - k, cy), (cx + k, cy)], "ink", 0.9, radius=0)
+            cv.line([(cx, cy - k), (cx, cy + k)], "ink", 0.9, radius=0)
         else:
-            if n in self.card:
-                cv.rect(x + 5, y, w - 5, h - 5, fill, stroke, sw, r=6)
-                y, w, h = y + 5, w - 5, h - 5
-            cv.rect(x, y, w, h, fill, stroke, sw, r=6)
-            lines = self.lines(n)
-            sizes = [16 if line[0][1] in ("tn", "tb", "te") else 13 for line in lines]
-            ty = y + (h - sum(sizes)) / 2
-            for line, s in zip(lines, sizes):
-                ty += s
-                cv.text(x + w / 2, ty - (4 if s == 16 else 3), line)
-        if self.shown(n):
-            cv.text(x + w / 2, y + h + 12, [(", ".join(self.outtypes(n)), "tsh")], halo=self.fills[self.ncont[n]])
+            r = 3.0 if inside else 4.0
+            if n in self.card:  # a stack of layers
+                cv.rect(x + 4, y, w - 4, h - 4, fill, stroke, sw, r=r)
+                y, w, h = y + 4, w - 4, h - 4
+            cv.rect(x, y, w, h, fill, stroke, sw, r=r)
+            total = sum(self._lh(line) for line in lines)
+            ty = y + (h - total) / 2
+            for line in lines:
+                ty += self._lh(line)
+                cv.text(x + w / 2, ty - 4, line)
         cv.end()
 
 
 # ------------------------------------------------------------------ drawing: the figure
 
 
-def _steps(m: dict[str, Any], expanded: set[int], i: int, color: str = "mix") -> list[dict[str, Any]]:
-    """The steps of call ``i`` opened one level: its nodes by dependency depth, alike ones merged."""
-    nodes, edges, _, _ = _view(m, expanded | {i}, full=True)
-    B = m["boxes"]
-
-    def inside(box: int) -> int | None:  # the loop or branch right under i, or i itself; None if outside i
-        last = None
-        while box >= 0:
-            if box == i:
-                return last if last is not None else i
-            if B[box]["k"] == "loop":
-                last = box
-            box = B[box]["p"]
-        return None
-
-    mine = {n[0]: n for n in nodes if inside(n[3]) is not None}
-    rank: dict[str, int] = {}
-    for n in mine:  # nodes come in a topological order
-        rank[n] = max([rank[u] + 1 for u, v, *_ in edges if v == n and u in rank] + [0])
-    groups: dict[tuple[int, int | None], list[str]] = {}
-    for n in mine:
-        groups.setdefault((rank[n], inside(mine[n][3])), []).append(n)
-    steps = []
-    for (r, loop), ns in sorted(groups.items(), key=lambda kv: (kv[0][0], kv[0][1] or -1)):
-        names = []
-        for n in ns:
-            kind, label = mine[n][1], mine[n][2]
-            name = _display(B[int(n[1:])]["l"]) if kind == "call" else ("residual +" if label == "+" else label)
-            names.append(name)
-        uniq = list(dict.fromkeys(names))
-        text = f"{uniq[0]}  ×{len(names)}" if len(uniq) == 1 and len(names) > 1 else "  ‖  ".join(uniq)
-        role = "op"
-        first = mine[ns[0]]
-        if first[1] == "call":
-            b = B[int(first[0][1:])]
-            role = "norm" if "norm" in b["l"].lower() else color
-            if m.get("timing") and "s" in b:
-                role = f"h{heat(b['s'])}"
-        outs = list(dict.fromkeys(t0 for u, _, _, t0, _ in edges if u in ns))
-        loop_label = B[loop]["l"] if loop is not None and loop != i else None
-        steps.append(dict(text=text, role=role, shape=", ".join(outs[:2]) + (", …" if len(outs) > 2 else ""),
-                          loop=loop if loop != i else None, loop_label=loop_label, nodes=ns))  # fmt: skip
-    return steps
-
-
-def _sig(b: dict[str, Any]) -> str:
-    return f"{b['ins']} → {b['outs'] or '?'}" + ("  per element" if b.get("vectorize") else "")
-
-
 class _Figure:
-    """A whole figure: header, main flow, the internals column and the legend, as a display list."""
+    """A whole figure: a one-line header (bold name, grey words) above the flow, as a display list."""
 
-    M = 24.0
+    M = 16.0
 
     def __init__(self, m: dict[str, Any], expanded: set[int]):
         self.m, self.expanded = m, expanded
@@ -1530,181 +1577,58 @@ class _Figure:
         self.cv = _Canvas()
         self.paint()
 
-    def legend_line(self) -> str:
+    def sizes(self) -> str:
+        """``T · D · Vocab · L = len(blocks)``: the sizes in the drawn types, list lengths, given sizes."""
         sc, m = self.scene, self.m
         types = [n[2] for n in sc.nodes.values()] + [t for e in sc.edges for t in e[2:]]
-        loops = [b["l"][2:] for i, b in enumerate(m["boxes"]) if b["k"] == "loop" and b["l"].startswith("× ")]
-        parts = []
+        loops = [b["l"][2:] for b in m["boxes"] if b["k"] == "loop" and b["l"].startswith("× ")]
+        parts: list[str] = []
         for name in _names(types) + [n for n in loops if n.isidentifier()]:
             if any(p.split(" ")[0] == name for p in parts):
                 continue
-            if name in m.get("lists", {}):
-                parts.append(f"{name} = len({m['lists'][name]})")
-            else:
-                parts.append(name)
+            parts.append(f"{name} = len({m['lists'][name]})" if name in m.get("lists", {}) else name)
         parts += [f"{k} = {v}" for k, v in m.get("given", {}).items()]
-        return "sizes:  " + "  ·  ".join(parts) if parts else ""
+        return " · ".join(parts)
 
     def paint(self) -> None:
         cv, m, sc, M = self.cv, self.m, self.scene, self.M
-        title = _display(m["name"])
-        heading = [(title, "th")] + ([(m["name"][len(title):], "tl")] if title != m["name"] else [])
-        y = M + 20
-        cv.text(M, y, heading, anchor="start")
-        notes: list[list[Run]] = []
-        if line := self.legend_line():
-            notes.append([(line, "tl")])
+        heading: list[Run] = [(m["name"], "th")]
+        if sizes := self.sizes():
+            heading.append(("   sizes " + sizes, "tl"))
+        rows = [heading]
         t, err = m.get("timing"), m.get("error")
-        if t:
-            if t["unit"] == "s":
-                notes.append([(f"time per call measured with jax.profiler ({t['backend']}): {_amount(t['total'], 's')} of XLA op time, "
-                               f"{_amount(t['wall'], 's')} wall, median of {t['runs']} runs", "tl")])  # fmt: skip
-            else:
-                notes.append([(f"ESTIMATED from FLOPs, not measured ({t['why']}): {_amount(t['total'], 'flop')} per call", "tred")])
+        if t and t["unit"] == "s":
+            rows.append([(f"measured with jax.profiler ({t['backend']}): {_amount(t['total'], 's')} of XLA op time per call, "
+                          f"{_amount(t['wall'], 's')} wall, median of {t['runs']} runs", "tl")])  # fmt: skip
+        elif t:
+            rows.append([(f"ESTIMATED from FLOPs, not measured ({t['why']}): {_amount(t['total'], 'flop')} per call", "tred")])
         if err:
-            notes.append([("✗ " + err["head"], "tred")])
-        for runs in notes:
-            y += 19
+            rows.append([("✗ " + err["head"], "tred")])
+        y = M + 12
+        widths = []
+        for k, runs in enumerate(rows):
             cv.text(M, y, runs, anchor="start")
-        top = y + 26
-        sc.paint(cv, M, top)
-        main_w = max([sc.size[it][0] + sc.at[-1][it][0] for it in sc.at[-1]] + [200.0])
-        main_h = max([sc.size[it][1] + sc.size[it][2] + sc.at[-1][it][1] for it in sc.at[-1]] + [40.0])
-        head_w = max(_tw(title, "th"), *[sum(_tw(a, b) for a, b in r) for r in notes], 0)
-        right = M + max(main_w, head_w)
-        bottom = top + main_h
-        inner = self.internals(right + 36, M, max(bottom, M + 200))
-        if inner is not None:
-            right, bottom = max(right, inner[0]), max(bottom, inner[1])
-        bottom = self.legend(M, bottom + 30, right)
-        self.w, self.h = right + M, bottom + M
-
-    def internals(self, x0: float, y0: float, main_bottom: float) -> tuple[float, float] | None:
-        """The column of each call drawn closed and able to open, as a titled stack of its steps."""
-        m, sc, cv = self.m, self.scene, self.cv
-        seen, stacks = set(), []
-        for n in sc.order:
-            if sc.nodes[n][1] != "call" or n == sc.fail:
-                continue
-            i = int(n[1:])
-            b = m["boxes"][i]
-            if not b["o"] or (b["l"], b.get("vectorize")) in seen:
-                continue
-            seen.add((b["l"], b.get("vectorize")))
-            color = sc.role[n] if sc.role[n] not in ("norm", "op", "io") else "mix"
-            steps = _steps(m, self.expanded, i, color)
-            if steps:
-                stacks.append((i, steps))
-        if not stacks:
-            return None
-        sized = []
-        for i, steps in stacks:
-            b = m["boxes"][i]
-            sw = max([_tw(s["text"], "tstep") + 26 for s in steps] + [150.0])
-            shw = max([_tw(s["shape"], "tsh") for s in steps] + [0.0])
-            loops = any(s["loop"] is not None for s in steps)
-            left = 34.0 if loops else 0.0
-            tw = max(_tw(_display(b["l"]), "tst"), _tw(_sig(b), "tsg"))
-            w = max(left + sw + (shw + 10 if shw else 0), tw)
-            h = 42 + len(steps) * 26 + (len(steps) - 1) * 14
-            sized.append((i, steps, w, h, sw, left))
-        total = sum(s[3] + 26 for s in sized)
-        ncol = 1 if total <= max(main_bottom - y0 - 60, 360) else 2 if total <= 2.2 * max(main_bottom - y0 - 60, 360) else 3
-        cols: list[list[Any]] = [[] for _ in range(ncol)]
-        heights = [0.0] * ncol
-        for s in sized:  # in order, each into the shortest column
-            k = heights.index(min(heights))
-            cols[k].append(s)
-            heights[k] += s[3] + 26
-        cx = x0 + 28
-        cv.text(cx, y0 + 20, [("Component internals", "tc")], anchor="start")
-        sub = "each call on the left, opened one level: its steps from top to bottom"
-        cv.text(cx, y0 + 39, [(sub, "tl")], anchor="start")
-        ytop = y0 + 66
-        bottom = ytop
-        for col in cols:
-            if not col:
-                continue
-            cw = max(s[2] for s in col)
-            y = ytop
-            for i, steps, w, h, sw, left in col:
-                self.stack(cx, y, i, steps, sw, left)
-                y += h + 26
-            bottom = max(bottom, y - 26)
-            cx += cw + 32
-        cv.group(class_="rule")
-        cv.line([(x0, y0 + 4), (x0, max(bottom, main_bottom))], "rule", 1.0, radius=0)
-        cv.end()
-        return max(cx - 32, x0 + 28 + _tw(sub, "tl")), bottom
-
-    def stack(self, x: float, y: float, i: int, steps: list[dict[str, Any]], sw: float, left: float) -> None:
-        cv, b = self.cv, self.m["boxes"][i]
-        cv.group(class_="st", data_box=i)
-        cv.text(x, y + 13, [(_display(b["l"]), "tst")], anchor="start")
-        cv.text(x, y + 29, [(_sig(b), "tsg")], anchor="start")
-        sx, yy = x + left, y + 42
-        spans: dict[int, list[float]] = {}
-        for k, s in enumerate(steps):
-            cv.rect(sx, yy, sw, 26, s["role"], "edge", 1.0, r=5)
-            cv.text(sx + sw / 2, yy + 17, [(s["text"], "tstep")])
-            if s["shape"]:
-                cv.text(sx + sw + 8, yy + 17, [(s["shape"], "tsh")], anchor="start")
-            if s["loop"] is not None:
-                lo, hi = spans.get(s["loop"], [yy, yy + 26])
-                spans[s["loop"]] = [min(lo, yy), max(hi, yy + 26)]
-            if k + 1 < len(steps):
-                cv.line([(sx + sw / 2, yy + 26), (sx + sw / 2, yy + 26 + 14 - 6)], "edge", 1.1)
-                cv.head(sx + sw / 2, yy + 40, 0, 1, "edge", 6)
-            yy += 40
-        for loop, (lo, hi) in spans.items():
-            bx = sx - 9
-            cv.line([(bx + 5, lo + 3), (bx, lo + 3), (bx, hi - 3), (bx + 5, hi - 3)], "frame", 1.1, radius=2)
-            cv.text(bx - 4, (lo + hi) / 2 + 4, [(self.m["boxes"][loop]["l"], "tx")], anchor="end")
-        cv.end()
-
-    def legend(self, x0: float, y: float, right: float) -> float:
-        """Swatches for the colours used, wrapped to the figure's width; returns the bottom."""
-        m, sc, cv = self.m, self.scene, self.cv
-        items: list[tuple[str, str, str | None]] = []  # (fill, text, stroke)
-        roles = {op[5] for op in cv.ops if op[0] == "rect"}  # the fills drawn
-        if m.get("timing"):
+            widths.append(sum(_tw(a, b) for a, b in runs))
+            y += 17
+        if t:  # the heat scale, in the header's grey words
+            x = M
             lo, hi = [0.0, *HEAT], [*HEAT, 1.0]
-            pct = lambda s: f"{s:.0%}"
-            items += [(f"h{k}", f"< {pct(hi[0])}" if k == 0 else f"≥ {pct(lo[k])}" if k == len(HEAT) else f"{pct(lo[k])}–{pct(hi[k])}", None)
-                      for k in range(len(HEAT) + 1)]  # fmt: skip
-        for k, n in enumerate(sc.stream):
-            if sc.stream[n] in roles:
-                items.append((sc.stream[n], f"{sc.nodes[n][2].split(':')[0]} stream", None))
-        if "mix" in roles:
-            items.append(("mix", "mixes inputs", None))
-        if "side" in roles:
-            items.append(("side", "side input", None))
-        if "norm" in roles:
-            items.append(("norm", "normalization", None))
-        if "op" in roles:
-            items.append(("op", "primitive op", None))
-        if "io" in roles:
-            items.append(("io", "input / output", None))
-        if sc.conts:
-            items.append(("panel", "call opened · loop (dashed)", "frame"))
-        if m.get("error"):
-            items += [("err", "failing call", "errline"), ("", "path into it", "errline")]
-        x = x0
-        cv.group(class_="legend")
-        for fill, text, stroke in items:
-            w = max(_tw(text, "tl") + 24, 64)
-            if x + w > right and x > x0:
-                x, y = x0, y + 30
-            if not fill:  # a line, not a box
-                w = _tw(text, "tl") + 40
-                cv.line([(x, y + 11), (x + 26, y + 11)], stroke or "edge", 1.8)
-                cv.text(x + 32, y + 15, [(text, "tl")], anchor="start")
-            else:
-                cv.rect(x, y, w, 22, fill, stroke or "edge", 1.4 if stroke == "errline" else 1.0, r=5)
-                cv.text(x + w / 2, y + 15, [(text, "tl")])
-            x += w + 8
-        cv.end()
-        return y + 22
+            cv.text(x, y, [("share of the time", "tl")], anchor="start")
+            x += _tw("share of the time", "tl") + 10
+            for k in range(len(HEAT) + 1):
+                label = f"< {hi[0]:.0%}" if k == 0 else f"≥ {lo[k]:.0%}" if k == len(HEAT) else f"{lo[k]:.0%}–{hi[k]:.0%}"
+                cv.rect(x, y - 9, 16, 10, f"h{k}", "ink2", 0.8, r=2)
+                cv.text(x + 21, y, [(label, "tl")], anchor="start")
+                x += 21 + _tw(label, "tl") + 12
+            widths.append(x - M)
+            y += 17
+        top = y + 4
+        sc.paint(cv, M, top)
+        at = sc.at[-1]
+        main_w = max([sc.size[it][1] + at[it][1] for it in at] + [100.0])
+        main_h = max([sc.size[it][0] + at[it][0] for it in at] + [30.0])
+        self.w = M + max([main_w] + widths) + M
+        self.h = top + main_h + M
 
 
 # ------------------------------------------------------------------ the interactive page and pictures
@@ -1768,7 +1692,7 @@ def _page(m: dict[str, Any]) -> str:
                   err=b.get("err", 0), t=b.get("t"), s=b.get("s"), n=b.get("n"), o=b.get("o", False))
              for b in m["boxes"]]  # fmt: skip
     data = dict(name=m["name"], start=start, depths=depths, svgs=svgs, clicks=clicks, boxes=boxes, sources=m["sources"],
-                timing=m.get("timing"), error=m.get("error"), colors={k: v[1] for k, v in COLORS.items()},
+                timing=m.get("timing"), error=m.get("error"),
                 text=_outline(m))  # fmt: skip
     blob = json.dumps(data).replace("</", "<\\/")
     page = _PAGE.read_text(encoding="utf-8")
@@ -1789,10 +1713,11 @@ def _chrome() -> str | None:
     return None
 
 
-def _png(fig: "_Figure", path: Path, scale: float = 2.0) -> None:
-    """Rasterise the figure: with Playwright, else a headless Chromium, else matplotlib (see ``_png_matplotlib``)."""
+def _png(fig: "_Figure", path: Path, theme: str = "light", scale: float = 2.0) -> None:
+    """Rasterise the figure in ``theme``: with Playwright, else a headless Chromium, else matplotlib."""
     svg, w, h = _svg(fig.cv, fig.w, fig.h), fig.w, fig.h
-    page = f'<!doctype html><html><body style="margin:0;background:#fff">{svg}</body></html>'
+    bg = COLORS["bg"][theme == "dark"]
+    page = f'<!doctype html><html data-theme="{theme}"><body style="margin:0;background:{bg}">{svg}</body></html>'
     size = (math.ceil(w), math.ceil(h))
     try:
         from playwright.sync_api import sync_playwright  # type: ignore[import-not-found]
@@ -1802,7 +1727,8 @@ def _png(fig: "_Figure", path: Path, scale: float = 2.0) -> None:
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch()
-                tab = browser.new_page(viewport={"width": size[0], "height": size[1]}, device_scale_factor=scale)
+                tab = browser.new_page(viewport={"width": size[0], "height": size[1]}, device_scale_factor=scale,
+                                       color_scheme=theme)  # fmt: skip
                 tab.set_content(page)
                 tab.screenshot(path=str(path), full_page=True)
                 browser.close()
@@ -1831,10 +1757,10 @@ def _png(fig: "_Figure", path: Path, scale: float = 2.0) -> None:
             "saving a PNG needs a browser to draw the SVG (Playwright, or Chromium / Chrome on the PATH) "
             "or matplotlib; none was found. Save an .svg or .html instead."
         ) from None
-    _png_matplotlib(fig, path, scale)
+    _png_matplotlib(fig, path, theme, scale)
 
 
-def _png_matplotlib(fig: "_Figure", path: Path, scale: float) -> None:
+def _png_matplotlib(fig: "_Figure", path: Path, theme: str, scale: float) -> None:
     """Draw the display list again with matplotlib: same layout, its own fonts (the fallback without a browser)."""
     import matplotlib
 
@@ -1842,7 +1768,7 @@ def _png_matplotlib(fig: "_Figure", path: Path, scale: float) -> None:
     import matplotlib.pyplot as plt
     from matplotlib.patches import FancyBboxPatch, Polygon
 
-    col = lambda k: COLORS[k][0]
+    col = lambda k: COLORS[k][theme == "dark"]
     dpi = 96 * scale
     f = plt.figure(figsize=(fig.w / 96, fig.h / 96), dpi=dpi)
     ax = f.add_axes((0, 0, 1, 1))
@@ -1873,13 +1799,7 @@ def _png_matplotlib(fig: "_Figure", path: Path, scale: float) -> None:
             ax.plot([p[0] for p in pts], [p[1] for p in pts], color=col(stroke), linewidth=sw * 0.75,
                     linestyle=(0, (4, 2.5)) if dash else "-", zorder=z, solid_capstyle="butt")  # fmt: skip
         elif op[0] == "head":
-            _, x, y, dx, dy, color, size = op
-            n = math.hypot(dx, dy) or 1.0
-            ux, uy = dx / n, dy / n
-            bx, by = x - ux * size, y - uy * size
-            px, py = -uy * size * 0.42, ux * size * 0.42
-            ax.add_patch(Polygon([(x, y), (bx + px, by + py), (bx - px, by - py)], closed=True,
-                                 facecolor=col(color), edgecolor="none", zorder=z))  # fmt: skip
+            ax.add_patch(Polygon(_head(op), closed=True, facecolor=col(op[5]), edgecolor="none", zorder=z))
     f.savefig(path, dpi=dpi, facecolor=col("bg"))
     plt.close(f)
 
@@ -1950,14 +1870,20 @@ class Diagram:
         """The interactive page: pan and zoom, click a call to open or fold it, hover for details."""
         return _page(self.model)
 
-    def save(self, path: str | Path) -> Path:
-        """Write the figure: ``.svg``, ``.png`` (2x, needs a browser or matplotlib) or ``.html`` (interactive)."""
+    def save(self, path: str | Path, theme: str = "light") -> Path:
+        """Write the figure: ``.svg``, ``.png`` (2x, needs a browser or matplotlib) or ``.html`` (interactive).
+
+        An SVG and the page follow the viewer's light or dark mode; a PNG is drawn in ``theme``
+        (``"light"`` or ``"dark"``).
+        """
         path = Path(path)
         suffix = path.suffix.lower()
+        if theme not in ("light", "dark"):
+            raise ValueError(f"theme is 'light' or 'dark', not {theme!r}")
         if suffix == ".svg":
             path.write_text(self.svg, encoding="utf-8")
         elif suffix == ".png":
-            _png(self._fig(), path)
+            _png(self._fig(), path, theme)
         elif suffix in (".html", ".htm", ""):
             path.write_text(self.html(), encoding="utf-8")
         else:

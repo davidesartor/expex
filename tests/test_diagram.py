@@ -72,20 +72,19 @@ def check_svg(d: Diagram) -> ET.Element:
     assert set(groups) == {n[0] for n in d.nodes}
     for n in d.nodes:
         g = groups[n[0]]
-        assert g.find(NS + "rect") is not None and text(g)
+        assert (g.find(NS + "rect") is not None or n[1] in ("in", "out")) and (text(g) or n[2] == "+")
     top = [el.tag for el in root]  # the edges are drawn at the top level, the internals' arrows in their stacks
     assert top.count(NS + "polygon") == top.count(NS + "path") == len(d.edges)
     assert "cdn" not in d.svg and "mermaid" not in d.svg.lower()
     return root
 
 
-def drawn(d: Diagram, prefix: str) -> tuple[list[str], tuple[float, float], float]:
-    """A node as drawn: its texts, its box's (top, bottom), and the y of the last text (the shape under it)."""
+def drawn(d: Diagram, prefix: str) -> tuple[list[str], str | None]:
+    """A node as drawn: its texts, and its box's colour classes (None for an input or output)."""
     root = ET.fromstring(d.svg)
     (g,) = [g for g in root.iter(NS + "g") if g.get("data-id") == node(d, prefix)[0]]
-    rect = g.findall(NS + "rect")[-1]
-    y, h = float(rect.get("y")), float(rect.get("height"))
-    return text(g), (y, y + h), float(g.findall(NS + "text")[-1].get("y"))
+    rects = g.findall(NS + "rect")
+    return text(g), rects[-1].get("class") if rects else None
 
 
 def titles(d: Diagram) -> list[str]:
@@ -109,13 +108,12 @@ def test_transformer_depth_1(transformer):
     assert len(d.edges) == 5
     assert str(d) == d.text and not hasattr(d, "mermaid")
     check_svg(d)
-    texts, (top, bottom), shape_y = drawn(d, "matmul")
-    assert texts == ["matmul", "f32[T, Vocab]"] and bottom < shape_y < bottom + 16  # the shape just under its box
-    assert drawn(d, "tokens")[0] == ["tokens", "i32[T]"] and drawn(d, "return")[0] == ["return", "f32[T, Vocab]"]
-    assert drawn(d, "Block")[0] == ["Block  × L"]  # one block, drawn as a stack: same shape in and out
-    assert drawn(d, "LayerNorm")[0] == ["LayerNorm", "vectorized"]
-    assert "Transformer" in text(ET.fromstring(d.svg))[0] and "L = len(blocks)" in d.svg
-    assert "Component internals" in d.svg and {"Block", "LayerNorm"} <= set(text(ET.fromstring(d.svg)))
+    assert drawn(d, "matmul") == (["matmul", "T × Vocab"], "f-s0f k-s0")  # a bold name, then its shape in grey
+    assert drawn(d, "tokens") == (["tokens", "T (i32)"], None) and drawn(d, "return") == (["return", "T × Vocab"], None)
+    assert drawn(d, "Block")[0] == ["Block  × L", "T × D"]  # one block, drawn as a stack of layers
+    assert drawn(d, "LayerNorm")[0] == ["LayerNorm", "per element · T × D"]
+    assert text(ET.fromstring(d.svg))[0] == "Transformer.__call__   sizes T · D · Vocab · L = len(blocks)"
+    assert "prefers-color-scheme: dark" in d.svg  # light or dark with the viewer
     assert _fn.CALL_HOOK.get() is None
 
 
@@ -132,10 +130,13 @@ def test_transformer_depth_2(transformer):
     assert labels(d, "op").count("+") == 2  # the residual connections
     plus = [n[0] for n in d.nodes if n[2] == "+"]
     assert {(u, v) for u, v, _ in d.edges if v == plus[0]} == {(node(d, "index")[0], plus[0]), (attn, plus[0])}
-    assert titles(d) == ["Block  × L", "LayerNorm  vectorized"]  # the loop and the call in it: one panel
+    assert titles(d) == ["Block  × L", "LayerNorm  per element"]  # the loop and the call in it: one panel
     root = check_svg(d)
     panels = [g for g in root.iter(NS + "g") if g.get("class", "").startswith("pn")]
-    assert len(panels) == 2 and all(g.find(NS + "rect").get("class") == "f-panel k-frame" for g in panels)
+    assert len(panels) == 2 and all(g.find(NS + "rect").get("class") == "f-bg k-axis" for g in panels)
+    loops = [el for el in root if el.tag == NS + "path" and el.get("class") == "k-s0"]
+    assert len(loops) == 2  # the residuals: thin lines in the stream's colour, looping over the row
+    assert drawn(d, "Attention")[1] == "f-s0c k-s0"  # inside a panel, boxes are paler
 
 
 def test_attention(transformer):
@@ -166,9 +167,8 @@ def test_mamba(mamba):
     assert box_of(d, "Block.__call__") == "× L"
     assert labels(d, "out") == ["return f32[T, V]"]
     assert node(d, "RMSNorm")[2] == "RMSNorm.__call__ · vectorized\nf32[D] → f32[D]"
-    root = check_svg(d)
-    (g,) = [g for g in root.iter(NS + "g") if g.get("data-id") == node(d, "RMSNorm")[0]]
-    assert g.find(NS + "rect").get("class") == "f-norm k-edge"  # norms are yellow
+    check_svg(d)
+    assert drawn(d, "RMSNorm")[1] == "f-s0f k-s0"  # in the colour of the tokens' stream
 
 
 def test_mixer_time_loop(mamba):
@@ -186,8 +186,8 @@ def test_mixer_time_loop(mamba):
     assert titles(d2) == ["Mixer.conv", "selective_scan", "loop  × T"]
     check_svg(d2)
     texts = text(ET.fromstring(d.svg))
-    assert "f32[T, E]" in texts  # the slice xz[:, :E] enters Mixer.conv: written by the arrow
-    assert texts.count("+") == 1  # selective_scan(...) + u * skip
+    assert "T × E" in texts  # the slice xz[:, :E] enters Mixer.conv: written by the arrow
+    assert labels(d, "op").count("+") == 1  # selective_scan(...) + u * skip
     check_svg(d)
 
 
@@ -237,7 +237,6 @@ def test_page(transformer, tmp_path):
     opened = data["clicks"][data["start"]][str(block)]  # a click on Block opens it in place
     assert f'data-box="{attn}"' in data["svgs"][opened] and f'data-box="{attn}"' not in d.svg.split("Component internals")[0]
     assert data["clicks"][opened][str(block)] == data["start"]  # and a click on its title folds it
-    assert set(data["colors"]) >= {"bg", "s0", "norm", "h4", "err"}  # the dark colours
     assert d._repr_html_().startswith("<iframe srcdoc=")
 
 
@@ -246,6 +245,9 @@ def test_save(transformer, tmp_path):
     assert d.save(tmp_path / "t.svg").read_text() == d.svg
     png = d.save(tmp_path / "t.png").read_bytes()
     assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    assert d.save(tmp_path / "dark.png", theme="dark").read_bytes() != png
+    with pytest.raises(ValueError, match="theme is 'light' or 'dark'"):
+        d.save(tmp_path / "t.png", theme="sepia")
     with pytest.raises(ValueError, match="cannot save a diagram as '.pdf'"):
         d.save(tmp_path / "t.pdf")
 
@@ -257,6 +259,7 @@ def test_png_fallbacks(transformer, tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
     if importlib.util.find_spec("matplotlib") is not None:  # drawn again by matplotlib
         assert d.save(tmp_path / "m.png").read_bytes()[:4] == b"\x89PNG"
+        assert d.save(tmp_path / "m_dark.png", theme="dark").read_bytes()[:4] == b"\x89PNG"
     monkeypatch.setitem(sys.modules, "matplotlib", None)
     with pytest.raises(RuntimeError, match="needs a browser"):
         d.save(tmp_path / "none.png")
@@ -283,11 +286,10 @@ def test_timed(timed):
     top = [b["t"] for b in d.model["boxes"] if b["p"] < 0]
     assert sum(top) + t["outside"] == pytest.approx(t["total"])
     assert re.search(r"\n[\d.]+ (ms|µs|s) · [\d.]+%$", node(d, "Block.__call__")[2])
-    texts, _, _ = drawn(d, "Block.__call__")
+    texts, classes = drawn(d, "Block.__call__")
     assert re.fullmatch(r"[\d.]+ (ms|µs|s) · [\d.]+%", texts[-1])  # the time in the box
-    root = check_svg(d)
-    (g,) = [g for g in root.iter(NS + "g") if g.get("data-id") == node(d, "Block.__call__")[0]]
-    assert g.find(NS + "rect").get("class") == f"f-h{_diagram.heat(d.model['boxes'][block]['s'])} k-edge"
+    check_svg(d)
+    assert classes == f"f-h{_diagram.heat(d.model['boxes'][block]['s'])} k-s0"
     assert "measured with jax.profiler" in d.svg and "≥ 40%" in d.svg  # the header and the heat legend
     d2 = d.at(2)
     check_svg(d2)
@@ -370,11 +372,8 @@ def test_error_diagram(buggy):
     ]  # fmt: skip
     assert labels(d, "out") == []  # the trace stopped: nothing returned
     root = check_svg(d)
-    texts, _, _ = drawn(d, "✗ MLP.__call__")
-    assert texts == ["✗ MLP", "received f32[24, 32]", "declared x: f32[D]"]
-    (g,) = [g for g in root.iter(NS + "g") if g.get("data-id") == d.failed]
-    assert g.find(NS + "rect").get("class") == "f-err k-errline"
-    red = [el for el in root if el.tag == NS + "path" and el.get("class") == "k-errline"]
+    assert drawn(d, "✗ MLP.__call__") == (["✗ MLP", "received 24 × 32", "declared x: f32[D]"], "f-errf k-err")
+    red = [el for el in root if el.tag == NS + "path" and el.get("class") == "k-err"]
     assert len(red) == sum(1 for u, v, _ in d.edges if u in d.feeds and (v in d.feeds or v == d.failed))
     assert titles(d) == ["Block  ✗ fails inside"]
     assert "✗ received f32[24, 32], declared x: f32[D]" in d.text
@@ -393,7 +392,7 @@ def test_explain_function():
     assert edge(d, "w", "✗ proj") == "f32[2, 3]"  # w[:-1] is passed through: the type it enters with
     assert {n[2].split("\n")[0] for n in d.nodes if n[0] in d.feeds} == {"x: f32[5, 3]", "w: f32[3, 3]", "proj", "unit"}
     root = check_svg(d)
-    assert "f32[2, 3]" in text(root)  # w[:-1] enters the failing call: written by its arrow
+    assert "2 × 3" in text(root)  # w[:-1] enters the failing call: written by its arrow
     with pytest.raises(expex.ShapeError) as e:
         broken(x, w)
     assert e.value.diagram.nodes == d.nodes

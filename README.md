@@ -184,16 +184,24 @@ total      Stack              49,920  D²·L + D·L   200 kB   106 k  2·D²·L 
 for the transformer in [`examples/`](examples/transformer.py); save it as `.svg`,
 `.png`, or an interactive `.html` page where you click a call to open it:
 
-<img src="docs/images/transformer.png" alt="Diagram of a transformer: tokens, index, Block × L, LayerNorm, matmul, with each block's internals on the right" width="720">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/transformer_dark.png">
+  <img src="docs/images/transformer.png" alt="The transformer drawn from its code, left to right: tokens, index, then a Block × L container holding LayerNorm, Attention, a residual add, LayerNorm, MLP and a second residual add, then the final LayerNorm and matmul">
+</picture>
 
 The same diagram timed on real inputs (`expex.diagram.timed(model, tokens)`), and
 the one a `ShapeError` carries (`e.diagram`), with the failing call and the path
-into it in red:
+into it in red. All of them follow your light or dark theme:
 
-<table><tr>
-<td><img src="docs/images/transformer_timed.png" alt="The transformer diagram with each call coloured by its share of the measured time"></td>
-<td><img src="docs/images/transformer_error.png" alt="The transformer diagram with the MLP call that failed in red"></td>
-</tr></table>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/transformer_timed_dark.png">
+  <img src="docs/images/transformer_timed.png" alt="The transformer diagram with each call coloured by its share of the measured time">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/transformer_error_dark.png">
+  <img src="docs/images/transformer_error.png" alt="The transformer diagram with the MLP call that failed, and the path into it, in red">
+</picture>
 
 **Debugging:** shapes line by line, and where a NaN first appeared:
 

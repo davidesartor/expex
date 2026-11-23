@@ -24,9 +24,10 @@ def run_blocks(doc: str | list[str], tmp_path: pathlib.Path) -> dict:
 
 
 def test_readme_images_exist():
-    text = (ROOT / "README.md").read_text()
-    for src in re.findall(r'<img src="([^"]+)"', text):
-        assert (ROOT / src).is_file(), src
+    for doc in ["README.md", *(f"docs/{page}.md" for page in GUIDE)]:
+        text = (ROOT / doc).read_text()
+        for src in re.findall(r'(?:src|srcset)="([^"]+)"', text):
+            assert (ROOT / doc).parent.joinpath(src).is_file(), (doc, src)
 
 
 def test_readme_blocks_run(tmp_path, capsys):
