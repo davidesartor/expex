@@ -12,6 +12,7 @@ the actions and the root values are compared.
 """
 
 import contextlib
+import functools
 import importlib
 import pathlib
 import sys
@@ -59,11 +60,11 @@ def outputs(result) -> dict[str, np.ndarray]:
     return {k: np.asarray(v) for k, v in out.items()}
 
 
-def compare(ref: dict, jit: bool = True) -> dict[str, dict[str, float]]:
+def compare(ref: dict, jit: bool = True, cases: tuple[str, ...] = tuple(CASES)) -> dict[str, dict[str, float]]:
     """For each case and output, the largest difference from the reference (0 for identical)."""
     mdp, starts, invalid = problem(ref)
     result = {}
-    for name in CASES:
+    for name in cases:
         got = outputs(run(name, mdp, starts, invalid, int(ref[f"{name}/seed"]), jit))
         diffs = {}
         for k, g in got.items():
@@ -75,6 +76,36 @@ def compare(ref: dict, jit: bool = True) -> dict[str, dict[str, float]]:
             diffs[k] = float(np.abs(g.astype(np.float64) - w.astype(np.float64)).max())
         result[name] = diffs
     return result
+
+
+def one_tree(ref: dict, name: str, b: int):
+    """Tree `b` of a case, searched alone by `search` as plain Python: no `vmap`, no `jit`.
+
+    The root (its noisy, masked prior), the mask and the Gumbel noise are those
+    of the reference tree; the keys are those `.vectorize` gives tree `b`.
+    """
+    import mctx as port
+
+    policy, sims, kwargs, _ = CASES[name]
+    t, key = f"{name}/tree/", jax.random.key(int(ref[f"{name}/seed"]))
+    if policy == "muzero":
+        key = jax.random.split(key, 3)[2]
+        select_root, select = functools.partial(port.muzero_action_selection, depth=0), port.muzero_action_selection
+    else:
+        key = jax.random.split(key)[0]
+        considered = kwargs.get("max_num_considered_actions", 16)
+        select_root = functools.partial(
+            port.gumbel_muzero_root_action_selection, num_simulations=sims, max_num_considered_actions=considered
+        )
+        select = port.gumbel_muzero_interior_action_selection
+    batch = ref[t + "parents"].shape[0]
+    keys = [jax.vmap(lambda k: jax.random.split(k, batch))(k)[:, b] for k in port.search_keys(key, sims)]
+    tree = {f: jnp.asarray(ref[t + f][b]) for f in ("children_prior_logits", "raw_values", "embeddings")}
+    root = port.Root(tree["children_prior_logits"][0], tree["raw_values"][0], tree["embeddings"][0])
+    invalid = jnp.asarray(ref[t + "root_invalid_actions"][b]).astype(bool)
+    gumbel = jnp.asarray(ref[t + "root_gumbel"][b]) if t + "root_gumbel" in ref else jnp.zeros_like(root.prior_logits)
+    mdp, _, _ = problem(ref)
+    return port.search(mdp, *keys, root, recurrent_fn, select_root, select, invalid, gumbel, kwargs.get("max_depth"))
 
 
 # ------------------------------------------------------------------- speed

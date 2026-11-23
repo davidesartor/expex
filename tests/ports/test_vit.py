@@ -38,7 +38,7 @@ def test_matches_the_original():
 
 
 def test_images_of_another_size_are_refused():
-    model = vit.ViT.init(jr.key(0), GH=2, GW=3, P=4, Q=2, C=3, D=16, H=2, K=8, F=32, Classes=5, layers=2)
+    model = vit.ViT(jr.key(0), GH=2, GW=3, P=4, Q=2, C=3, D=16, H=2, K=8, F=32, Classes=5, layers=2)
     assert model(jnp.ones((8, 6, 3))).shape == (5,)
     with pytest.raises(expex.ShapeError, match="GW \\* Q"):
         model(jnp.ones((8, 8, 3)))

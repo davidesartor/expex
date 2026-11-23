@@ -156,14 +156,14 @@ def test_attention(transformer):
     causal = [n[0] for n in d.nodes if n[2].startswith("Attention.causal")][0]
     into = [t for _, v, t in d.edges if v == causal]
     assert into == ["f32[4, T, D // 4]"] * 3
-    small = transformer.Attention.init(jr.key(0), D=8, heads=2)  # sizes from the instance
+    small = transformer.Attention(jr.key(0), D=8, heads=2)  # sizes from the instance
     assert labels(diagram(small.__call__), "call")[0] == "Attention.split\nf32[T, 8] → f32[2, T, 4]"
 
 
 def test_sizes_and_bound_methods(transformer):
     d = diagram(transformer.Transformer.__call__, T=128, blocks=6)
     assert labels(d, "in") == ["tokens: i32[128]"] and "× 6" in d.boxes.values()
-    model = transformer.Transformer.init(jr.key(0), Vocab=50, D=32, F=64, blocks=4, heads=4)
+    model = transformer.Transformer(jr.key(0), Vocab=50, D=32, F=64, blocks=4, heads=4)
     d = diagram(model.__call__)
     assert labels(d, "out") == ["return f32[T, 50]"] and "× 4" in d.boxes.values()
     with pytest.raises(TypeError, match="unknown size or parameter `Q`"):
@@ -293,7 +293,7 @@ def test_png_fallbacks(transformer, tmp_path, monkeypatch):
 
 @pytest.fixture(scope="module")
 def timed(transformer):
-    model = transformer.Transformer.init(jr.key(0), Vocab=64, D=32, F=64, blocks=2, heads=4)
+    model = transformer.Transformer(jr.key(0), Vocab=64, D=32, F=64, blocks=2, heads=4)
     return expex.diagram.timed(model.__call__, jr.randint(jr.key(1), (16,), 0, 64))
 
 
@@ -325,7 +325,7 @@ def test_timed_loops_add_up_iterations(transformer):
     """A staged loop's body is one box, timed over all its iterations."""
     runs = {}
     for n in (2, 4):
-        model = transformer.Transformer.init(jr.key(0), Vocab=64, D=32, F=64, blocks=n, heads=4)
+        model = transformer.Transformer(jr.key(0), Vocab=64, D=32, F=64, blocks=n, heads=4)
         d = expex.diagram.timed(model.__call__, jr.randint(jr.key(1), (16,), 0, 64))
         (block,) = [b for b in d.model["boxes"] if b["l"] == "Block.__call__"]
         runs[n] = block["n"]  # XLA instructions run per call, in the block
@@ -337,7 +337,7 @@ def test_timed_estimate(transformer, monkeypatch):
         raise RuntimeError("no profiler here")
 
     monkeypatch.setattr(_diagram, "_profile", no_profiler)
-    model = transformer.Transformer.init(jr.key(0), Vocab=64, D=32, F=64, blocks=2, heads=4)
+    model = transformer.Transformer(jr.key(0), Vocab=64, D=32, F=64, blocks=2, heads=4)
     d = expex.diagram.timed(model.__call__, jr.randint(jr.key(1), (16,), 0, 64))
     t = d.model["timing"]
     assert t["how"] == "estimate" and "no profiler here" in t["why"]
@@ -382,7 +382,7 @@ def buggy(tmp_path_factory):
 
 
 def test_error_diagram(buggy):
-    model = buggy.Transformer.init(jr.key(0), Vocab=50, D=32, F=64, blocks=3, heads=4)
+    model = buggy.Transformer(jr.key(0), Vocab=50, D=32, F=64, blocks=3, heads=4)
     with pytest.raises(expex.ShapeError, match=r"MLP.__call__\(\): argument `x`") as e:
         model(jr.randint(jr.key(1), (24,), 0, 50))
     assert "e.diagram" not in str(e.value)  # the message is unchanged; the hint is a note

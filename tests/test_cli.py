@@ -279,3 +279,16 @@ def test_shapes_text_and_errors(tmp_path):
     r = expex("shapes", "shapes_bad.py", "--json", cwd=tmp_path)
     (d,) = json.loads(r.stdout)["diagnostics"]
     assert (d["line"], d["severity"]) == (1, "error") and d["message"].startswith("SyntaxError")
+
+
+def test_docs_page_shows_real_output(tmp_path):
+    """The `shapes` example on docs/tools.md is what the command prints."""
+    blocks = re.findall(r"```(\w*)\n(.*?)```", (ROOT / "docs" / "tools.md").read_text(), flags=re.S)
+    (src,) = [b for lang, b in blocks if lang == "python"]
+    (text,) = [b for _, b in blocks if b.startswith("attention[B, T, D]")]
+    (data,) = [b for _, b in blocks if b.startswith('{"hints"')]
+    (tmp_path / "model.py").write_text(src)
+    r = expex("shapes", "model.py", cwd=tmp_path)
+    assert r.stdout == text
+    r = expex("shapes", "model.py", "--json", cwd=tmp_path)
+    assert r.stdout.replace(str((tmp_path / "model.py").resolve()), "/path/to/model.py") == data

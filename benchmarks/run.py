@@ -122,7 +122,7 @@ def main() -> None:
         probe = subprocess.run([sys.executable, "-c", "import jax; print(jax.default_backend())"],
                                capture_output=True, text=True, env=env)  # fmt: skip
         kind = "gpu" if probe.stdout.strip() == "gpu" else "cpu"
-    label = "gpu" if (args.device == "gpu" or kind == "gpu") else args.device if args.device != "auto" else "cpu"
+    label = "gpu" if "gpu" in (args.device, kind) else "cpu"
     out = pathlib.Path(args.out) if args.out else HERE / "results" / f"{label}-{time.strftime('%Y-%m-%d')}{'-quick' if args.quick else ''}.json"
     if not out.is_absolute() and not out.parent.exists() and (HERE / out).parent.exists():
         out = HERE / out  # `--out results/x.json` from the repository root

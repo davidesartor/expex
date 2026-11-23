@@ -24,28 +24,42 @@ class Stack[D]:
             x = block(x)
         return x
 
-model = Stack.init(jr.key(0), D=16, blocks=24)  # every array built from its annotation
+model = Stack(jr.key(0), D=16, blocks=24)  # a key first: every array built from its annotation
 y = jax.jit(lambda m, x: m(x))(model, jnp.ones((4, 16)))
 grads = jax.grad(lambda m: m(jnp.ones((4, 16))).sum())(model)   # a Stack too
 ```
 
 - A struct is a frozen dataclass and a pytree. Fields with array annotations
   are traced, fields with plain Python types are static.
-- `Stack.init(key, <sizes>)` builds every array from its annotation. An array
-  field's default says how: a JAX initializer (any function of `(key, shape,
-  dtype)`) or a number to fill it with. Nested modules are built the same way;
-  a list of them takes its length (`blocks=24`); other settings reach nested
-  modules too (`heads=8`), and any field can be passed instead of built.
-- The constructor takes the values themselves: `Block(w, b)`. A hand-written
-  `__init__` also works: assign the fields as usual, and the result is checked
-  against the annotations. JAX and `.replace(...)` rebuild objects without
-  calling it.
+- `Stack(key, <sizes>)`, with a PRNG key first (`jr.key(0)`, or a raw
+  `jr.PRNGKey(0)`), builds every array from its annotation. An array field's
+  default says how: a JAX initializer (any function of `(key, shape, dtype)`)
+  or a number to fill it with. The rest is by name: the sizes (`D=16`, any size
+  the class or a module in it uses), the length of a list of modules by its
+  field name (`blocks=24`), and fields, of the class or of nested modules
+  (`heads=8`), which are taken instead of built. Nested modules are built the
+  same way.
+- Without a key first, the constructor takes the values themselves, as any
+  dataclass does: `Block(w, b)` or `Block(w=w, b=b)`. (If the first field is
+  itself annotated as a key, a key first is its value.)
+- A hand-written `__init__` also works: assign the fields as usual, and the
+  result is checked against the annotations. It replaces both forms above;
+  `expex.build(Stack, key, D=16, blocks=24)` still builds from the annotations.
+  JAX and `.replace(...)` rebuild objects without calling `__init__`.
 - Every method is an `@expex.fn` sharing the class's sizes, so
   `expex.prove(Block.__call__)` works without an instance.
 - A loop over identical layers is one `lax.scan`, so a deep model compiles in
   the time one layer takes.
-- `model.vectorize(x)` maps `__call__` over extra axes. Other decorators go on the
-  methods themselves.
+- A method called with extra leading axes on its arguments maps over them, so
+  a per-token layer takes a sequence: `self.norm(h)`. `model.vectorize(x)`
+  says so explicitly, and also maps over a batch of models (fields with extra
+  axes), which a plain call never does. Other decorators go on the methods
+  themselves.
+
+```
+>>> Stack(jr.key(0), blocks=24)
+TypeError: Stack(key, ...) needs D: the size of `blocks[*].w` (f32[D, D]). Pass it by name, e.g. Stack(key, D=64, ...).
+```
 
 Annotations can use the struct's fields through `self`, and a method's
 leading `assert` on the class's sizes and fields is an invariant of the class:
@@ -65,6 +79,44 @@ class Heads[D]:
 Heads(jnp.eye(8)).split(jnp.ones((5, 8))).shape      # (4, 5, 2)
 print(expex.prove(Heads.split).ok)                      # True
 ```
+
+
+## Changing part of a model
+
+`model.at` reaches into a model and returns a copy with one part changed:
+
+```python
+edited = model.at.blocks[5].w.multiply(1e3)           # one block's weights
+edited = edited.at.blocks[0].b.set(jnp.ones(16))      # checked against `b: f32[D]`
+edited = edited.at.blocks[0].w[0, :3].set(0.0)        # arrays are indexed as with x.at[...]
+edited = edited.at.blocks[2].apply(lambda b: b.replace(act=jax.nn.relu))
+print(edited.at.blocks[2].act.get())                  # reading works too: <function relu ...>
+assert edited.at.blocks[0].b.get().tolist() == [1.0] * 16 and model.blocks[0].b.sum() == 0
+try:
+    model.at.blocks[5].w.set(jnp.zeros((8, 8)))
+except expex.ShapeError as e:
+    print(e)
+```
+
+- `.set(v)`, `.add(v)`, `.multiply(v)`, `.apply(f)` return a new model of the
+  same structure (also under `jax.jit`); `.get()` returns the part. `add` and
+  `multiply` on a module apply to each of its arrays.
+- The path is fields (`.blocks`, or `["set"]` for a field named like a
+  method), list and dict elements (`[5]`), then indices into an array
+  (`[0, :3]`). Static fields can be read and replaced like the others.
+- The new value is checked against its annotation, with the sizes the rest of
+  the model fixes, so a mistake names the path (the `try` above):
+
+```
+Stack.at.blocks[5].w.set(...): `blocks[5].w` is f32[8, 8], but is declared f32[D, D].
+
+    D is 16 (from `blocks[0].w: f32[16, 16]`), but axis 0 of `blocks[5].w` is 8.
+```
+
+- A list of identical modules held stacked, one array per field with a
+  leading layer axis (as a loop collects them, or `jax.vmap` builds them:
+  `jax.vmap(lambda k: Block(k, D=16))(keys)`), is indexed by row: `[5]` changes
+  row 5 of every array, as it changes the sixth module of a list.
 
 
 ## Model summary
@@ -125,7 +177,7 @@ ShapeError: expex.load(Mamba, 'mamba.npz'):
 field:
 
 ```python
-small = Stack.init(jr.key(0), D=16, blocks=3)
+small = Stack(jr.key(0), D=16, blocks=3)
 expex.save(small, "base.npz")
 grads = jax.grad(lambda m: (m(jnp.ones((4, 16))) ** 2).mean())(small)
 tuned = jax.tree.map(lambda p, g: p - 0.1 * g, small, grads)   # one SGD step

@@ -57,6 +57,16 @@ def misc[*Batch, H, W](
     return img.mean(-1), jnp.int32(0)
 
 
+@fn
+def rows[B](x: f32[B, R:6, C:7]) -> f32[B, R]:  # type: ignore  # sizes declared by name (R:6)
+    return x.sum(-1)
+
+
+@dataclass
+class Board:
+    cells: i32[Rows:6, Cols:7]  # type: ignore  # sizes declared by name
+
+
 class Model:
     @fn
     def call[D](self, x: f32[D], scale: float = 1.0) -> f32[D]:
@@ -70,6 +80,8 @@ assert_type(pad(x[0]), jax.Array)
 assert_type(step(x[0, 0], jnp.float32(0.1), 2, jr.key(0)), jax.Array)
 assert_type(Model().call(x[0, 0]), jax.Array)
 assert_type(Model().call.vectorize(x[0], scale=2.0), jax.Array)
+assert_type(rows(x[:, :2]), jax.Array)
+assert_type(Board(jnp.zeros((6, 7), jnp.int32)).cells, jax.Array)
 
 report = expex.prove(attend)
 assert_type(report.ok, bool)
@@ -85,3 +97,4 @@ with expex.rng(0):
 attend(x)  # E: missing argument
 step(x[0, 0], jnp.float32(0.1), "two", jr.key(0))  # E: n must be an int
 Model().call(x[0, 0], scale="big")  # E: scale must be a float
+rows("x")  # E: still checked where sizes are declared by name

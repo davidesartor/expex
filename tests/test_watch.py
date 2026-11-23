@@ -19,7 +19,7 @@ from transformer import Transformer  # noqa: E402
 
 @pytest.fixture(scope="module")
 def setup():
-    m = Transformer.init(jr.key(0), Vocab=20, D=16, F=32, blocks=3, heads=2)
+    m = Transformer(jr.key(0), Vocab=20, D=16, F=32, blocks=3, heads=2)
     return m, jr.randint(jr.key(1), (4, 9), 0, 20)
 
 

@@ -17,9 +17,9 @@ remat are JAX's own. Each module has one job:
 | `messages.py` | Error messages, hints and the notes added to exceptions. |
 | `function.py` | `Fn`: binds arguments, checks them and the result, runs the body; `config`. |
 | `decorators.py` | `@fn`, `@jit` (`donate="auto"` too), `@vectorize`, `@random`, `@remat`. |
-| `batching.py` | `f.vectorize(...)`: mapping over extra leading axes. |
+| `batching.py` | Mapping over extra leading axes: `f.vectorize(...)`, and plain calls that need it; eager mapped calls compiled from the second call. |
 | `keys.py` | Implicit random keys (`expex.key()`). |
-| `modules.py` | `@expex.struct`: modules registered as pytrees whose methods are `@fn`s; `Module.init(key, D=64)`. |
+| `modules.py` | `@expex.struct`: modules registered as pytrees whose methods are `@fn`s; the generated constructor (`Module(key, D=64)` builds, `Module(w, b)` takes values), `expex.build`, `model.at[...]` updates. |
 | `io.py` | `expex.save` / `expex.load`: one `.npz` per model, checked against the annotations on load. |
 | `sharding.py` | `expex.shard`, `expex.shardings`: shardings from axis names mapped to mesh axes. |
 | `consts.py` | `expex.eps`, `expex.tiny`, `expex.huge`: dtype limits resolved against the array they meet. |
@@ -45,10 +45,12 @@ remat are JAX's own. Each module has one job:
 | `nan.py`, `shapes.py`, `program.py` | `debug.find_nan`; `debug.shapes`; `debug.ops`, `timing`, `memory`. |
 | `pages.py` | The HTML the tools write: page shell, light/dark palette, tree tables, JSON data. |
 
-A call to an `@fn` goes `Fn.__call__` → (`batching.vectorize` if vectorized) → `_run`
-(opens a key scope if random) → `_run_checked` (through `CALL_HOOK` when a tool installed
-one) → `_checked`, which matches arguments with `annotations/spec.py`, runs the converted
-body (`staging/convert.py` output calling `staging/runtime.py`), and matches the result.
+A call to an `@fn` goes `Fn.__call__` → `_run` (opens a key scope if random) →
+`_run_checked` (through `CALL_HOOK` when a tool installed one) → `_checked`, which matches
+arguments with `annotations/spec.py`, runs the converted body (`staging/convert.py` output
+calling `staging/runtime.py`), and matches the result. When arguments fail to match only
+by extra leading axes, `_checked` raises `batching.Rebatch` and `_run` maps the call over
+them with `batching.vectorize`.
 
 The tools that need no data (`prove`, `cost`, `profile`, `summary`, `diagram`,
 `debug.shapes`) all go through `tools/trace.py`: `resolve(target, sizes)` then

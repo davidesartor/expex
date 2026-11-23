@@ -48,6 +48,7 @@ from .tools.cost import cost
 from .tools.diff import Diff, diff
 from .tools.prove import Report, prove
 from .tools.summary import Summary, summary
+from .tools.annotate import annotate
 
 __all__ = [
     # decorate

@@ -34,7 +34,7 @@ def tf():
 
 @pytest.fixture(scope="module")
 def tf_model(tf):
-    return tf.Transformer.init(jr.key(0), Vocab=50, D=32, F=64, blocks=4)
+    return tf.Transformer(jr.key(0), Vocab=50, D=32, F=64, blocks=4)
 
 
 @pytest.fixture(scope="module")
@@ -110,7 +110,7 @@ def test_class_and_sizes(tf, tf_summary, tf_model):
 
 
 def test_static_fields_differ_from_defaults(tf):
-    model = tf.Transformer.init(jr.key(0), Vocab=50, D=32, F=64, blocks=2, heads=8)
+    model = tf.Transformer(jr.key(0), Vocab=50, D=32, F=64, blocks=2, heads=8)
     s = summary(model, T=16)
     attn = by_path(s)["blocks[*].attn"]
     assert attn.flops == expex.cost(model.blocks[0].attn.__call__).flops  # the instance's, in T
@@ -156,7 +156,7 @@ class Net[D, F]:
 
 
 def test_renamed_sizes_and_plain_lists():
-    model = Net.init(jr.key(0), D=3, F=5, gains=[jnp.ones(3), jnp.ones(3)])
+    model = Net(jr.key(0), D=3, F=5, gains=[jnp.ones(3), jnp.ones(3)])
     s = summary(model)
     rows = by_path(s)
     assert list(rows) == ["up", "up.w", "up.b", "down", "down.w", "down.b", "gains[*]"]  # extra is None

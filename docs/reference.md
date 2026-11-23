@@ -20,6 +20,7 @@ def example[*Batch, H, W](
     idx: Int[*Batch],                # any integer dtype
     p: Params[W],                    # fields are checked, D is bound to W
     pair: f32[Literal[2], ...],      # a literal size, then any axes
+    grid: f32[Rows:6, Cols:7],       # sizes named in place: Rows, Cols are 6 and 7
     scale: f32,                      # a scalar array or a Python number
     steps: int = 1,                  # a plain Python value
     key: Key | None = None,
@@ -30,7 +31,7 @@ def example[*Batch, H, W](
 | Kind | Annotations |
 |---|---|
 | Arrays | `f16 f32 f64 i8 … i64 u8 … u64 c64 c128`, any of a kind: `Float Int UInt Bool Complex Num Arr` |
-| Sizes | type parameters (`def f[B, T]`), `Literal[3]`, `class RGB(Dim, size=3)`, `*Rest` (any number of axes, the same everywhere), `...` (any number, unchecked), `Any` (one, unchecked) |
+| Sizes | type parameters (`def f[B, T]`), `Literal[3]`, `class RGB(Dim, size=3)`, `RGB:3` (a fixed size named in place, then `RGB`), `*Rest` (any number of axes, the same everywhere), `...` (any number, unchecked), `Any` (one, unchecked) |
 | Derived sizes | `f32[T + 1]`, `f32[heads, D // heads]`, `f32[self.heads]`; constraints: a leading `assert T >= 2` |
 | Containers | `tuple[...]`, `list[X]`, `dict[str, X]`, `X \| None`, NamedTuples and dataclasses, generic ones too |
 | Stacked | `Batch[Transition, T, N]`: a `Transition` whose arrays all have leading axes `T, N` |
@@ -87,7 +88,9 @@ originals:
   in-place updates of anything but a local variable, and variables shared with
   a nested function. A variable assigned on only one traced path reads as
   zeros on the other.
-- `vectorize` needs batch axes in front, and not on arguments with a `*Rest` shape.
+- Mapping over extra axes (by itself or with `.vectorize`) needs them in front,
+  and never maps an argument annotated with a `*Rest` shape. A plain call never
+  maps over `self`.
 - `debug.find_nan` and parts of the prover read JAX internals; they are tested
   on JAX 0.12.
 - A `spot-checked` proof verdict is evidence, not proof.

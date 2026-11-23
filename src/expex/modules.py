@@ -113,8 +113,6 @@ def struct(cls: Any = None, /, **moved: Any) -> Any:
         _register(cls, tuple(data), tuple(meta))
         if custom_init:
             _wrap_init(cls)
-        elif not getattr(vars(cls).get("__init__"), "__expex_generated__", False):
-            _constructor(cls)
 
         fields = {f.name for f in dataclasses.fields(cls)}
         if "at" not in vars(cls) and "at" not in fields:
@@ -159,6 +157,8 @@ def struct(cls: Any = None, /, **moved: Any) -> Any:
             cls.replace = replace
         cls.__expex_struct__ = True
         cls.__expex_where__ = _invariants(cls)
+        if not custom_init and not getattr(vars(cls).get("__init__"), "__expex_generated__", False):
+            _constructor(cls)  # last: it reads the annotations of the finished class
         return cls
 
     return build(cls) if cls is not None else build
@@ -387,10 +387,13 @@ def _constructor(cls: Any) -> None:
     """``Cls(key, D=16, blocks=4)`` builds from the annotations; ``Cls(w, b)`` takes values.
 
     The constructor is generated for each class, like the dataclass one it
-    replaces, so construction from values costs what a dataclass's does: an
-    identity test per field, and a look at the first value's dtype (is it a
-    PRNG key?). Anything unusual (keywords that are not fields, a key, missing
-    fields) goes to ``slow``, which also writes the error messages.
+    replaces, and like it takes no ``*args`` or ``**kwargs``, so that CPython
+    still specializes ``Cls(w, b)``: construction from values costs what a
+    dataclass's does, plus an identity test per field and, for classes that can
+    be built, a look at the first value (is it a PRNG key?). The sizes and
+    nested fields that building takes are parameters too, after the fields.
+    Anything unusual (a key, missing fields, settings) goes to ``slow``, which
+    also writes the error messages.
     """
     fields = dataclasses.fields(cls)
     names = [f.name for f in fields]
@@ -407,14 +410,21 @@ def _constructor(cls: Any) -> None:
             accepts[typed] = bool(names) and _accepts(cls, names[0], x)
         return not accepts[typed]
 
-    def slow(self: Any, values: tuple[Any, ...], kw: dict[str, Any]) -> None:
+    def slow(self: Any, values: tuple[Any, ...], kw: dict[str, Any], positional: bool = False) -> None:
+        """``values``: the fields in order (``_NOT_GIVEN`` where not given); ``kw``: the rest.
+
+        From the generated constructor, a field after the first may have been
+        given by name or by position: it binds to the same parameter.
+        """
+        kw = {k: v for k, v in kw.items() if v is not _NOT_GIVEN}
         first = values[0] if values else _NOT_GIVEN
         if first is not _NOT_GIVEN and keyed(first):
-            if any(v is not _NOT_GIVEN for v in values[1:]):
+            if positional and len(values) > 1:
                 raise TypeError(
                     f"{cls.__name__}(key, ...): after the key, give sizes and fields by name, "
                     f"e.g. {cls.__name__}(key, D=64)."
                 )
+            kw.update({n: v for n, v in zip(names[1:], values[1:]) if v is not _NOT_GIVEN})
             _build_root(cls, first, kw, f"{cls.__name__}(key, ...)", self)
             return
         given = {n: v for n, v in zip(names, values) if v is not _NOT_GIVEN}
@@ -443,23 +453,38 @@ def _constructor(cls: Any) -> None:
         for n in names:
             object.__setattr__(self, n, given[n])
 
-    simple = (
-        bool(fields)
-        and all(f.init and not f.kw_only for f in fields)
-        and not hasattr(cls, "__post_init__")
-        and all(n.isidentifier() and n != "self" and not n.startswith("_expex") for n in names)
-    )
+    simple = bool(fields) and all(f.init and not f.kw_only for f in fields)
+    simple = simple and not hasattr(cls, "__post_init__") and all(_free(n) for n in names)
+    buildable = _buildable(cls, fields)
+    settings: list[str] | None
+    try:
+        sizes, nested, _ = _sizes_and_fields(cls)
+        settings = sorted((sizes | nested) - set(names))
+    except Exception:  # annotations not resolvable yet (a forward reference)
+        settings = None
+    marked = any(isinstance(f.default, (Initializer, _Required)) for f in fields)
+    if settings is None or not all(_free(n) for n in settings):
+        simple = False
+    elif not buildable and not settings and not marked:
+        cls.__init__.__expex_generated__ = True  # a record of arrays: the dataclass's own
+        return
     if simple:
-        __init__ = _generate(cls, fields, slow, keyed, _buildable(cls, fields))
-    else:  # init=False / kw_only fields, __post_init__: around the dataclass constructor
+        assert settings is not None
+        __init__ = _generate(cls, fields, slow, keyed, settings, buildable)
+    else:  # init=False / kw_only fields, __post_init__, unknown sizes: around the dataclass constructor
         generated = cls.__init__
         check = any(isinstance(f.default, (Initializer, _Required)) for f in fields)
 
         @functools.wraps(generated)
         def __init__(self: Any, *args: Any, **kwargs: Any) -> None:
             if args and keyed(args[0]):
-                return slow(self, args, kwargs)
-            generated(self, *args, **kwargs)
+                return slow(self, args, kwargs, positional=True)
+            try:
+                generated(self, *args, **kwargs)
+            except TypeError:
+                if any(k not in names for k in kwargs):
+                    slow(self, args, kwargs, positional=True)  # its message: sizes without a key
+                raise
             if check:
                 unbuilt(cls, self)
 
@@ -467,12 +492,34 @@ def _constructor(cls: Any) -> None:
     cls.__init__ = __init__
 
 
+def _expected(cls: Any, name: str) -> Any:
+    """The class a value of field ``name`` has, if its annotation says (and it is not an array)."""
+    spec = parse_owner(cls)
+    s = spec.fields.get(name) if isinstance(spec, StructSpec) else None
+    if isinstance(s, SeqSpec):
+        return s.kind
+    if isinstance(s, StructSpec):
+        return s.cls
+    if isinstance(s, TupleSpec):
+        return tuple
+    if isinstance(s, DictSpec):
+        return dict
+    return _NotGiven  # matches nothing given
+
+
+def _free(name: str) -> bool:
+    """Can ``name`` be a parameter of a generated constructor?"""
+    import keyword
+
+    return name.isidentifier() and not keyword.iskeyword(name) and name != "self" and not name.startswith("_expex")
+
+
 def _buildable(cls: Any, fields: Any) -> bool:
     """Can a key given first build anything: an array with an initializer, or a nested module?
 
-    If not (a record of arrays such as a game state), building would need every
-    field by name, so the constructor does not look for a key in front of the
-    field values: building then goes through keywords, which ``slow`` handles.
+    If not (a record of arrays, such as a game state), building would need every
+    field by name anyway, so the constructor is the dataclass one: it does not
+    look for a key or take sizes. ``expex.build(Cls, key, ...)`` still works.
     """
     anns = _class_annotations(cls)
     for f in fields:
@@ -483,53 +530,75 @@ def _buildable(cls: Any, fields: Any) -> bool:
         try:
             spec = parse(anns.get(f.name))
         except Exception:
-            return True  # not known yet (a forward reference): look for keys
+            return True  # not known yet (a forward reference): it may be a module
         if not isinstance(spec, (ArraySpec, KeySpec, StaticSpec, NoneSpec)):
             return True  # a nested module, a list of them, ...
     return False
 
 
-def _generate(cls: Any, fields: Any, slow: Any, keyed: Any, buildable: bool) -> Any:
-    """The source of a constructor taking field values, with a way out to ``slow``."""
+def _generate(cls: Any, fields: Any, slow: Any, keyed: Any, settings: list[str], build: bool) -> Any:
+    """A constructor taking field values, with a way out to ``slow``.
+
+    For ``Block(w, b, act)`` with sizes ``D``::
+
+        def __init__(self, _expex_0=N, /, b=N, act=N, w=N, D=N): ...
+
+    The first field is positional-only, and also a keyword parameter after the
+    others, so that ``Block(key, w=...)`` binds. No parameter takes ``*args``
+    or ``**kwargs``, which would keep CPython from specializing the call.
+    Without ``build`` (nothing can be built: no initializers, no nested
+    modules), the fields are parameters as in a dataclass and the first value is
+    not looked at; the sizes are still parameters, so that ``Cls(key, D=3)``
+    explains what is missing.
+    """
     names = [f.name for f in fields]
     ns: dict[str, Any] = {
         "_expex_N": _NOT_GIVEN, "_expex_slow": slow, "_expex_keyed": keyed,
         "_expex_set": object.__setattr__, "_expex_U32": _U32, "_expex_Array": _ArrayImpl,
-        "_expex_plain": _PLAIN,
+        "_expex_plain": _PLAIN, "_expex_expected": _expected(cls, names[0]),
     }  # fmt: skip
-    every = "(" + "".join(f"{n}, " for n in names) + ")"
-    out = f"return _expex_slow(self, {every}, _expex_kw)"
+    first = "_expex_0" if build else names[0]
+    values = "(" + "".join(f"{n}, " for n in [first, *names[1:]]) + ")"
+    extra = ([names[0]] if build else []) + settings
+    kw = "{" + ", ".join(f"{n!r}: {n}" for n in extra) + "}"
+    out = f"return _expex_slow(self, {values}, {kw})"
 
-    def fill(f: Any) -> str:
+    def fill(f: Any, var: str) -> str:
         if f.default_factory is not dataclasses.MISSING:
             ns[f"_expex_F_{f.name}"] = f.default_factory
-            return f"{f.name} = _expex_F_{f.name}()"
+            return f"{var} = _expex_F_{f.name}()"
         if _unbuilt_default(f):
             return out
         ns[f"_expex_D_{f.name}"] = f.default
-        return f"{f.name} = _expex_D_{f.name}"
+        return f"{var} = _expex_D_{f.name}"
 
-    f0 = names[0]
-    rest = "".join(f", {n}=_expex_N" for n in names[1:])
-    lines = [
-        f"def __init__(self, {f0}=_expex_N, /{rest}, **_expex_kw):",
-        "    if _expex_kw:",  # the first field by name, or anything unusual
-        f"        if {f0} is not _expex_N or len(_expex_kw) != 1 or {f0!r} not in _expex_kw:",
-        f"            {out}",
-        f"        {f0} = _expex_kw[{f0!r}]",
-        f"    elif {f0} is _expex_N:",
-        f"        {fill(fields[0])}",
-    ]
-    if buildable:  # a PRNG key first: build. A jax array is looked at closer only if uint32.
+    params = [f"{first}=_expex_N"] + (["/"] if build else []) + [f"{n}=_expex_N" for n in names[1:] + extra]
+    lines = [f"def __init__(self, {', '.join(params)}):"]
+    if settings:  # sizes or nested fields: building (or a mistake)
+        lines += [f"    if {' or '.join(f'{n} is not _expex_N' for n in settings)}:", f"        {out}"]
+    if build:
+        f0 = names[0]
         lines += [
-            f"    elif (_expex_c := {f0}.__class__) is _expex_Array:",
-            f"        if {f0}.aval.dtype is _expex_U32 and _expex_keyed({f0}):",
+            "    if _expex_0 is _expex_N:",
+            f"        _expex_0 = {f0}",  # the first field by name
+            "        if _expex_0 is _expex_N:",
+            f"            {fill(fields[0], '_expex_0')}",
+            f"    elif {f0} is not _expex_N:",
+            f"        {out}",
+            # a PRNG key first: build. The class the annotation expects (a list of
+            # modules, a module) is never a key; a jax array is looked at closer if uint32.
+            "    elif (_expex_c := _expex_0.__class__) is _expex_expected:",
+            "        pass",
+            "    elif _expex_c is _expex_Array:",
+            "        if _expex_0.aval.dtype is _expex_U32 and _expex_keyed(_expex_0):",
             f"            {out}",
-            f"    elif _expex_c not in _expex_plain and _expex_keyed({f0}):",
+            "    elif _expex_c not in _expex_plain and _expex_keyed(_expex_0):",
             f"        {out}",
         ]
-    lines += [f"    if {f.name} is _expex_N: {fill(f)}" for f in fields[1:]]
-    lines += [f"    _expex_set(self, {n!r}, {n})" for n in names]
+    else:
+        lines += [f"    if {first} is _expex_N: {fill(fields[0], first)}"]
+    lines += [f"    if {f.name} is _expex_N: {fill(f, f.name)}" for f in fields[1:]]
+    lines += [f"    _expex_set(self, {n!r}, {v})" for n, v in zip(names, [first, *names[1:]])]
     exec("\n".join(lines), ns)
     init = ns["__init__"]
     init.__qualname__ = f"{cls.__qualname__}.__init__"
@@ -538,6 +607,18 @@ def _generate(cls: Any, fields: Any, slow: Any, keyed: Any, buildable: bool) -> 
         f"{cls.__name__}(<field values>), or {cls.__name__}(key, <sizes and fields by name>) "
         f"to build the arrays from their annotations."
     )
+    params_shown = [inspect.Parameter("self", inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+    for f in fields:
+        default = inspect.Parameter.empty if _unbuilt_default(f) else f.default
+        if f.default_factory is not dataclasses.MISSING:
+            default = inspect.Parameter.empty
+        params_shown.append(inspect.Parameter(f.name, inspect.Parameter.POSITIONAL_OR_KEYWORD, default=default))
+    if settings:
+        params_shown.append(inspect.Parameter("sizes", inspect.Parameter.VAR_KEYWORD))
+    try:
+        init.__signature__ = inspect.Signature(params_shown)
+    except ValueError:  # a default before a field without one (REQUIRED): show the code's own
+        pass
     return init
 
 

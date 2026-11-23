@@ -14,7 +14,7 @@ def dropout[D](x: f32[D], rate: float = 0.5) -> f32[D]:
 expex.seed(0)
 dropout(jnp.ones(6))                        # different on every call
 dropout(jnp.ones(6), key=jr.key(1))         # or choose the key
-dropout.vectorize(jnp.ones((4, 6)))              # each row gets its own key
+dropout(jnp.ones((4, 6)))                   # mapped over the rows: each gets its own key
 ```
 
 Every `expex.key()` is a new key. Nested calls, branches and loop iterations
@@ -37,7 +37,7 @@ repeat(jnp.ones(3), 4, 0.5).shape                       # (12,)
 | Option | |
 |---|---|
 | `jit=True` | compile; static arguments are read from the signature |
-| `vectorize=True` | plain calls take extra leading batch axes |
+| `vectorize=False` | extra leading axes are an error instead of being [mapped over](functions.md#vectorising) (`True`, the default, keeps them mapped even with `expex.config(vectorize=False)`) |
 | `random=True` | `expex.key()` inside gives a fresh key on every call |
 | `remat=True` | recompute in the backward pass (`jax.checkpoint`); or a policy: `"dots"`, `"dots_no_batch"`, `"everything"` |
 | `donate=("state",)` | with `jit`: reuse these arguments' buffers |

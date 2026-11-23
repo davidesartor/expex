@@ -234,6 +234,8 @@ def for_(
         except Exception as e:  # e.g. the loop index is used as a Python int
             first = (str(e).strip().splitlines() or [""])[0]
             LOG[site] = f"for -> unrolled ({type(e).__name__}: {first[:120]})"
+            if not isinstance(it.n, int):  # a symbolic length (proving) cannot be unrolled either
+                raise
         _warn_unrolled(site, it.n)
     elif keys.tracing() and site not in LOG:
         LOG[site] = f"for -> unrolled (iterating over a {type(iterable).__name__})"

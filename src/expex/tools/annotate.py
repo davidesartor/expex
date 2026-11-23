@@ -31,6 +31,7 @@ from typing import Any, Callable, Iterator, Mapping, Sequence
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.core import Tracer
 
 __all__ = ["annotate", "Annotation"]
 
@@ -199,7 +200,8 @@ class Flow:
     def __init__(self, closed: Any):
         self.parent: list[int] = []
         self.size: list[int] = []
-        self.index: dict[int, list[int]] = {}
+        self.index: dict[tuple[tuple[int, ...], int], list[int]] = {}
+        self.ctx: tuple[int, ...] = ()
         self._keep: list[Any] = []
         self.facts: dict[int, set[str]] = defaultdict(set)
         self.rels: list[tuple[Any, ...]] = []
@@ -212,15 +214,21 @@ class Flow:
         self.size.append(int(size))
         return len(self.parent) - 1
 
-    def axes(self, v: Any) -> list[int]:
+    def axes(self, v: Any, ctx: tuple[int, ...] | None = None) -> list[int]:
+        """The nodes of a value's axes. A jaxpr called from two places gets nodes per call (``ctx``)."""
         aval = getattr(v, "aval", None)
         shape = getattr(aval, "shape", None)
         if shape is None:
             return []
-        if id(v) not in self.index:
+        key = (self.ctx if ctx is None else ctx, id(v))
+        if key not in self.index:
             self._keep.append(v)
-            self.index[id(v)] = [self.new(int(s)) for s in shape]
-        return self.index[id(v)]
+            self.index[key] = [self.new(int(s)) for s in shape]
+        return self.index[key]
+
+    def nodes_of(self, v: Any) -> list[int] | None:
+        """The nodes of a value of the outermost jaxpr, if it has any."""
+        return self.index.get(((), id(v)))
 
     def find(self, a: int) -> int:
         while self.parent[a] != a:
@@ -235,9 +243,9 @@ class Flow:
         if ra != rb:
             self.parent[max(ra, rb)] = min(ra, rb)
 
-    def link(self, a: Any, b: Any) -> None:
-        """All axes of two values of the same shape."""
-        xa, xb = self.axes(a), self.axes(b)
+    def link(self, a: Any, b: Any, sub: tuple[int, ...] | None = None) -> None:
+        """All axes of two values of the same shape (``b`` in the jaxpr ``sub``, if given)."""
+        xa, xb = self.axes(a), self.axes(b, sub)
         if len(xa) == len(xb):
             for p, q in zip(xa, xb):
                 self.union(p, q)
@@ -246,35 +254,51 @@ class Flow:
         self.facts[node].add(fact)
 
     # -- equations
-    def walk(self, jaxpr: Any) -> None:
-        for eqn in jaxpr.eqns:
-            name = eqn.primitive.name
-            handler = getattr(self, "_" + name.replace("-", "_"), None)
-            if handler is not None:
-                handler(eqn, eqn.params)
-            elif name.startswith("reduce_") or name in ("argmax", "argmin", "reduce"):
-                self._reduce(eqn, eqn.params)
-            elif name.startswith("scatter"):
-                self._scatter(eqn, eqn.params)
-            elif any(True for _ in _sub_jaxprs(eqn.params)):
-                self._call(eqn, eqn.params)
-            else:
-                self._elementwise(eqn)
+    def walk(self, jaxpr: Any, ctx: tuple[int, ...] | None = None) -> None:
+        outer = self.ctx
+        self.ctx = outer if ctx is None else ctx
+        try:
+            for eqn in jaxpr.eqns:
+                name = eqn.primitive.name
+                handler = getattr(self, "_" + name.replace("-", "_"), None)
+                if handler is not None:
+                    handler(eqn, eqn.params)
+                elif name.startswith("reduce_") or name in ("argmax", "argmin", "reduce"):
+                    self._reduce(eqn, eqn.params)
+                elif name.startswith("scatter"):
+                    self._scatter(eqn, eqn.params)
+                elif any(True for _ in _sub_jaxprs(eqn.params)):
+                    self._call(eqn, eqn.params)
+                else:
+                    self._elementwise(eqn)
+        finally:
+            self.ctx = outer
+
+    def sub(self, eqn: Any, k: int = 0) -> tuple[int, ...]:
+        return self.ctx + (id(eqn), k)
 
     def _elementwise(self, eqn: Any) -> None:
-        vals = [v for v in [*eqn.invars, *eqn.outvars] if getattr(getattr(v, "aval", None), "shape", ())]
-        if vals and all(v.aval.shape == vals[0].aval.shape for v in vals):
-            for v in vals[1:]:
-                self.link(vals[0], v)
+        outs = [v for v in eqn.outvars if getattr(getattr(v, "aval", None), "shape", ())]
+        if not outs:
+            return
+        shape = outs[0].aval.shape
+        out = self.axes(outs[0])
+        for v in [*eqn.invars, *outs[1:]]:
+            sh = getattr(getattr(v, "aval", None), "shape", None)
+            if sh is None or len(sh) != len(shape):
+                continue
+            for p, q in zip(self.axes(v), out):
+                self.union(p, q)  # equal sizes only: a size-1 axis broadcasts
 
     def _call(self, eqn: Any, params: Mapping[str, Any]) -> None:
-        for sub in _sub_jaxprs(params):
+        for k, sub in enumerate(_sub_jaxprs(params)):
+            ctx = self.sub(eqn, k)
             if len(sub.invars) == len(eqn.invars) and len(sub.outvars) == len(eqn.outvars):
                 for a, b in zip(eqn.invars, sub.invars):
-                    self.link(a, b)
+                    self.link(a, b, ctx)
                 for a, b in zip(eqn.outvars, sub.outvars):
-                    self.link(a, b)
-            self.walk(sub)
+                    self.link(a, b, ctx)
+            self.walk(sub, ctx)
 
     def _transpose(self, eqn: Any, params: Mapping[str, Any]) -> None:
         x, out = self.axes(eqn.invars[0]), self.axes(eqn.outvars[0])
@@ -363,6 +387,10 @@ class Flow:
                     self.mark(o, _SPLIT_REST)
             elif len(outs) == 1:
                 self.rels.append(("prod", outs[0], ins))
+                self.mark(outs[0], _SPLIT_SRC)
+                self.mark(ins[0], _SPLIT_HEAD)
+                for n in ins[1:]:
+                    self.mark(n, _SPLIT_REST)
             else:
                 self.reshape_notes.append(f"a reshape from {tuple(a)} to {tuple(b)} regroups axes; their sizes are matched by value")
 
@@ -480,71 +508,63 @@ class Flow:
                 self.rels.append(("div", out[c], lhs[a], int(strides[k])))
 
     def _cond(self, eqn: Any, params: Mapping[str, Any]) -> None:
-        for br in params["branches"]:
-            sub = br.jaxpr
+        for k, br in enumerate(params["branches"]):
+            sub, ctx = br.jaxpr, self.sub(eqn, k)
             for a, b in zip(eqn.invars[1:], sub.invars):
-                self.link(a, b)
+                self.link(a, b, ctx)
             for a, b in zip(eqn.outvars, sub.outvars):
-                self.link(a, b)
-            self.walk(sub)
+                self.link(a, b, ctx)
+            self.walk(sub, ctx)
 
     def _while(self, eqn: Any, params: Mapping[str, Any]) -> None:
         cn, bn = params["cond_nconsts"], params["body_nconsts"]
         body, cond = params["body_jaxpr"].jaxpr, params["cond_jaxpr"].jaxpr
+        bctx, cctx = self.sub(eqn, 0), self.sub(eqn, 1)
         cc, bc, init = eqn.invars[:cn], eqn.invars[cn : cn + bn], eqn.invars[cn + bn :]
         for a, b in zip(cc, cond.invars[:cn]):
-            self.link(a, b)
+            self.link(a, b, cctx)
         for a, b in zip(bc, body.invars[:bn]):
-            self.link(a, b)
+            self.link(a, b, bctx)
         for i, v in enumerate(init):
-            for other in (body.invars[bn + i], body.outvars[i], eqn.outvars[i], cond.invars[cn + i]):
-                self.link(v, other)
-        self.walk(body)
-        self.walk(cond)
+            self.link(v, eqn.outvars[i])
+            self.link(v, body.invars[bn + i], bctx)
+            self.link(v, body.outvars[i], bctx)
+            self.link(v, cond.invars[cn + i], cctx)
+        self.walk(body, bctx)
+        self.walk(cond, cctx)
 
     def _scan(self, eqn: Any, params: Mapping[str, Any]) -> None:
-        body = params["jaxpr"].jaxpr
+        body, ctx = params["jaxpr"].jaxpr, self.sub(eqn)
         if "num_consts" in params:
             nconst, ncarry = params["num_consts"], params["num_carry"]
         else:
-            ft = params.get("ft_in")
-            if ft is None or len(ft) != 3:
+            ft: Any = params.get("ft_in")
+            tree = ft.unflatten() if hasattr(ft, "unflatten") else ft
+            if not isinstance(tree, tuple) or len(tree) != 3:
                 return self._call(eqn, params)
-            nconst, ncarry = len(ft[0]), len(ft[1])
+            nconst, ncarry = len(tree[0] or ()), len(tree[1] or ())
         length = self.new(int(params["length"]))
         self.mark(length, _SCAN)
         ins = eqn.invars
         for a, b in zip(ins[: nconst + ncarry], body.invars[: nconst + ncarry]):
-            self.link(a, b)
-        xs = ins[nconst + ncarry :]
-        for a, b in zip(xs, body.invars[nconst + ncarry :]):
-            outer, inner = self.axes(a), self.axes(b)
+            self.link(a, b, ctx)
+        for a, b in zip(ins[nconst + ncarry :], body.invars[nconst + ncarry :]):
+            outer, inner = self.axes(a), self.axes(b, ctx)
             if outer:
                 self.union(outer[0], length)
                 self.mark(outer[0], _SCAN)
             for p, q in zip(outer[1:], inner):
                 self.union(p, q)
         for i in range(ncarry):
-            for other in (body.outvars[i], eqn.outvars[i]):
-                self.link(body.invars[nconst + i], other)
-        ys = eqn.outvars[ncarry:]
-        inner_ys = list(body.outvars[ncarry:])
-        kinds = list(params.get("ft_out", (None, ()))[1]) if len(inner_ys) != len(ys) else [None] * len(ys)
-        for y, kind in zip(ys, kinds):
-            out = self.axes(y)
+            self.link(ins[nconst + i], eqn.outvars[i])
+            self.link(ins[nconst + i], body.outvars[i], ctx)
+        for y, inner_y in zip(eqn.outvars[ncarry:], body.outvars[ncarry:]):
+            out, inner = self.axes(y), self.axes(inner_y, ctx)
             if out:
                 self.union(out[0], length)
-            if kind is not None and "Left" in repr(kind):  # an xs forwarded unchanged
-                for x in xs:
-                    if getattr(x, "aval", None) is not None and x.aval.shape == y.aval.shape:
-                        self.link(x, y)
-                        break
-                continue
-            if inner_ys:
-                inner = self.axes(inner_ys.pop(0))
-                for p, q in zip(out[1:], inner):
-                    self.union(p, q)
-        self.walk(body)
+            for p, q in zip(out[1:], inner):
+                self.union(p, q)
+        self.walk(body, ctx)
 
 
 # ------------------------------------------------------------------ running the function
@@ -577,7 +597,7 @@ class _Watch:
             if self._last.get(k) is v:
                 continue
             self._last[k] = v
-            if stmt is not None and stmt[1] == k and isinstance(v, jax.core.Tracer):
+            if stmt is not None and stmt[1] == k and isinstance(v, Tracer):
                 self.found.setdefault(stmt, []).append(v)
         self._prev = line
 
@@ -642,9 +662,9 @@ _NUMERIC_PRIMES = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43]
 
 
 def _dtype_name(dt: Any) -> str:
-    dt = np.dtype(dt) if not jax.dtypes.issubdtype(dt, jax.dtypes.prng_key) else dt
-    if jax.dtypes.issubdtype(dt, jax.dtypes.prng_key):
+    if jnp.issubdtype(dt, jax.dtypes.prng_key):
         return "Key"
+    dt = np.dtype(dt)
     if dt == np.bool_:
         return "Bool"
     kind, bits = dt.kind, dt.itemsize * 8
@@ -683,13 +703,14 @@ class Local:
 
 
 @dataclasses.dataclass
-class _Struct:
+class Struct:
+    """A class proposed for a dict, NamedTuple or dataclass of arrays: ``.source()`` is its code."""
+
     name: str
     params: list[str]
     fields: list[tuple[str, str]]
     kind: str  # "struct" (a new @expex.struct), "namedtuple" or "dataclass" (an existing class, made generic)
     cls: Any = None
-    dict_path: str = ""  # for a dict turned into a struct: where it was
 
     def ref(self) -> str:
         return f"{self.name}[{', '.join(self.params)}]" if self.params else self.name
@@ -721,13 +742,13 @@ class Annotation:
         self.params: dict[str, str | None] = {}
         self.returns: str | None = None
         self.asserts: list[str] = []
-        self.structs: list[_Struct] = []
+        self.structs: list[Struct] = []
         self.locals: list[Local] = []
         self.sizes: dict[str, int] = {}
         self.warnings: list[str] = []
         self.notes: list[str] = []
-        self._rewrites: dict[str, _Struct] = {}  # dict parameters to read as struct fields
-        self._return_struct: _Struct | None = None
+        self._rewrites: list[str] = []  # dict parameters to read as struct fields
+        self._return_struct: Struct | None = None
         self._header: str = ""
         self._src: "_Source | None" = None
 
@@ -768,7 +789,10 @@ class Annotation:
         """A unified diff of the function's source file against the annotated version."""
         new = self.source()
         assert self._src is not None
-        name = str(self._src.path)
+        try:
+            name = str(self._src.path.resolve().relative_to(pathlib.Path.cwd()))
+        except ValueError:
+            name = self._src.path.name
         return "".join(
             difflib.unified_diff(
                 self._src.text.splitlines(keepends=True), new.splitlines(keepends=True), f"a/{name}", f"b/{name}"
@@ -812,8 +836,30 @@ class _Source:
                         break
             if self.node is not None:
                 break
-        if self.node is None:
-            raise OSError(f"cannot find `def {code.co_name}` in {file}")
+        if self.node is None:  # the file changed since it was imported: by name, if only one
+            found = [
+                (n, top)
+                for top in self.tree.body
+                for n in ast.walk(top)
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == code.co_name
+            ]
+            if len(found) != 1:
+                raise OSError(f"cannot find `def {code.co_name}` in {file}")
+            self.node, self.top = found[0]
+        first = min([self.node.lineno] + [d.lineno for d in self.node.decorator_list])
+        self.shift = first - code.co_firstlineno  # file line = line while running + shift
+
+    def defined(self) -> set[str]:
+        """Names the module defines or imports at the top level."""
+        out: set[str] = set()
+        for node in self.tree.body:
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                out |= {(a.asname or a.name).split(".")[0] for a in node.names}
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                out.add(node.name)
+            elif isinstance(node, ast.Assign):
+                out |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+        return out
 
     def seg(self, node: Any) -> str:
         return ast.get_source_segment(self.text, node) or ast.unparse(node)
@@ -847,7 +893,10 @@ class _Source:
         raise OSError("cannot find the end of the def line")
 
     def stmts(self) -> dict[int, tuple[int, str]]:
-        """Line -> (first line, name) of the single-name assignments in the function's own body."""
+        """Line -> (first line, name) of the single-name assignments in the function's own body.
+
+        Lines are those of the running code (the file may have moved since it was imported).
+        """
         out: dict[int, tuple[int, str]] = {}
 
         def visit(body: list[Any]) -> None:
@@ -861,7 +910,7 @@ class _Source:
                     target = s.target.id
                 if target is not None:
                     for ln in range(s.lineno, (s.end_lineno or s.lineno) + 1):
-                        out[ln] = (s.lineno, target)
+                        out[ln - self.shift] = (s.lineno - self.shift, target)
                 for field in ("body", "orelse", "finalbody", "handlers"):
                     sub = getattr(s, field, None)
                     if isinstance(sub, list):
@@ -892,10 +941,8 @@ class _Source:
         body_indent = " " * n.body[0].col_offset
         if a.asserts:
             first = n.body[0]
-            doc = isinstance(first, ast.Expr) and isinstance(getattr(first, "value", None), ast.Constant) and isinstance(first.value.value, str)
-            if first.lineno == n.lineno:
-                a.notes.append("the body starts on the def line, so the constraints are not written; add them by hand")
-            else:
+            doc = isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str)
+            if first.lineno != n.lineno:
                 at = self.offset((first.end_lineno or first.lineno) + 1, 0) if doc else self.offset(first.lineno, 0)
                 edits.append((at, at, "".join(f"{body_indent}assert {x}\n" for x in a.asserts)))
         for loc in a.locals:
@@ -905,37 +952,35 @@ class _Source:
                     if isinstance(t, ast.Name) and t.id == loc.name:
                         p = self.offset(t.lineno, t.end_col_offset or 0)
                         edits.append((p, p, f": {loc.annotation}"))
-        for name, struct in a._rewrites.items():
-            for node in ast.walk(n):
-                chain = _subscript_chain(node, name)
-                if chain is not None and not _inside_chain(node, n, name):
-                    st = self.offset(node.lineno, node.col_offset)
-                    en = self.offset(node.end_lineno or node.lineno, node.end_col_offset or 0)
-                    edits.append((st, en, name + "".join("." + k for k in chain)))
+        for name in a._rewrites:
+            for _, top, keys in _reads(n, name):
+                st = self.offset(top.lineno, top.col_offset)
+                en = self.offset(top.end_lineno or top.lineno, top.end_col_offset or 0)
+                edits.append((st, en, name + "".join("." + k for k in keys)))
         if a._return_struct is not None:
             for node in self.own_nodes():
                 if isinstance(node, ast.Return) and isinstance(node.value, ast.Dict):
                     d = node.value
                     args = ", ".join(
-                        f"{k.value}={self.seg(v)}" for k, v in zip(d.keys, d.values) if isinstance(k, ast.Constant)
+                        f"{k.value!s}={self.seg(v)}" for k, v in zip(d.keys, d.values) if isinstance(k, ast.Constant)
                     )
                     st = self.offset(d.lineno, d.col_offset)
                     en = self.offset(d.end_lineno or d.lineno, d.end_col_offset or 0)
                     edits.append((st, en, f"{a._return_struct.name}({args})"))
         top_at = self.offset(min([self.top.lineno] + [d.lineno for d in getattr(self.top, "decorator_list", [])]), 0)
-        new_classes = [st for st in a.structs if st.kind == "struct"]
+        new_classes = [c for c in a.structs if c.kind == "struct"]
         if new_classes:
-            edits.append((top_at, top_at, "".join(st.source() + "\n\n\n" for st in new_classes)))
-        for st in a.structs:
-            if st.kind != "struct":
-                edits += self._class_edits(st)
+            edits.append((top_at, top_at, "".join(c.source() + "\n\n\n" for c in new_classes)))
+        for c in a.structs:
+            if c.kind != "struct":
+                edits += self._class_edits(c)
         edits += self._imports(a)
         out = self.text
         for st_, en_, txt in sorted(edits, key=lambda x: (x[0], x[1]), reverse=True):
             out = out[:st_] + txt + out[en_:]
         return out
 
-    def _class_edits(self, st: _Struct) -> list[tuple[int, int, str]]:
+    def _class_edits(self, st: Struct) -> list[tuple[int, int, str]]:
         """Type parameters and field annotations for a NamedTuple / dataclass defined in this file."""
         cls = None
         for node in self.tree.body:
@@ -963,21 +1008,26 @@ class _Source:
 
     def _imports(self, a: Annotation) -> list[tuple[int, int, str]]:
         text = a.signature + "".join(s.source() for s in a.structs) + "".join(loc.annotation for loc in a.locals)
-        glb = getattr(a.function, "__globals__", {})
+        have = self.defined()
         wanted = ["f16", "f32", "f64", "u8", "u16", "u32", "u64", "c64", "c128", "Int", "Float", "Bool", "Key", "Arr"]
-        names = [w for w in wanted if re.search(rf"\b{w}\[|\b{w}\b(?!\w)", text) and w not in glb]
-        names = [w for w in names if re.search(rf"(?<![\w.]){w}\b", text)]
-        need_expex = any(s.kind == "struct" for s in a.structs) and "expex" not in glb
-        need_nt = any(s.kind == "namedtuple" for s in a.structs) and "NamedTuple" not in glb and False
+        names = [w for w in wanted if w not in have and re.search(rf"(?<![\w.]){w}\b", text)]
+        need_expex = any(s.kind == "struct" for s in a.structs) and "expex" not in have
+        edits: list[tuple[int, int, str]] = []
+        for node in self.tree.body:  # one `from expex import ...` line already there: extend it
+            if names and isinstance(node, ast.ImportFrom) and node.module == "expex" and not node.level:
+                if node.lineno == node.end_lineno and "(" not in self.seg(node):
+                    have_names = [a.name if a.asname is None else f"{a.name} as {a.asname}" for a in node.names]
+                    st = self.offset(node.lineno, node.col_offset)
+                    en = self.offset(node.lineno, node.end_col_offset or 0)
+                    edits.append((st, en, f"from expex import {', '.join(have_names + names)}"))
+                    names = []
         lines = []
         if need_expex:
             lines.append("import expex\n")
         if names:
             lines.append(f"from expex import {', '.join(names)}\n")
-        if need_nt:
-            lines.append("from typing import NamedTuple\n")
         if not lines:
-            return []
+            return edits
         last = None
         for node in self.tree.body:
             if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -985,57 +1035,41 @@ class _Source:
             elif last is not None or not (isinstance(node, ast.Expr) and isinstance(getattr(node, "value", None), ast.Constant)):
                 break
         at = self.offset((last.end_lineno or last.lineno) + 1, 0) if last is not None else 0
-        return [(at, at, "".join(lines))]
+        return edits + [(at, at, "".join(lines))]
 
 
-def _subscript_chain(node: Any, name: str) -> list[str] | None:
-    """``["a", "b"]`` for ``name["a"]["b"]``; None for anything else."""
-    keys: list[str] = []
-    while isinstance(node, ast.Subscript):
-        sl = node.slice
-        if not (isinstance(sl, ast.Constant) and isinstance(sl.value, str)):
-            return None
-        keys.append(sl.value)
-        node = node.value
-    if isinstance(node, ast.Name) and node.id == name and keys:
-        return keys[::-1]
-    return None
-
-
-def _inside_chain(node: Any, root: Any, name: str) -> bool:
-    """Whether ``node`` is the inner part of a longer ``name[...][...]`` chain."""
-    for parent in ast.walk(root):
-        if isinstance(parent, ast.Subscript) and parent.value is node and _subscript_chain(parent, name) is not None:
-            return True
-    return False
-
-
-def _dict_uses_ok(src: _Source, name: str, keys_ok: Callable[[list[str]], bool]) -> str | None:
-    """None if ``name`` is only read as ``name["key"]...`` in the function; else where it is not."""
-    for node in ast.walk(src.node):
+def _reads(fn: Any, name: str) -> Iterator[tuple[Any, Any, list[str]]]:
+    """Each use of ``name`` in ``fn``: (the Name node, the outermost ``name["a"]["b"]`` around it, its keys)."""
+    parents = {id(c): p for p in ast.walk(fn) for c in ast.iter_child_nodes(p)}
+    for node in ast.walk(fn):
         if isinstance(node, ast.Name) and node.id == name:
-            parent = _parent_chain_top(src.node, node, name)
-            if parent is None:
+            top: Any = node
+            keys: list[str] = []
+            while True:
+                p = parents.get(id(top))
+                if not (isinstance(p, ast.Subscript) and p.value is top):
+                    break
+                if not (isinstance(p.slice, ast.Constant) and isinstance(p.slice.value, str)):
+                    keys = []  # indexed by something else (`name["layers"][0]`): not a plain read
+                    break
+                keys.append(p.slice.value)
+                top = p
+            yield node, top, keys
+
+
+def _dict_reads_only(fn: Any, name: str, value: Any) -> str | None:
+    """None if ``name`` is only read as ``name["a"]["b"]`` down to its arrays; else where it is not."""
+    for node, top, keys in _reads(fn, name):
+        if not keys or not isinstance(getattr(top, "ctx", None), ast.Load):
+            return f"line {node.lineno}"
+        v = value
+        for k in keys:
+            if not isinstance(v, dict) or k not in v:
                 return f"line {node.lineno}"
-            chain = _subscript_chain(parent, name)
-            if chain is None or not keys_ok(chain) or not isinstance(getattr(parent, "ctx", None), ast.Load):
-                return f"line {node.lineno}"
-    for arg in src.node.args.args + src.node.args.kwonlyargs + src.node.args.posonlyargs:
-        pass
+            v = v[k]
+        if isinstance(v, dict):
+            return f"line {node.lineno}"
     return None
-
-
-def _parent_chain_top(root: Any, name_node: Any, name: str) -> Any:
-    parents: dict[int, Any] = {}
-    for p in ast.walk(root):
-        for c in ast.iter_child_nodes(p):
-            parents[id(c)] = p
-    if isinstance(parents.get(id(name_node)), ast.arguments) or isinstance(parents.get(id(name_node)), ast.arg):
-        return name_node
-    node = name_node
-    while isinstance(parents.get(id(node)), ast.Subscript) and parents[id(node)].value is node:
-        node = parents[id(node)]
-    return node if node is not name_node else None
 
 
 # ------------------------------------------------------------------ annotate
@@ -1073,7 +1107,6 @@ def annotate(
 
 class _Annotator:
     def __init__(self, f: Any, args: tuple[Any, ...], kwargs: dict[str, Any], vary: bool, locals: bool | str, names: Mapping[str, Any]):
-        self.orig = f
         self.f = inspect.unwrap(f) if not hasattr(f, "__code__") else f
         while hasattr(self.f, "__wrapped__") and not hasattr(self.f, "__code__"):
             self.f = self.f.__wrapped__
@@ -1087,6 +1120,9 @@ class _Annotator:
         self.vary = vary
         self.want_locals = locals
         self.names = {_norm_path(k): v for k, v in names.items()}
+        self._unannotated: set[str] = set()
+        self._memo: dict[tuple[int, bool], Size | None] = {}
+        self.extra_names: list[str] = []
         self.out = Annotation()
         self.out.function = self.f
         self.out.name = self.f.__name__
@@ -1100,22 +1136,13 @@ class _Annotator:
     def flatten(self) -> None:
         self.leaves: list[tuple[str, str, Any]] = []  # (param, path, value)
         self.static: dict[str, Any] = {}  # Python numbers by parameter
-        self.treedefs: dict[str, Any] = {}
         for name, v in self.bound.arguments.items():
-            kind = self.sig.parameters[name].kind
-            if kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
-                flat, tree = jax.tree_util.tree_flatten_with_path(v, is_leaf=lambda x: not _is_array(x) and not _has_arrays(x))
-                for p, leaf in flat:
-                    if _is_array(leaf):
-                        self.leaves.append((name, name + _keystr(p), leaf))
-                continue
             if _is_array(v):
                 self.leaves.append((name, name, v))
             elif isinstance(v, (bool, int, float)) and not isinstance(v, np.generic):
                 self.static[name] = v
             elif _has_arrays(v):
-                flat, tree = jax.tree_util.tree_flatten_with_path(v)
-                for p, leaf in flat:
+                for p, leaf in jax.tree_util.tree_flatten_with_path(v)[0]:
                     if _is_array(leaf):
                         self.leaves.append((name, name + _keystr(p), leaf))
 
@@ -1245,6 +1272,13 @@ class _Annotator:
         leaf_ndim = [len(leaf.shape) for _, _, leaf in self.leaves]
         is_int = [jnp.issubdtype(leaf.dtype, jnp.integer) for _, _, leaf in self.leaves]
 
+        # the names the body itself gives the sizes: `B, T, D = x.shape`, `N = x.shape[0]`
+        for (li, ax), nm in self.author_names().items():
+            g = self.group_at(li, ax)
+            if g is not None and names[g] is None and nm not in used:
+                names[g] = nm
+                used.add(nm)
+
         def free(g: int) -> bool:
             return names[g] is None
 
@@ -1256,7 +1290,7 @@ class _Annotator:
             return False
 
         order = range(G)
-        busy = {_CONTRACT, _REDUCE, _SCAN, _SEQ, _GATHER, _SPLIT_SRC, _SPLIT_HEAD, _SPLIT_REST}
+        busy = {_CONTRACT, _SCAN, _SEQ, _GATHER, _SPLIT_SRC, _SPLIT_HEAD, _SPLIT_REST}
         # V: a table's axis that integer indices pick from
         for g in order:
             if _GATHER in self.facts[g] and take(g, "V"):
@@ -1267,12 +1301,11 @@ class _Annotator:
             g = self.group_at(li, 0)
             if g is not None and leaf_ndim[li] >= 2 and not (self.facts[g] & busy):
                 lead[g] += 1
+        b: int | None = None
         if lead:
             best = max(lead.values())
-            for g in order:
-                if lead.get(g) == best and take(g, "B"):
-                    break
-        b = names.index("B") if "B" in names else None
+            b = next(g for g in order if lead.get(g) == best)
+            take(b, "B")
         # H: a batch dimension of a contraction other than B; or the first factor of a split
         for g in order:
             if free(g) and ((_BATCH in self.facts[g] and g != b) or _SPLIT_HEAD in self.facts[g]):
@@ -1282,21 +1315,27 @@ class _Annotator:
         # T, S: scanned, padded, sliced or concatenated axes; middle axes after B; token positions
         seq: list[int] = []
         for g in order:
-            if free(g) and self.facts[g] & {_SCAN, _SEQ} and _CONTRACT not in self.facts[g]:
+            if g != b and self.facts[g] & {_SCAN, _SEQ} and _GATHER not in self.facts[g]:
                 seq.append(g)
         for g in order:
-            if not free(g) or g in seq or self.facts[g] & {_CONTRACT, _GATHER, _BATCH}:
+            if g in (b, h) or g in seq or _GATHER in self.facts[g]:
                 continue
             for li, ax in self.members[g]:
                 nd = leaf_ndim[li]
                 first = self.group_at(li, 0)
-                middle = ax >= 1 and ax < nd - 1 and (b is not None and first == b) and nd >= 3
+                middle = 1 <= ax < nd - 1 and first is not None and first in (b, h) and nd >= 3
                 tokens = is_int[li] and (ax >= 1 or b is None) and nd >= 1
                 if middle or tokens:
                     seq.append(g)
                     break
         for g, nm in zip(seq, ["T", "S"]):
             take(g, nm)
+        # the order of the type parameters: batch, sequences, then the rest as they appear
+        self.rank = {g: 3 for g in order}
+        if b is not None:
+            self.rank[b] = 0
+        for i, g in enumerate(seq[:2]):
+            self.rank[g] = 1 + i
         # K: contracted, last axis of an array that has H; or the rest of a split
         for g in order:
             if not free(g):
@@ -1308,10 +1347,16 @@ class _Annotator:
             if (_CONTRACT in self.facts[g] and last_with_h) or _SPLIT_REST in self.facts[g]:
                 if take(g, "K"):
                     break
-        # D: contracted, split, or normalised over
-        for g in order:
-            if free(g) and self.facts[g] & {_CONTRACT, _SPLIT_SRC, _REDUCE} and take(g, "D"):
-                break
+        # D: contracted, split, or normalised over; preferably a last axis
+        cands = [g for g in order if free(g) and self.facts[g] & {_CONTRACT, _SPLIT_SRC, _REDUCE}]
+        if cands:
+            top = {li for li, (param, path, _) in enumerate(self.leaves) if param == path}  # arrays, not parameters in a dict
+
+            def last(g: int, among: set[int] | range) -> bool:
+                return any(ax == leaf_ndim[li] - 1 and li in among for li, ax in self.members[g])
+
+            every = range(len(self.leaves))
+            take(min(cands, key=lambda g: (not last(g, top), not last(g, every), g)), "D")
         for g in order:  # otherwise the last axis of the first float input with two or more axes
             if "D" in names:
                 break
@@ -1326,6 +1371,40 @@ class _Annotator:
                     nm = next(pool)
                 take(g, nm)
         self.gname: list[str] = [n or "?" for n in names]
+
+    def author_names(self) -> dict[tuple[int, int], str]:
+        """(leaf, axis) -> a size name the body unpacks from ``param.shape``."""
+        out: dict[tuple[int, int], str] = {}
+        if self.src is None:
+            return out
+        leaf_of = {path: li for li, (param, path, _) in enumerate(self.leaves) if param == path}
+
+        def shape_of(v: Any) -> int | None:
+            if isinstance(v, ast.Attribute) and v.attr == "shape" and isinstance(v.value, ast.Name):
+                return leaf_of.get(v.value.id)
+            return None
+
+        ok = lambda n: n.isupper() or len(n) == 1  # noqa: E731
+        for node in self.src.own_nodes():
+            if not (isinstance(node, ast.Assign) and len(node.targets) == 1):
+                continue
+            t, v = node.targets[0], node.value
+            if isinstance(t, ast.Tuple) and (li := shape_of(v)) is not None:
+                if len(t.elts) == len(self.leaves[li][2].shape):
+                    for ax, e in enumerate(t.elts):
+                        if isinstance(e, ast.Name) and ok(e.id):
+                            out.setdefault((li, ax), e.id)
+            elif (
+                isinstance(t, ast.Name)
+                and ok(t.id)
+                and isinstance(v, ast.Subscript)
+                and (li := shape_of(v.value)) is not None
+                and isinstance(v.slice, ast.Constant)
+                and isinstance(v.slice.value, int)
+            ):
+                ax = v.slice.value % max(1, len(self.leaves[li][2].shape))
+                out.setdefault((li, ax), t.id)
+        return out
 
     def group_at(self, li: int, ax: int) -> int | None:
         n = self.inputs[li][ax]
@@ -1391,9 +1470,8 @@ class _Annotator:
     # -- sizes of every axis
     def expr_of_root(self, r: int, visiting: frozenset[int] = frozenset(), splits: bool = True) -> Size | None:
         key = (r, splits)
-        memo = self.__dict__.setdefault("_memo", {})
-        if key in memo and not visiting:
-            return memo[key]
+        if key in self._memo and not visiting:
+            return self._memo[key]
         flow = self.flow
         if r in visiting:
             return None
@@ -1420,7 +1498,7 @@ class _Annotator:
         if out is not None and out.eval(self.envs[0]) != flow.size[r]:
             out = None
         if not visiting - {r}:
-            memo[key] = out
+            self._memo[key] = out
         return out
 
     def _rel(self, rel: tuple[Any, ...], visiting: frozenset[int]) -> Size | None:
@@ -1521,7 +1599,6 @@ class _Annotator:
                 self.out.asserts.append(c)
 
     def resolve_sites(self) -> None:
-        self.extra_names: list[str] = []
         flow, run0 = self.flow, self.run0
         # every split whose sizes are all known: a constraint between them
         for rel in flow.rels:
@@ -1539,11 +1616,11 @@ class _Annotator:
         self.out_ann: dict[str, str] = {}
         for i, (path, leaf) in enumerate(run0.out_leaves):
             var = outvars[i]
-            nodes = flow.index.get(id(var)) if not _is_literal(var) else None
+            nodes = flow.nodes_of(var) if not _is_literal(var) else None
             dims = []
             for ax in range(len(leaf.shape)):
-                values = [int(r.out_leaves[i][1].shape[ax]) for r in self.runs]
-                dims.append(self.site(nodes[ax] if nodes else None, list(values), f"axis {ax} of the result{path}"))
+                sizes: list[int | None] = [int(r.out_leaves[i][1].shape[ax]) for r in self.runs]
+                dims.append(self.site(nodes[ax] if nodes else None, sizes, f"axis {ax} of the result{path}"))
             self.out_ann[path] = _array_ann(leaf.dtype, dims)
         # locals
         self.local_ann: list[tuple[int, str, list[Size], Any]] = []
@@ -1554,7 +1631,7 @@ class _Annotator:
                     continue
                 v = vals[0]
                 var = getattr(v, "val", None)
-                nodes = flow.index.get(id(var)) if var is not None else None
+                nodes = flow.nodes_of(var) if var is not None else None
                 dims = []
                 for ax in range(len(v.shape)):
                     values: list[int | None] = []
@@ -1577,18 +1654,20 @@ class _Annotator:
         out = self.out
         leaf_ann = {path: self.leaf_ann(li) for li, (_, path, _) in enumerate(self.leaves)}
         self.order = list(dict.fromkeys(self.gname))
-        self.struct_names: set[str] = set()
-        glb = getattr(self.f, "__globals__", {})
         params: dict[str, str | None] = {}
         for name, p in self.sig.parameters.items():
             if name in self.bound.arguments:
                 v = self.bound.arguments[name]
-                if name in self.static:
+                if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
+                    params[name] = None
+                    if _has_arrays(v):
+                        out.warnings.append(f"`{'*' if p.kind == p.VAR_POSITIONAL else '**'}{name}` holds arrays; annotate it by hand")
+                elif name in self.static:
                     params[name] = type(v).__name__
                 elif _is_array(v):
                     params[name] = leaf_ann[name]
                 elif _has_arrays(v):
-                    params[name] = self.container(v, name, leaf_ann, glb, param=name)
+                    params[name] = self.container(v, name, leaf_ann, param=name)
                 else:
                     params[name] = None
             else:
@@ -1601,7 +1680,7 @@ class _Annotator:
         elif isinstance(ret, jax.ShapeDtypeStruct):
             out.returns = out_leaves[""]
         else:
-            out.returns = self.container(ret, "", out_leaves, glb, param=None)
+            out.returns = self.container(ret, "", out_leaves, param=None)
         # locals worth annotating
         for line, name, dims, v in self.local_ann:
             texts = [str(d) for d in dims]
@@ -1614,23 +1693,24 @@ class _Annotator:
                 "the same size on two axes" if dup else "two axes of the same length in the example" if same else "every assignment"
             )
             ann = _array_ann(v.dtype, dims)
+            line += self.src.shift if self.src else 0
             src_line = self.src.lines[line - 1].rstrip("\n") if self.src else f"{name} = ..."
             shown = re.sub(rf"^(\s*){re.escape(name)}(\s*)=", rf"\g<1>{name}: {ann}\g<2>=", src_line, count=1)
             out.locals.append(Local(line, name, ann, reason, shown))
-        for line, name, dims, v in self.local_ann:
-            pass
         # type parameters, in order of appearance
-        text = " ".join(a or "" for a in params.values()) + " " + (out.returns or "")
-        text += " " + " ".join(f for s in out.structs for _, f in s.fields)
+        text = " ".join(a or "" for n, a in params.items() if n not in self._unannotated) + " " + (out.returns or "")
         used_names = [n for n in self.order + self.extra_names if re.search(rf"(?<![\w.]){re.escape(n)}(?!\w)", text)]
         statics = set(self.static)
-        first_seen = sorted(used_names, key=lambda n: _first_index(text, n))
+        rank = {self.gname[g]: r for g, r in self.rank.items()}
+        first_seen = sorted(used_names, key=lambda n: (rank.get(n, 3), _first_index(text, n)))
         out.type_params = [n for n in first_seen if n not in statics]
         out.sizes = {n: self.envs[0][n] for n in out.type_params if n in self.envs[0]}
         for a in list(out.asserts):  # constraints only on sizes that are in the signature
-            if not Size_names(a) <= set(out.type_params) | statics:
+            if not _names_in(a) <= set(out.type_params) | statics:
                 out.asserts.remove(a)
         self.coincidences()
+        if out.asserts and self.src is not None and self.src.node.body[0].lineno == self.src.node.lineno:
+            out.notes.append("the body starts on the def line, so apply() does not write the constraints; add them by hand")
         out._header = self.header()
 
     def coincidences(self) -> None:
@@ -1645,11 +1725,12 @@ class _Annotator:
         for v, ns in by_value.items():
             if len(ns) > 1 and not (self.vary and len(self.runs) > 1):
                 self.out.notes.append(
-                    f"{' and '.join(ns)} are all {v} in the example; they are kept apart because no operation joins "
+                    f"{', '.join(ns[:-1])} and {ns[-1]} are {'both' if len(ns) == 2 else 'all'} {v} in the example; "
+                    "they are kept apart because no operation joins "
                     "them. Use distinct sizes, or vary=True, to be sure"
                 )
 
-    def container(self, v: Any, path: str, leaf_ann: Mapping[str, str], glb: Mapping[str, Any], param: str | None) -> str:
+    def container(self, v: Any, path: str, leaf_ann: Mapping[str, str], param: str | None) -> str:
         """The annotation of a pytree of arrays: a struct, NamedTuple, tuple, list or dict."""
         out = self.out
         if v is None:
@@ -1661,50 +1742,42 @@ class _Annotator:
         if isinstance(v, (int, float)):
             return type(v).__name__
         if isinstance(v, tuple) and hasattr(v, "_fields"):
-            fields = [(f, self.container(getattr(v, f), f"{path}.{f}", leaf_ann, glb, None)) for f in v._fields]
+            fields = [(f, self.container(getattr(v, f), f"{path}.{f}", leaf_ann, None)) for f in getattr(v, "_fields")]
             return self.add_struct(type(v).__name__, fields, "namedtuple", type(v)).ref()
         if dataclasses.is_dataclass(v) and not isinstance(v, type):
-            fields = [(fl.name, self.container(getattr(v, fl.name), f"{path}.{fl.name}", leaf_ann, glb, None)) for fl in dataclasses.fields(v)]
+            fields = [(fl.name, self.container(getattr(v, fl.name), f"{path}.{fl.name}", leaf_ann, None)) for fl in dataclasses.fields(v)]
             st = self.add_struct(type(v).__name__, fields, "dataclass", type(v))
             out.notes.append(f"{type(v).__name__} is a dataclass: annotate its fields as shown; applying edits it only if it is defined in the same file")
             return st.ref()
         if isinstance(v, tuple):
-            return f"tuple[{', '.join(self.container(x, f'{path}[{i}]', leaf_ann, glb, None) for i, x in enumerate(v))}]"
+            return f"tuple[{', '.join(self.container(x, f'{path}[{i}]', leaf_ann, None) for i, x in enumerate(v))}]"
         if isinstance(v, list):
-            elems = [self.container(x, f"{path}[{i}]", leaf_ann, glb, None) for i, x in enumerate(v)]
+            elems = [self.container(x, f"{path}[{i}]", leaf_ann, None) for i, x in enumerate(v)]
             if elems and len(set(elems)) == 1:
                 return f"list[{elems[0]}]"
-            out.notes.append(f"`{path}` is a list whose elements differ, annotated as a tuple of them; pass a tuple")
-            return f"tuple[{', '.join(elems)}]"
+            out.warnings.append(f"`{path or 'the result'}` is a list whose elements differ; left as `list`")
+            return "list"
         if isinstance(v, dict):
-            vals = {k: self.container(x, f"{path}[{k!r}]", leaf_ann, glb, None) for k, x in v.items()}
-            if len(set(vals.values())) == 1 and not all(isinstance(k, str) and k.isidentifier() for k in v):
-                return f"dict[str, {next(iter(vals.values()))}]"
+            vals = {k: self.container(x, f"{path}[{k!r}]", leaf_ann, None) for k, x in v.items()}
             if not all(isinstance(k, str) and k.isidentifier() and not keyword.iskeyword(k) for k in v):
                 if len(set(vals.values())) == 1:
                     return f"dict[str, {next(iter(vals.values()))}]"
-                out.warnings.append(f"`{path}` is a dict whose keys are not all names; left unannotated")
+                out.warnings.append(f"`{path or 'the result'}` is a dict whose keys are not all names; left unannotated")
                 return "dict"
-            if len(set(vals.values())) == 1 and len(vals) > 1 and param is None and path.count("[") > 0:
-                return f"dict[str, {next(iter(vals.values()))}]"
-            base = (param or path.rsplit("[", 1)[-1].strip("'\"]") or self.f.__name__ + "_output") if path else self.f.__name__ + "_output"
-            if base.endswith("s") and param is None and path:
-                base = base[:-1]
-            st = self.add_struct(_camel(base), list(vals.items()), "struct", None)
-            st.dict_path = path
+            st = self.add_struct(self.struct_name(path, param), list(vals.items()), "struct", None)
             if param is not None:
-                if self.src is None:
-                    pass
-                elif (where := _dict_uses_ok(self.src, param, lambda ks: True)) is None:
-                    self._rewrite(param, st)
+                where = _dict_reads_only(self.src.node, param, v) if self.src is not None else "no source"
+                if where is None:
+                    self.out._rewrites.append(param)
                     out.notes.append(
                         f"`{param}` is a dict: it becomes the struct {st.name} (the body reads `{param}.{next(iter(v))}`); "
                         f"callers pass {st.name}({', '.join(f'{k}=...' for k in v)})"
                     )
                 else:
                     out.warnings.append(
-                        f"`{param}` is a dict used as a whole ({where}), so it cannot become the struct {st.name} "
-                        "automatically: it is left unannotated, and expex.prove cannot check this function until it is"
+                        f"`{param}` is a dict used other than as `{param}[\"key\"]` ({where}), so it cannot become the "
+                        f"struct {st.name} automatically: it is left unannotated, and expex.prove cannot check this "
+                        "function until it is"
                     )
                     self._unannotated.add(param)
                 return st.ref()
@@ -1718,12 +1791,20 @@ class _Annotator:
         out.warnings.append(f"`{path or 'the result'}` is a {type(v).__name__}, which annotate does not look inside")
         return type(v).__name__
 
-    @property
-    def _unannotated(self) -> set[str]:
-        return self.__dict__.setdefault("_unann", set())
-
-    def _rewrite(self, param: str, st: _Struct) -> None:
-        self.out._rewrites[param] = st
+    def struct_name(self, path: str, param: str | None) -> str:
+        """``Params`` for a parameter ``params``, ``Layer`` for ``params['layers'][0]``, ``FOutput`` for f's result."""
+        if param is not None:
+            return _camel(param)
+        if not path:
+            return _camel(self.f.__name__) + "Output"
+        parts = re.findall(r"\['([^']+)'\]|\.(\w+)|\[(\d+)\]", path)
+        named = [(i, a or b) for i, (a, b, _) in enumerate(parts) if a or b]
+        if not named:
+            return _camel(path.split("[")[0].split(".")[0]) or "Struct"
+        i, word = named[-1]
+        if i < len(parts) - 1 and word.endswith("s"):  # an element of `layers`: a Layer
+            word = word[:-1]
+        return _camel(word)
 
     def _returns_dict_literals(self) -> bool:
         assert self.src is not None
@@ -1733,7 +1814,7 @@ class _Annotator:
             for r in rets
         )
 
-    def add_struct(self, name: str, fields: list[tuple[str, str]], kind: str, cls: Any) -> _Struct:
+    def add_struct(self, name: str, fields: list[tuple[str, str]], kind: str, cls: Any) -> Struct:
         text = " ".join(a for _, a in fields)
         params = [n for n in self.order + self.extra_names if re.search(rf"(?<![\w.]){re.escape(n)}(?!\w)", text)]
         params.sort(key=lambda n: _first_index(text, n))
@@ -1742,17 +1823,14 @@ class _Annotator:
                 if st.fields == fields:
                     return st
                 name = name + str(sum(s.name.startswith(name) for s in self.out.structs) + 1)
-        st = _Struct(name, params, fields, kind, cls)
-        if kind == "struct":
-            self.out.structs.insert(0, st) if False else self.out.structs.append(st)
-        else:
-            self.out.structs.append(st)
-            if kind == "namedtuple":
-                same_file = self.src is not None and _defined_in(cls, self.src)
-                self.out.notes.append(
-                    f"{name} is a NamedTuple: make it generic with field annotations as shown"
-                    + ("" if same_file else " (it is defined in another file, so apply() does not edit it)")
-                )
+        st = Struct(name, params, fields, kind, cls)
+        self.out.structs.append(st)
+        if kind == "namedtuple":
+            same_file = self.src is not None and _defined_in(cls, self.src)
+            self.out.notes.append(
+                f"{name} is a NamedTuple: make it generic with field annotations as shown"
+                + ("" if same_file else " (it is defined in another file, so apply() does not edit it)")
+            )
         return st
 
     def header(self) -> str:
@@ -1821,7 +1899,7 @@ def _defined_in(cls: Any, src: _Source) -> bool:
         return False
 
 
-def Size_names(constraint: str) -> set[str]:
+def _names_in(constraint: str) -> set[str]:
     return set(re.findall(r"[A-Za-z_]\w*", constraint))
 
 

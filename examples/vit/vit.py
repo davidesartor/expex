@@ -142,7 +142,7 @@ class ViT[GH, GW, P, Q, C, D, H, K, F, Classes]:
 
 if __name__ == "__main__":
     # ViT-Ti (width 192, 3 heads, MLP width 768) with 4 of its 12 layers, on 32 x 32 images in 4 x 4 patches
-    model = ViT.init(jr.key(0), GH=8, GW=8, P=4, Q=4, C=3, D=192, H=3, K=64, F=768, Classes=10, layers=4)
+    model = ViT(jr.key(0), GH=8, GW=8, P=4, Q=4, C=3, D=192, H=3, K=64, F=768, Classes=10, layers=4)
     images = jr.normal(jr.key(1), (16, 32, 32, 3))
     labels = jr.randint(jr.key(2), (16,), 0, 10)
 

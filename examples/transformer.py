@@ -96,7 +96,7 @@ class Transformer[D, F]:
 
 
 if __name__ == "__main__":
-    model = Transformer.init(jr.key(0), Vocab=50, D=32, F=64, blocks=4, heads=4)
+    model = Transformer(jr.key(0), Vocab=50, D=32, F=64, blocks=4, heads=4)
     data = jr.randint(jr.key(1), (16, 24), 0, 50)
 
     @jax.jit

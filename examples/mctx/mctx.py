@@ -8,10 +8,12 @@ to the root, and choosing between the root and interior selection rules is a
 and batches it with `.vectorize`:
 
 * `Tree[N, A, E]` holds N nodes with A actions and embeddings of width E;
-* `simulate` is `while True:` with a `return`, `backward` is
-  `while node != ROOT:`, the root rule is `if depth == 0:`, and
-  `search` is `for sim in range(S):` (staged as `lax.while_loop`s, a
-  `lax.cond` and a `lax.scan`);
+* `simulate` picks the root's action, then `while` the child is expanded
+  descends with the interior rule; `backward` is `while node != ROOT:`;
+  `search` is `for sim in range(S):` with `if child == UNVISITED:` (staged as
+  `lax.while_loop`s, a `lax.scan` and a `lax.cond`). Taking the root step
+  before the loop runs one rule per step, where mctx's vmapped `lax.cond`
+  runs both;
 * updates are `visits[parent] += 1`, not `x.at[b, i].set(...)` under `vmap`;
 * sizes by name: `jr.uniform(key, (A,))`, `Tree[S + 1, A, E]`.
 

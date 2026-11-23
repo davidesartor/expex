@@ -113,7 +113,7 @@ class Stack[D]:
             x = block(x)
         return x
 
-model = Stack.init(key, D=64, blocks=12)
+model = Stack(key, D=64, blocks=12)  # a key first: built from the annotations
 ```
 
 A wrong call says which axis is wrong and where its size came from:

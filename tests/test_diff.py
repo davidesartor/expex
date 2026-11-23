@@ -18,7 +18,7 @@ from transformer import Transformer  # noqa: E402
 
 
 def make(blocks: int = 2, heads: int = 4, F: int = 16) -> Transformer:
-    return Transformer.init(jr.key(0), Vocab=11, D=8, F=F, blocks=blocks, heads=heads)
+    return Transformer(jr.key(0), Vocab=11, D=8, F=F, blocks=blocks, heads=heads)
 
 
 def edit(model, path, **changes):

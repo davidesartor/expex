@@ -138,7 +138,7 @@ class Mamba[V, P, D, E, N, R, K]:
     def create(cls, key: Key, vocab: int, d: int, layers: int, state: int = 16, conv: int = 4, expand: int = 2):
         """The original's sizes from its settings: inner width, dt rank, padded vocabulary."""
         padded = -(-vocab // 8) * 8
-        return cls.init(
+        return cls(
             key, V=vocab, P=padded, D=d, E=expand * d, N=state, R=math.ceil(d / 16), K=conv, layers=layers
         )
 

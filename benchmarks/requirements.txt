@@ -1,0 +1,15 @@
+# What the originals need on top of expex (pip install -e .) and JAX.
+# Versions are the ones the CPU results in results/ were taken with.
+# The originals themselves are cloned by `python benchmarks/fetch.py`, not installed.
+
+equinox==0.13.8        # mamba-jax
+einops==0.8.2          # mamba-jax, llama-2-jax
+flax==0.12.12          # PureJaxRL (and the ViT / NeRF originals, when their benchmarks land)
+optax==0.2.9           # PureJaxRL, and examples/ppo
+distrax==0.1.9         # PureJaxRL
+tfp-nightly==0.26.0.dev20261123  # distrax's dependency (distrax 0.1.9 requires the nightly)
+chex==0.1.92           # gymnax 0.0.8 (and mctx)
+gymnasium==1.4.0       # imported by gymnax 0.0.8's spaces.py
+matplotlib             # imported by gymnax 0.0.8's environments
+seaborn==0.13.2        # imported by gymnax 0.0.8's environments
+ml_collections==1.1.0  # vision_transformer (for when the ViT benchmark lands)

@@ -98,7 +98,8 @@ then a rounded container titled `Block × L` holding `LayerNorm → Attention �
 → LayerNorm → MLP → ⊕`, then the final `LayerNorm` opened (`mean`, `var` and
 the `elementwise` arithmetic that normalises), `matmul` and `return`
 (`T × Vocab`). Each box has its name in bold and, in grey, what it produces
-(`per element · T × D` for a call made with `.vectorize`). A header names the
+(`per element · T × D` for a call mapped over extra axes, by itself or with
+`.vectorize`). A header names the
 function and its sizes (`T · D · Vocab · L = len(blocks)`). `print(d)` gives
 an outline:
 
@@ -172,7 +173,7 @@ class Probe[D]:
     def __call__[B](self, x: f32[B, D]) -> f32[B]:
         return self.stack(x[:, 1:]) @ self.w     # a bug: x loses a feature
 
-probe = Probe.init(jr.key(1), D=16, blocks=2)
+probe = Probe(jr.key(1), D=16, blocks=2)
 try:
     probe(jnp.ones((4, 16)))
 except expex.ShapeError as e:

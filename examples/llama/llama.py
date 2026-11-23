@@ -159,7 +159,7 @@ class Llama[V, D, F, G, R, K]:
 
 
 if __name__ == "__main__":
-    model = Llama.init(jr.key(0), V=100, D=64, F=172, G=2, R=4, K=8, layers=3)  # 8 query heads, 2 kv heads
+    model = Llama(jr.key(0), V=100, D=64, F=172, G=2, R=4, K=8, layers=3)  # 8 query heads, 2 kv heads
     tokens = jr.randint(jr.key(1), (16, 24), 0, 100)
 
     @expex.fn(jit=True, donate="auto")

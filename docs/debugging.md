@@ -80,9 +80,8 @@ x = jr.normal(jr.key(1), (8, 16))
 loss = lambda m: (m(x) ** 2).mean()
 print(expex.debug.watch(loss, model))       # one row per call, each layer its own row
 
-blocks = list(model.blocks)
-blocks[5] = blocks[5].replace(w=blocks[5].w * 1e3)        # plant a problem
-w = expex.debug.watch(loss, model.replace(blocks=blocks), growth=10.0)
+broken = model.at.blocks[5].w.multiply(1e3)            # plant a problem
+w = expex.debug.watch(loss, broken, growth=10.0)
 for row in w.flagged:
     print(row.name, row.flags)
 w.save("watch.html")                     # collapsible, sortable, RMS per layer as bars
@@ -108,8 +107,9 @@ blocks[5].__call__ ['activations growing: RMS ×2.8e+02 from blocks[4].__call__'
   named by path (`blocks[3].attn.__call__`), other functions by name, with a
   call index when one is called more than once (`Attention.causal#3`).
 - Each row has the output's shape, mean, std, largest magnitude, RMS and
-  NaN / inf counts, and the same for `d loss / d output`. A vectorized call is
-  one row over the whole batch: `×n` counts the outputs it covers.
+  NaN / inf counts, and the same for `d loss / d output`. A mapped call (by
+  itself or with `.vectorize`) is one row over the whole batch: `×n` counts
+  the outputs it covers.
 - A row is flagged (`!` in the text) when its output or gradient is not
   finite, when its gradient RMS is more than `grad_ratio` (100) times above
   or below the median of the same module over the layers, or when its output

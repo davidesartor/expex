@@ -14,7 +14,7 @@ diagnostics
     prover could not check (``information``), on the line where the error
     happened when it is known, else on the ``def`` line.
 
-Lines are 1-based and columns 0-based (as in Python's ``ast``). With ``--json``
+Lines are 1-based and columns 0-based, in characters. With ``--json``
 the output is one object ``{"hints": [...], "diagnostics": [...]}``; without,
 the ``debug.shapes`` listings and the failing reports.
 """
@@ -42,14 +42,25 @@ class FileShapes:
     diagnostics: list[dict[str, Any]] = field(default_factory=list)
     text: list[str] = field(default_factory=list)
 
-    def to_json(self) -> dict[str, Any]:
-        return {"hints": self.hints, "diagnostics": self.diagnostics}
+    def to_json(self) -> str:
+        """``{"hints": [...], "diagnostics": [...]}``, one entry per line."""
+
+        def rows(xs: list[dict[str, Any]]) -> str:
+            return "[\n" + ",\n".join("  " + json.dumps(x) for x in xs) + "\n]" if xs else "[]"
+
+        return f'{{"hints": {rows(self.hints)}, "diagnostics": {rows(self.diagnostics)}}}\n'
 
 
 def _span(src: list[str], line: int) -> tuple[int, int]:
     text = src[line - 1] if 0 < line <= len(src) else ""
     body = text.rstrip()
     return len(body) - len(body.lstrip()), len(body)
+
+
+def _chars(src: list[str], line: int, offset: int) -> int:
+    """A column of the syntax tree (UTF-8 bytes) in characters."""
+    text = src[line - 1] if 0 < line <= len(src) else ""
+    return len(text.encode()[:offset].decode(errors="ignore"))
 
 
 def _functions_in(tree: ast.Module) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
@@ -87,7 +98,7 @@ def _hints(
                 name, _, shape = note.partition(": ")
                 text, target = shape, stores.get((line, name))
             if target is not None and target.end_col_offset is not None and target.end_lineno == line:
-                col, end = target.col_offset, target.end_col_offset
+                col, end = _chars(src, line, target.col_offset), _chars(src, line, target.end_col_offset)
             else:
                 col, end = _span(src, line)
             out.append({"file": file, "line": line, "column": col, "end_column": end, "text": text})
@@ -123,6 +134,7 @@ def analyse(path: str) -> FileShapes:
     from ..tools.prove import ERROR, FAILED, PROVED, Report, _summ, collect, import_target, prove
 
     file = os.path.abspath(path)
+    shown = os.path.relpath(file) if not os.path.relpath(file).startswith("..") else file
     out = FileShapes(file)
     try:
         with open(file) as fh:
@@ -135,7 +147,7 @@ def analyse(path: str) -> FileShapes:
             {"file": file, "line": line, "column": col, "end_column": col + 1,
              "severity": "error", "message": f"SyntaxError: {e.msg}"}
         )  # fmt: skip
-        out.text.append(f"{file}:{line}: SyntaxError: {e.msg}")
+        out.text.append(f"{shown}:{line}: SyntaxError: {e.msg}")
         return out
     src = text.splitlines()
     defs = _functions_in(tree)
@@ -152,7 +164,7 @@ def analyse(path: str) -> FileShapes:
         out.diagnostics.append(
             {"file": file, "line": line, "column": col, "end_column": end, "severity": "error", "message": msg}
         )
-        out.text.append(f"{file}:{line}: {msg}")
+        out.text.append(f"{shown}:{line}: {msg}")
         return out
 
     fns = [
@@ -194,7 +206,7 @@ def analyse(path: str) -> FileShapes:
             {"file": file, "line": line, "column": col, "end_column": end,
              "severity": severity, "message": f"{report.name}: {report.status}\n{message}".strip()}
         )  # fmt: skip
-        out.text.append(f"{file}:{line}: {report}")
+        out.text.append(f"{shown}:{line}: {report}")
     out.hints.sort(key=lambda h: (h["line"], h["column"]))
     out.diagnostics.sort(key=lambda d: d["line"])
     return out
@@ -219,8 +231,7 @@ def main(argv: list[str] | None = None) -> int:
     with contextlib.redirect_stdout(sys.stderr if args.json else real):
         result = analyse(args.file)
     if args.json:
-        json.dump(result.to_json(), real, indent=1)
-        real.write("\n")
+        real.write(result.to_json())
     else:
         print("\n\n".join(result.text))
     return 1 if any(d["severity"] == "error" for d in result.diagnostics) else 0

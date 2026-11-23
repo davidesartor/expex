@@ -166,7 +166,7 @@ def test_transformer(transformer):
     by_name = cost(transformer.Transformer.__call__, blocks=12)
     assert by_name.parameters == c.parameters.subs({"L": 12}) and "L" not in by_name.sizes
 
-    model = transformer.Transformer.init(jr.key(0), Vocab=50, D=32, F=64, blocks=4, heads=4)
+    model = transformer.Transformer(jr.key(0), Vocab=50, D=32, F=64, blocks=4, heads=4)
     bound = cost(model.__call__, T=16)
     assert bound.parameters is not None
     assert bound.parameters.value == sum(x.size for x in jax.tree.leaves(model))

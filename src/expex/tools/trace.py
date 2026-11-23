@@ -165,7 +165,7 @@ class StandIn:
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         def zeros(s: Any) -> Any:
-            if jax.dtypes.issubdtype(s.dtype, jax.dtypes.prng_key):
+            if jnp.issubdtype(s.dtype, jax.dtypes.prng_key):
                 return jnp.broadcast_to(jr.key(0), s.shape)
             return jnp.zeros(s.shape, s.dtype)
 

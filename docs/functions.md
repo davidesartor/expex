@@ -116,6 +116,44 @@ print(expex.prove(running_mean))                    # proved for all sizes
   prover the sizes are symbolic, so code built from them is proved for all sizes.
 - `Dim` classes and variadics (`*B`, a tuple of sizes) work the same way.
 
+A fixed size can be named where it is first used: `Rows:6` in a subscript
+reads "Rows, which is 6". (`f32[Rows=6]` is not valid Python: subscripts take
+no keywords.) The name is then a size of the function, like a type parameter
+but fixed, and other annotations use it plainly:
+
+```python
+@expex.fn
+def drop[B](board: i32[B, Rows:6, Cols:7], col: i32[B]) -> i32[B, Rows, Cols]:
+    def one(b, c):
+        row = Rows - 1 - (b != 0).sum(Rows)[c]       # a size, and an axis
+        return b.at[row, c].set(1)
+    return jax.vmap(one)(board, col)
+
+drop(jnp.zeros((2, 6, 7), jnp.int32), jnp.array([3, 0])).sum()   # 2
+```
+
+```
+>>> drop(jnp.zeros((2, 5, 7), jnp.int32), jnp.array([3, 0]))
+ShapeError: drop(): argument `board` does not match its annotation.
+    ...
+    axis 1 should be Rows, which is fixed at 6, but is 5.
+```
+
+The prover treats `Rows` as the constant 6, and `expex.cost` and the diagrams
+list it as `Rows (= 6)`. In a struct's fields (`cells: i32[Rows:6, Cols:7]`)
+the names are sizes of the class, for its methods too. A name declared twice
+with different sizes, or one that is also a type parameter, is an error when
+the function is defined. Type checkers accept neither the slice nor the new
+name, so the line needs a `# type: ignore`; where code must type-check as
+is, use `class Rows(Dim, size=6)`.
+
+Functions defined in the body see the sizes of the call they are made in, as
+values and as axes, like `one` above. So do lambdas and comprehensions,
+even when they run later or are passed to another `@fn`. A helper defined
+outside the function does not see them: calling one that uses `D` is a
+`NameError`, with a note suggesting to define it inside, or to make it an
+`@expex.fn` of its own.
+
 Contractions and reshapes need only the names of the result:
 
 ```python
@@ -213,23 +251,26 @@ On Python values every statement runs exactly as written. On traced values:
 
 ## Vectorising
 
-A function's annotations say which axes are its own, so extra leading axes can
-be mapped over without `in_axes`:
+A function's annotations say which axes are its own, so a call whose
+arguments have extra leading axes is mapped over them, with no `vmap` and no
+`in_axes`:
 
 ```python
 @expex.fn
 def score[T, D](x: f32[T, D], w: f32[D]) -> f32[T]:
     return jnp.tanh(x @ w)
 
-score.vectorize(jnp.ones((32, 5, 3)), jnp.ones(3)).shape                # (32, 5)
-score.vectorize(jnp.ones((8, 1, 5, 3)), jnp.ones((7, 3))).shape         # (8, 7, 5)
+score(jnp.ones((32, 5, 3)), jnp.ones(3)).shape                # (32, 5)
+score(jnp.ones((8, 1, 5, 3)), jnp.ones((7, 3))).shape         # (8, 7, 5)
 ```
 
-Batch axes broadcast like NumPy. `@expex.vectorize` makes plain calls do the same, so
-a function written for one element takes batches:
+Batch axes broadcast like NumPy, and an argument without them is passed whole
+to every element. So a function written for one element takes batches, and a
+per-token layer takes a sequence (`self.norm(h)` with `norm: f32[D] -> f32[D]`
+and `h: f32[T, D]` is `f32[T, D]`):
 
 ```python
-@expex.vectorize
+@expex.fn
 def safe_log(x: f32) -> f32:
     if x > 0:
         return jnp.log(x)
@@ -238,7 +279,64 @@ def safe_log(x: f32) -> f32:
 safe_log(jnp.array([[1.0, -1.0], [jnp.e, 0.0]]))     # [[0, -inf], [1, -inf]]
 ```
 
-Compile time does not depend on the batch size: one example is traced.
+A call is mapped only when extra leading axes are all that keep its arguments
+from matching, so a call with the declared shapes runs exactly as before. If
+each element still does not match, the error says what was mapped:
+
+```python
+@expex.fn
+def normalize[D](x: f32[D], scale: f32[D]) -> f32[D]:
+    return (x - x.mean()) / (x.std() + 1e-5) * scale
+
+normalize(jnp.ones((32, 8)), jnp.ones(8)).shape     # (32, 8)
+```
+
+```
+>>> normalize(jnp.ones((32, 8)), jnp.ones(4))
+ShapeError: normalize(): argument `scale` does not match its annotation, even with the extra leading axes mapped over.
+
+    declared  scale: f32[D]
+    received         f32[4]
+
+    D is 8 (from `x: f32[8]`), but axis 0 of `scale` is 4.
+
+    Extra leading axes are mapped over automatically: `x: f32[32, 8]` is a batch [32] of f32[D].
+```
+
+- Only an argument whose annotation has a fixed number of axes is mapped over;
+  one annotated with a variadic (`f32[*B, D]`) is passed whole. Extra axes
+  that do not broadcast against each other are an error that lists them.
+- `self` is never mapped over: a struct holding a stack of weights, called
+  directly, is an error. `model.vectorize(x)` and `f.vectorize(...)` say it
+  explicitly, and map over `self` too.
+- Each element of a random function gets its own key, and so does each
+  element when a single `key: Key` argument is passed.
+- It works the same under `jax.jit`, `jax.grad` and `jax.vmap`, and the
+  prover proves such calls for all sizes. Compile time does not depend on the
+  batch size: one element is traced.
+- `@expex.fn(vectorize=False)` turns it off for one function (extra axes are
+  then a `ShapeError`, whose hint names `f.vectorize`), and
+  `expex.config(vectorize=False)` (or `EXPEX_VECTORIZE=0`) for all of them.
+  `@expex.fn(vectorize=True)`, or `@expex.vectorize`, keeps it on for one
+  function regardless.
+
+Outside `jax.jit`, a mapped call would be traced again and run operation by
+operation on every call. So from the second call with the same shapes, dtypes
+and static arguments, it runs compiled instead: one `jax.jit` of the mapped
+call per function. A game step that took a second per call eagerly takes a
+millisecond from the third call on. This changes what you see in Python:
+
+- Python side effects in the body (`print`, appending to a list, a counter)
+  happen while the body is traced: on the first call, on the second (traced
+  for `jax.jit`), and not on later calls with the same shapes. `print` on an
+  array inside a converted body prints from the compiled code, every call.
+- While a tool watches calls (`expex.diagram`, `expex.debug.watch`, ...) and
+  inside any JAX transformation, nothing is compiled this way: tools see every
+  call.
+- A body that works only outside `jax.jit` (one that reads an array's value
+  with `float(x)`, say) runs uncompiled, and is not compiled again.
+- `expex.config(compile_vectorized=False)` (or `EXPEX_COMPILE_VECTORIZED=0`)
+  turns it off.
 
 ---
 
