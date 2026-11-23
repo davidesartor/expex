@@ -80,59 +80,67 @@ Transformer.__call__   (sizes: T=1024, D=512, F=2048, Vocab=32000, L=12)
 ## Diagrams
 
 `expex.diagram` draws a function or a module from a trace with symbolic sizes,
-so like `expex.cost` and `expex.prove` it needs no data:
+so like `expex.cost` and `expex.prove` it needs no data. The result is a figure
+in the style of an architecture schematic from a paper:
 
 ```python
 d = expex.diagram(Stack.__call__)                  # depth=1: the calls it makes
-print(d)                                        # Mermaid text, for Markdown
+d.save("stack.svg")                             # the figure (also d.svg, as text)
 d.save("stack.html")                            # an interactive page
+print(d)                                        # an outline of the calls
 expex.diagram(Stack.__call__, depth=2)             # every call opened one level
 expex.diagram(Stack.__call__, B=64, blocks=24)     # sizes and list lengths, as for expex.cost
 ```
 
-For the transformer in `examples/`, `print(expex.diagram(Transformer.__call__))`
-gives this, which GitHub draws in a `mermaid` block:
+For the transformer in `examples/`, `expex.diagram(Transformer.__call__)` draws
+`tokens` at the top, then `index`, a stack of cards `Block × L`, `LayerNorm`,
+`matmul` and `return`, with `i32[T]`, `f32[T, D]` and `f32[T, Vocab]` written
+under the boxes where the shape changes. A header names the function and its
+sizes (`T · D · Vocab · L = len(blocks)`), and a "Component internals" column
+on the right draws each call one level down as a stack of its steps: `Block` is
+`LayerNorm → Attention → residual + → LayerNorm → MLP → residual +`. With
+`depth=2` the block is a grey panel titled `Block × L` with those steps inside,
+the residual connections drawn as `+` joins. `print(d)` gives the outline:
 
-```mermaid
-flowchart TD
-  n0[/"tokens: i32#91;T#93;"/]
-  n7(["index"])
-  subgraph b0 ["× L"]
-    b1["Block.#95;#95;call#95;#95;
-f32#91;T, D#93; → f32#91;T, D#93;"]
-  end
-  b10["LayerNorm.#95;#95;call#95;#95; · vectorize
-f32#91;D#93; → f32#91;D#93;"]
-  n170(["matmul"])
-  n171[\"return f32#91;T, Vocab#93;"\]
-  n0 -->|"i32#91;T#93;"| n7
-  n7 -->|"f32#91;T, D#93;"| b1
-  b1 -->|"f32#91;T, D#93;"| b10
-  b10 -->|"f32#91;T, D#93;"| n170
-  n170 -->|"f32#91;T, Vocab#93;"| n171
-  classDef calls fill:#dbeafe,stroke:#2563eb,color:#0f172a
-  classDef ops fill:#fef3c7,stroke:#d97706,color:#0f172a
-  classDef io fill:#dcfce7,stroke:#16a34a,color:#0f172a
-  class b1,b10 calls
-  class n7,n170 ops
-  class n0,n171 io
-  style b0 fill:transparent,stroke:#9333ea,stroke-dasharray:4 3
+```
+Transformer.__call__
+  × L
+    Block.__call__                     f32[T, D] → f32[T, D]
+      LayerNorm.__call__ · vectorized  f32[D] → f32[D]
+      Attention.__call__               f32[T, D] → f32[T, D]
+      ...
+  LayerNorm.__call__ · vectorized      f32[D] → f32[D]
 ```
 
-- Each call to an `@fn` is a node showing its input and output types (per
-  element for `.vectorize`). `depth=2`, or a click on the page, opens it to show
-  the calls inside. A loop over identical layers is one box, `× L`; the
-  selective scan in `examples/mamba/` is a box `× T`. A traced `if` or
-  `while` is a box too.
+- Each call to an `@fn` is a rounded box. `depth=2`, or a click on the page,
+  opens it into a panel holding the calls inside. A loop over identical layers
+  is `Name × L` (a stack of cards while closed). The selective scan in
+  `examples/mamba/` is a panel `loop × T`. A traced `if` or `while` is a dashed
+  panel too.
 - Between calls, only operations that say what the model does are drawn
-  (`matmul`, `index`, `sum`, `conv`, ...). Reshapes and elementwise
-  arithmetic are skipped, with edges drawn straight across them. Each edge
-  follows the data and shows its type.
-- The page pans and zooms, opens and folds calls, and shows each call's
-  signature, file and line, and source. It loads Mermaid from a CDN.
+  (`matmul`, `index`, `sum`, `conv`, ...), plus `+` where two computed values
+  of one shape are added, which is a residual or skip connection. Reshapes and
+  other elementwise arithmetic are skipped, with arrows drawn straight across
+  them.
+- Shapes are written in blue under the box that produces them, where they
+  change. Where an array is sliced on its way into a call, the type it enters
+  with is written by the arrow.
+- Colours follow roles. Each input is a stream with its own colour, so the
+  calls it reaches are blue, orange and so on. Norms are yellow, primitive
+  operations white, and inputs and outputs green. An extra input that feeds
+  several boxes is a side input (conditioning, say). It is purple, and so are
+  its arrows, which are dashed.
+- The layout is computed in Python, so it needs no browser and no CDN. Calls
+  are placed in rows by dependency depth, with parallel branches side by side.
+  Text is sized from Inter's metrics. `d.save("x.png")` rasterises the figure
+  at 2x with Playwright or a headless Chromium if one is installed, and
+  otherwise with matplotlib.
+- The page embeds the figure for each depth, and for the views a click
+  reaches. You can pan and zoom it. A click on a call opens it in place, and a
+  click on a panel's title folds it. Hovering shows the signature, types and
+  file and line, and a click also shows the source. It follows the system's
+  light or dark mode, or a toggle.
 
-
-<!-- To insert at the end of README's "## Diagrams" section, after its bullet list. -->
 
 ### Where the time goes, and where shapes fail
 
@@ -145,7 +153,7 @@ which is the trace up to the call that failed:
 ```python
 d = expex.diagram.timed(model.__call__, jnp.ones((256, 16)))  # runs it, under jax.jit and jax.profiler
 print(d.text)
-d.save("stack_timed.html")                       # each box coloured by its share of the time
+d.save("stack_timed.svg")                        # each box coloured by its share of the time
 
 @expex.struct
 class Probe[D]:
@@ -191,7 +199,7 @@ Probe.__call__   ShapeError: traced up to the failing call
   nothing extra. It traces the function again on the arguments' shapes, with
   loops unrolled, up to the call that fails. That call is drawn in red, with
   the type it received and the one it declared, and the edges from the inputs
-  to it are red too. The calls around it are open. The error's message is
+  to it are red too, with the panels around it open. The error's message is
   unchanged. A note under it says `(see e.diagram.save("error.html"))`.
   `expex.diagram.explain(f, *args)` draws the same thing without running `f`.
 

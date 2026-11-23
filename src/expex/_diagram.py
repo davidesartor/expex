@@ -1,4 +1,4 @@
-"""Architecture diagrams: an ``@fn`` or a module drawn as a Mermaid flowchart.
+"""Architecture diagrams: an ``@fn`` or a module drawn as an SVG figure, like a paper's schematic.
 
 ``diagram(f)`` traces ``f`` like ``expex.cost`` and ``expex.prove`` do, with symbolic
 sizes and no data, while every typed call runs inside a ``jax.named_scope``
@@ -11,30 +11,37 @@ nested in, and the calls become nodes::
      ('b1', 'call', 'Block.__call__\nf32[T, D] → f32[T, D]', 0), ...]
     >>> d.boxes
     {'b0': '× L'}
-    >>> print(d)                                # Mermaid: flowchart TD ...
-    >>> d.save("transformer.html")              # interactive
+    >>> d.save("transformer.svg")               # the figure; .png and .html (interactive) too
+    >>> print(d)                                # an outline of the calls
 
 - A call deeper than ``depth`` is one node, labelled with its input and output
   shapes (per element for ``.vectorize``). Shallower calls are boxes around their
   contents, so ``depth=2`` shows a block's attention and MLP.
 - Operations outside any call at that depth are drawn only when they say what
   the model does: ``matmul``, ``index``, reductions (``sum``, ``max``),
-  ``conv``, ``scatter``, ... Reshapes, broadcasts, elementwise arithmetic and
+  ``conv``, ``scatter``, ... and ``+`` where two computed values of one shape
+  meet (a residual). Reshapes, broadcasts, other elementwise arithmetic and
   ``jit`` wrappers are passed through: edges go straight across them.
 - A staged loop is a box labelled with its trip count: ``× L`` for a list of
   modules (``L`` unless given, like ``expex.cost``), ``× T`` for a loop over time.
   Traced ``if`` and ``while`` are boxes too.
-- Edges follow the data (through passed-through operations), labelled with the
-  array's type as it leaves a node, or as it enters a call.
+- Edges follow the data (through passed-through operations), with the array's
+  type as it leaves a node, or as it enters a call.
 - Inputs are the parameters other than ``self``: a module's own arrays reach
   nearly every node, so they are left out.
-- In Mermaid labels, characters Mermaid would read as syntax or markdown
-  (``[ ] " _ *`` ...) are written as entity codes (``#91;``), which it renders.
 
-``diagram.save(path)`` writes an interactive page (pan, zoom, click a call to
-open or fold it, hover for its signature and source); ``str(diagram)`` is the
-Mermaid text, which GitHub renders in a ```mermaid block, and ``.text`` an
-outline of the calls.
+Drawing (``_Scene``, ``_Figure``): the layout and the SVG are computed here, in
+Python, so a figure needs no browser and the page no CDN (an earlier version
+drew Mermaid text with Mermaid loaded from a CDN, which offline pages and
+sandboxes cannot reach). The main flow is laid out in rows by dependency
+depth, container by container (see ``_Scene``); shapes are written under the
+boxes that produce them; colours follow roles (a colour per input stream,
+norms, primitive operations, inputs and outputs, side inputs). A column on the
+right draws each closed call one level down as a stack of its steps. The
+figure is a display list (``_Canvas``) written as SVG, or drawn with
+matplotlib when a PNG is wanted and no browser is installed. The page
+(``_diagram.html``) embeds an SVG per view: each depth, and the views clicks
+reach from them, up to a budget (a click past it shows the nearest depth).
 
 Measured time, ``diagram.timed(f, *args)``: the same trace, but on real
 arguments under ``jax.jit``, compiled and run under ``jax.profiler``. The
@@ -710,7 +717,7 @@ def _svg(c: _Canvas, w: float, h: float) -> str:
             pts = f"{_num(x)},{_num(y)} {_num(bx + px)},{_num(by + py)} {_num(bx - px)},{_num(by - py)}"
             out.append(f'<polygon class="f-{color}" points="{pts}"/>')
         elif kind == "g":
-            attrs = "".join(f' {k.replace("_", "-")}="{html.escape(str(v))}"' for k, v in op[1].items())
+            attrs = "".join(f' {k.rstrip("_").replace("_", "-")}="{html.escape(str(v))}"' for k, v in op[1].items())
             out.append(f"<g{attrs}>")
         else:
             out.append("</g>")
@@ -1541,7 +1548,7 @@ class _Figure:
     def paint(self) -> None:
         cv, m, sc, M = self.cv, self.m, self.scene, self.M
         title = _display(m["name"])
-        heading = [(title, "th")] + ([("  " + m["name"][len(title):], "tl")] if title != m["name"] else [])
+        heading = [(title, "th")] + ([(m["name"][len(title):], "tl")] if title != m["name"] else [])
         y = M + 20
         cv.text(M, y, heading, anchor="start")
         notes: list[list[Run]] = []
@@ -1625,7 +1632,9 @@ class _Figure:
                 y += h + 26
             bottom = max(bottom, y - 26)
             cx += cw + 32
+        cv.group(class_="rule")
         cv.line([(x0, y0 + 4), (x0, max(bottom, main_bottom))], "rule", 1.0, radius=0)
+        cv.end()
         return max(cx - 32, x0 + 28 + _tw(sub, "tl")), bottom
 
     def stack(self, x: float, y: float, i: int, steps: list[dict[str, Any]], sw: float, left: float) -> None:
@@ -1681,6 +1690,7 @@ class _Figure:
         if m.get("error"):
             items += [("err", "failing call", "errline"), ("", "path into it", "errline")]
         x = x0
+        cv.group(class_="legend")
         for fill, text, stroke in items:
             w = max(_tw(text, "tl") + 24, 64)
             if x + w > right and x > x0:
@@ -1693,6 +1703,7 @@ class _Figure:
                 cv.rect(x, y, w, 22, fill, stroke or "edge", 1.4 if stroke == "errline" else 1.0, r=5)
                 cv.text(x + w / 2, y + 15, [(text, "tl")])
             x += w + 8
+        cv.end()
         return y + 22
 
 

@@ -1,10 +1,11 @@
-"""Architecture diagrams: calls as nodes, loops as boxes, shapes on the edges."""
+"""Architecture diagrams: calls as boxes, loops as panels, shapes under the boxes, drawn as SVG."""
 
 import importlib.util
 import json
 import pathlib
 import re
 import sys
+import xml.etree.ElementTree as ET
 
 import jax
 import jax.numpy as jnp
@@ -12,11 +13,13 @@ import jax.random as jr
 import pytest
 
 import expex
-from expex import _fn, f32
+from expex import f32
 from expex import _diagram
+from expex import function as _fn
 from expex._diagram import Diagram, diagram
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+NS = "{http://www.w3.org/2000/svg}"
 
 
 def load(name: str, path: pathlib.Path):
@@ -47,7 +50,7 @@ def node(d: Diagram, prefix: str) -> tuple[str, str, str, int]:
 
 
 def edge(d: Diagram, a: str, b: str) -> str:
-    """The label of the edge from the node labelled ``a...`` to ``b...``."""
+    """The type on the edge from the node labelled ``a...`` to ``b...``."""
     src, dst = node(d, a)[0], node(d, b)[0]
     (t,) = [t for u, v, t in d.edges if (u, v) == (src, dst)]
     return t
@@ -57,22 +60,37 @@ def box_of(d: Diagram, prefix: str) -> str:
     return d.boxes[f"b{node(d, prefix)[3]}"]
 
 
-_LINE = re.compile(
-    r'(flowchart TD|end|subgraph b\d+ \["[^"\[\]]*"\]|[bn]\d+(\["|\(\["|\[/"|\[\\")[^"\[\]]*("\]|"\]\)|"/\]|"\\\])'
-    r'|[bn]\d+ -->\|"[^"\[\]|]*"\| [bn]\d+|classDef \w+ [\w:#,.-]+|class [bn\d,]+ \w+|style b\d+ [\w:#,. -]+'
-    r"|linkStyle [\d,]+ [\w:#,.-]+)",
-    re.S,
-)
+def text(el: ET.Element) -> list[str]:
+    return ["".join(t.itertext()) for t in el.iter(NS + "text")]
 
 
-def check_mermaid(text: str) -> None:
-    """Every statement is one Mermaid knows, and labels hold no raw brackets or quotes."""
-    lines = re.split(r"\n(?=\s*(?:flowchart|end|subgraph|[bn]\d+[\[(\s]|classDef|class|style|linkStyle))", text)
-    for line in lines:
-        assert _LINE.fullmatch(line.strip()), line
-    ids = set(re.findall(r"^\s*([bn]\d+)[\[(]", text, re.M)) | set(re.findall(r"subgraph (b\d+)", text))
-    for u, v in re.findall(r"([bn]\d+) -->\|[^|]*\| ([bn]\d+)", text):
-        assert u in ids and v in ids
+def check_svg(d: Diagram) -> ET.Element:
+    """The SVG parses; every node is a group with a box and its label; every edge has a path and an arrow head."""
+    root = ET.fromstring(d.svg)
+    assert root.tag == NS + "svg" and root.get("viewBox").startswith("0 0 ")
+    groups = {g.get("data-id"): g for g in root.iter(NS + "g") if g.get("class", "").startswith("nd")}
+    assert set(groups) == {n[0] for n in d.nodes}
+    for n in d.nodes:
+        g = groups[n[0]]
+        assert g.find(NS + "rect") is not None and text(g)
+    top = [el.tag for el in root]  # the edges are drawn at the top level, the internals' arrows in their stacks
+    assert top.count(NS + "polygon") == top.count(NS + "path") == len(d.edges)
+    assert "cdn" not in d.svg and "mermaid" not in d.svg.lower()
+    return root
+
+
+def drawn(d: Diagram, prefix: str) -> tuple[list[str], tuple[float, float], float]:
+    """A node as drawn: its texts, its box's (top, bottom), and the y of the last text (the shape under it)."""
+    root = ET.fromstring(d.svg)
+    (g,) = [g for g in root.iter(NS + "g") if g.get("data-id") == node(d, prefix)[0]]
+    rect = g.findall(NS + "rect")[-1]
+    y, h = float(rect.get("y")), float(rect.get("height"))
+    return text(g), (y, y + h), float(g.findall(NS + "text")[-1].get("y"))
+
+
+def titles(d: Diagram) -> list[str]:
+    root = ET.fromstring(d.svg)
+    return [text(g)[0] for g in root.iter(NS + "g") if g.get("class") == "pt"]
 
 
 def test_transformer_depth_1(transformer):
@@ -89,9 +107,15 @@ def test_transformer_depth_1(transformer):
     assert edge(d, "Block", "LayerNorm") == "f32[T, D]"
     assert edge(d, "matmul", "return") == "f32[T, Vocab]"
     assert len(d.edges) == 5
-    assert d.mermaid.startswith("flowchart TD\n") and str(d) == d.mermaid
-    assert "Block.#95;#95;call#95;#95;\nf32#91;T, D#93; → f32#91;T, D#93;" in d.mermaid
-    check_mermaid(d.mermaid)
+    assert str(d) == d.text and not hasattr(d, "mermaid")
+    check_svg(d)
+    texts, (top, bottom), shape_y = drawn(d, "matmul")
+    assert texts == ["matmul", "f32[T, Vocab]"] and bottom < shape_y < bottom + 16  # the shape just under its box
+    assert drawn(d, "tokens")[0] == ["tokens", "i32[T]"] and drawn(d, "return")[0] == ["return", "f32[T, Vocab]"]
+    assert drawn(d, "Block")[0] == ["Block  × L"]  # one block, drawn as a stack: same shape in and out
+    assert drawn(d, "LayerNorm")[0] == ["LayerNorm", "vectorized"]
+    assert "Transformer" in text(ET.fromstring(d.svg))[0] and "L = len(blocks)" in d.svg
+    assert "Component internals" in d.svg and {"Block", "LayerNorm"} <= set(text(ET.fromstring(d.svg)))
     assert _fn.CALL_HOOK.get() is None
 
 
@@ -105,7 +129,13 @@ def test_transformer_depth_2(transformer):
     ]  # fmt: skip
     attn, mlp = node(d, "Attention")[0], node(d, "MLP")[0]
     assert any(u == attn for u, _, _ in d.edges) and any(v == mlp for _, v, _ in d.edges)
-    check_mermaid(d.mermaid)
+    assert labels(d, "op").count("+") == 2  # the residual connections
+    plus = [n[0] for n in d.nodes if n[2] == "+"]
+    assert {(u, v) for u, v, _ in d.edges if v == plus[0]} == {(node(d, "index")[0], plus[0]), (attn, plus[0])}
+    assert titles(d) == ["Block  × L", "LayerNorm  vectorized"]  # the loop and the call in it: one panel
+    root = check_svg(d)
+    panels = [g for g in root.iter(NS + "g") if g.get("class", "").startswith("pn")]
+    assert len(panels) == 2 and all(g.find(NS + "rect").get("class") == "f-panel k-frame" for g in panels)
 
 
 def test_attention(transformer):
@@ -136,7 +166,9 @@ def test_mamba(mamba):
     assert box_of(d, "Block.__call__") == "× L"
     assert labels(d, "out") == ["return f32[T, V]"]
     assert node(d, "RMSNorm")[2] == "RMSNorm.__call__ · vectorized\nf32[D] → f32[D]"
-    check_mermaid(d.mermaid)
+    root = check_svg(d)
+    (g,) = [g for g in root.iter(NS + "g") if g.get("data-id") == node(d, "RMSNorm")[0]]
+    assert g.find(NS + "rect").get("class") == "f-norm k-edge"  # norms are yellow
 
 
 def test_mixer_time_loop(mamba):
@@ -151,7 +183,12 @@ def test_mixer_time_loop(mamba):
     assert loop and "selective_scan" in d2.boxes.values()
     (inside,) = [n for n in d2.nodes if f"b{n[3]}" == loop[0]]
     assert inside[2] == "matmul"  # h @ C[t]
-    check_mermaid(d2.mermaid)
+    assert titles(d2) == ["Mixer.conv", "selective_scan", "loop  × T"]
+    check_svg(d2)
+    texts = text(ET.fromstring(d.svg))
+    assert "f32[T, E]" in texts  # the slice xz[:, :E] enters Mixer.conv: written by the arrow
+    assert texts.count("+") == 1  # selective_scan(...) + u * skip
+    check_svg(d)
 
 
 @expex.fn
@@ -177,23 +214,52 @@ def test_branches_and_while():
     assert edge(d, "w", "matmul") == "f32[D, D]"
     assert edge(d, "unit", "return") == "f32[T, D]"
     assert edge(d, "x", "return") == "f32[T, D]"  # the else branch passes x through
-    check_mermaid(d.mermaid)
+    check_svg(d)
+    assert {"if", "then", "while"} <= {t.split("  ")[0] for t in titles(d)}  # the else branch has nothing to draw
 
 
 def test_page(transformer, tmp_path):
     d = diagram(transformer.Transformer.__call__)
     path = d.save(tmp_path / "t.html")
     page = path.read_text()
-    assert "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js" in page
-    data = json.loads(re.search(r"const M = (.*);\n", page).group(1))
-    assert data["depth"] == 1 and data["name"] == "Transformer.__call__"
+    assert "<script src" not in page and "cdn" not in page.lower()  # everything is inline
+    blob = re.search(r"const M = (.*);\n", page).group(1)
+    data = json.loads(blob)
+    assert "</script" not in blob and data["name"] == "Transformer.__call__"
     calls = [b for b in data["boxes"] if b["k"] == "call"]
     assert {b["name"] for b in calls} >= {"Block.__call__", "Attention.__call__", "Attention.causal", "MLP.__call__"}
-    attn = next(b for b in calls if b["name"] == "Attention.__call__")
-    assert attn["o"] and attn["d"] == 2 and attn["loc"].endswith("transformer.py:52")
-    assert "def __call__" in data["sources"][attn["src"]]
-    assert "</script" not in re.search(r"const M = (.*);\n", page).group(1)
+    attn = next(i for i, b in enumerate(data["boxes"]) if b["name"] == "Attention.__call__")
+    assert data["boxes"][attn]["o"] and data["boxes"][attn]["loc"].endswith("transformer.py:52")
+    assert "def __call__" in data["sources"][data["boxes"][attn]["src"]]
+    assert data["start"] == data["depths"][0] and len(data["depths"]) >= 3  # a view per depth
+    assert data["svgs"][data["start"]] == d.svg
+    block = next(i for i, b in enumerate(data["boxes"]) if b["name"] == "Block.__call__")
+    opened = data["clicks"][data["start"]][str(block)]  # a click on Block opens it in place
+    assert f'data-box="{attn}"' in data["svgs"][opened] and f'data-box="{attn}"' not in d.svg.split("Component internals")[0]
+    assert data["clicks"][opened][str(block)] == data["start"]  # and a click on its title folds it
+    assert set(data["colors"]) >= {"bg", "s0", "norm", "h4", "err"}  # the dark colours
     assert d._repr_html_().startswith("<iframe srcdoc=")
+
+
+def test_save(transformer, tmp_path):
+    d = diagram(transformer.Transformer.__call__)
+    assert d.save(tmp_path / "t.svg").read_text() == d.svg
+    png = d.save(tmp_path / "t.png").read_bytes()
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    with pytest.raises(ValueError, match="cannot save a diagram as '.pdf'"):
+        d.save(tmp_path / "t.pdf")
+
+
+def test_png_fallbacks(transformer, tmp_path, monkeypatch):
+    d = diagram(transformer.Transformer.__call__)
+    monkeypatch.setattr(_diagram, "_chrome", lambda: None)
+    monkeypatch.setitem(sys.modules, "playwright", None)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
+    if importlib.util.find_spec("matplotlib") is not None:  # drawn again by matplotlib
+        assert d.save(tmp_path / "m.png").read_bytes()[:4] == b"\x89PNG"
+    monkeypatch.setitem(sys.modules, "matplotlib", None)
+    with pytest.raises(RuntimeError, match="needs a browser"):
+        d.save(tmp_path / "none.png")
 
 
 # ---------------------------------------------------------------- measured time
@@ -217,9 +283,15 @@ def test_timed(timed):
     top = [b["t"] for b in d.model["boxes"] if b["p"] < 0]
     assert sum(top) + t["outside"] == pytest.approx(t["total"])
     assert re.search(r"\n[\d.]+ (ms|µs|s) · [\d.]+%$", node(d, "Block.__call__")[2])
-    assert "classDef heat" in d.mermaid and f"style b{loop} fill:#" in d.mermaid
-    check_mermaid(d.mermaid)
-    check_mermaid(d.at(2).mermaid)
+    texts, _, _ = drawn(d, "Block.__call__")
+    assert re.fullmatch(r"[\d.]+ (ms|µs|s) · [\d.]+%", texts[-1])  # the time in the box
+    root = check_svg(d)
+    (g,) = [g for g in root.iter(NS + "g") if g.get("data-id") == node(d, "Block.__call__")[0]]
+    assert g.find(NS + "rect").get("class") == f"f-h{_diagram.heat(d.model['boxes'][block]['s'])} k-edge"
+    assert "measured with jax.profiler" in d.svg and "≥ 40%" in d.svg  # the header and the heat legend
+    d2 = d.at(2)
+    check_svg(d2)
+    assert re.fullmatch(r"Block  × 2  [\d.]+ (ms|µs|s) · [\d.]+%", titles(d2)[0])
     assert "measured with jax.profiler" in d.text and "Block.__call__" in d.text and "(outside the calls)" in d.text
     assert _fn.CALL_HOOK.get() is None
 
@@ -247,14 +319,14 @@ def test_timed_estimate(transformer, monkeypatch):
     assert "ESTIMATED from FLOPs" in d.text and "FLOP" in node(d, "Block.__call__")[2]
     block = node(d, "Block.__call__")[0]
     assert d.timings[block][1] > 0.5  # 2 blocks of 32×32 and 32×64 matmuls dominate
-    check_mermaid(d.mermaid)
+    check_svg(d)
+    assert "ESTIMATED from FLOPs" in d.svg
 
 
 def test_timed_page(timed, tmp_path):
     page = timed.save(tmp_path / "t.html").read_text()
     data = json.loads(re.search(r"const M = (.*);\n", page).group(1))
-    assert data["timing"]["how"] == "profiler" and set(data["styles"]) >= {"heat0", "heat4", "error"}
-    assert 'id="legend"' in page and "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js" in page
+    assert data["timing"]["how"] == "profiler" and all("f-h" in svg for svg in data["svgs"].values())
 
 
 # ---------------------------------------------------------------- shape errors
@@ -294,13 +366,19 @@ def test_error_diagram(buggy):
     assert box_of(d, "✗ MLP.__call__") == "Block.__call__"  # opened to show the failing call
     names = {n[0]: n[2].split("\n")[0] for n in d.nodes}
     assert sorted(names[n] for n in d.feeds) == [
-        "Attention.__call__", "LayerNorm.__call__ · vectorized", "LayerNorm.__call__ · vectorized", "index", "tokens: i32[24]"
+        "+", "Attention.__call__", "LayerNorm.__call__ · vectorized", "LayerNorm.__call__ · vectorized", "index", "tokens: i32[24]"
     ]  # fmt: skip
     assert labels(d, "out") == []  # the trace stopped: nothing returned
-    assert "classDef error" in d.mermaid and "linkStyle" in d.mermaid
-    check_mermaid(d.mermaid)
+    root = check_svg(d)
+    texts, _, _ = drawn(d, "✗ MLP.__call__")
+    assert texts == ["✗ MLP", "received f32[24, 32]", "declared x: f32[D]"]
+    (g,) = [g for g in root.iter(NS + "g") if g.get("data-id") == d.failed]
+    assert g.find(NS + "rect").get("class") == "f-err k-errline"
+    red = [el for el in root if el.tag == NS + "path" and el.get("class") == "k-errline"]
+    assert len(red) == sum(1 for u, v, _ in d.edges if u in d.feeds and (v in d.feeds or v == d.failed))
+    assert titles(d) == ["Block  ✗ fails inside"]
     assert "✗ received f32[24, 32], declared x: f32[D]" in d.text
-    assert "path:  tokens: i32[24] → index → LayerNorm.__call__ · vectorized → Attention.__call__ → LayerNorm.__call__ · vectorized → ✗ MLP.__call__" in d.text
+    assert "path:  tokens: i32[24] → index → LayerNorm.__call__ · vectorized → Attention.__call__ → + → LayerNorm.__call__ · vectorized → ✗ MLP.__call__" in d.text
     assert expex.diagram.explain(e.value) is d
     assert _fn.CALL_HOOK.get() is None
 
@@ -314,7 +392,8 @@ def test_explain_function():
     assert edge(d, "unit", "✗ proj") == "f32[5, 3]"  # the arguments it received
     assert edge(d, "w", "✗ proj") == "f32[2, 3]"  # w[:-1] is passed through: the type it enters with
     assert {n[2].split("\n")[0] for n in d.nodes if n[0] in d.feeds} == {"x: f32[5, 3]", "w: f32[3, 3]", "proj", "unit"}
-    check_mermaid(d.mermaid)
+    root = check_svg(d)
+    assert "f32[2, 3]" in text(root)  # w[:-1] enters the failing call: written by its arrow
     with pytest.raises(expex.ShapeError) as e:
         broken(x, w)
     assert e.value.diagram.nodes == d.nodes
@@ -328,7 +407,7 @@ def test_explain_root_fails():
     d = expex.diagram.explain(proj, jnp.ones((5, 3)), jnp.ones((4, 3)))
     assert labels(d, "op") == ["✗ ShapeError"] and d.failed == node(d, "✗ ShapeError")[0]
     assert "proj(): argument `w`" in d.error
-    check_mermaid(d.mermaid)
+    check_svg(d)
 
 
 def test_no_cost_on_success(monkeypatch):
@@ -348,4 +427,5 @@ def test_error_page(tmp_path):
     page = e.value.diagram.save(tmp_path / "e.html").read_text()
     data = json.loads(re.search(r"const M = (.*);\n", page).group(1))
     assert data["error"]["declared"] == "w: f32[D, E]" and data["error"]["got"] == "f32[2, 3]"
-    assert [b["err"] for b in data["boxes"] if "err" in b] == [2]
+    assert [b["err"] for b in data["boxes"] if b["err"]] == [2]
+    assert data["error"]["message"].startswith("proj(): argument `w`")
