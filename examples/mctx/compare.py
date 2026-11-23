@@ -92,7 +92,7 @@ def original_mctx(path: str):
         sys.modules["mctx"] = port
 
 
-def benchmark(path: str, ref: dict, batch: int, sims: int, rounds: int = 7) -> dict[str, dict[str, float]]:
+def benchmark(path: str, ref: dict, batch: int, sims: int, rounds: int = 15) -> dict[str, dict[str, float]]:
     """Searches per second and compile time, mctx vs port, both jit-compiled.
 
     The batch's roots are random states of the reference MDP; mctx runs with
@@ -124,6 +124,7 @@ def benchmark(path: str, ref: dict, batch: int, sims: int, rounds: int = 7) -> d
         compiled, row = {}, {label: float("inf") for label in ("mctx compile s", "port compile s")}
         for _ in range(3):  # tracing + XLA; the first compile in a process also pays a warm-up
             for label, (f, arg) in programs.items():
+                jax.clear_caches()
                 t = time.perf_counter()
                 compiled[label] = jax.jit(f).lower(arg, key).compile()
                 row[f"{label} compile s"] = min(row[f"{label} compile s"], time.perf_counter() - t)

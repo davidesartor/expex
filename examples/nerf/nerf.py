@@ -104,7 +104,7 @@ class MLP[P, V, W, C]:
 @fn
 def stratified[S](near: float, far: float, u: f32[S], randomized: bool, lindisp: bool) -> f32[S]:
     """S depths from near to far, evenly spaced (in disparity if lindisp); moved within their bins by u if randomized."""
-    assert S >= 2
+    assert S >= 2  # also tells the prover which branch jnp.linspace takes
     t = jnp.linspace(0.0, 1.0, S)
     z = 1.0 / (1.0 / near * (1.0 - t) + 1.0 / far * t) if lindisp else near * (1.0 - t) + far * t
     if randomized:

@@ -286,7 +286,8 @@ def multiples(f: Fn[Any, Any], statics: dict[str, int]) -> dict[str, int | str]:
             continue
         if name in out or m not in inputs:
             continue
-        seen, k = {name}, m
+        seen: set[str] = {name}
+        k: int | str | None = m
         while isinstance(k, str) and k not in seen:  # P % H == 0 too would be a cycle
             seen.add(k)
             k = out.get(k)
