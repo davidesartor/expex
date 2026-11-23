@@ -305,7 +305,7 @@ def trace(f: Fn[Any, Any], fixed: dict[str, Any], abstract: list[str], ctx: Size
 
 
 def attempt(
-    f: Fn[Any, Any], fixed: dict[str, Any], abstract: list[str], make_ctx: Callable[[], Sizes]
+    f: Fn[Any, Any], fixed: dict[str, Any], abstract: list[str], make_ctx: Callable[..., Sizes]
 ) -> tuple[Any, Sizes, BaseException | None]:
     """Trace with new-style keys, retrying with legacy keys if that fails: (jaxpr, sizes, error)."""
     first: tuple[Sizes, BaseException] | None = None

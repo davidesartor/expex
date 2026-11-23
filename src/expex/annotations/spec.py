@@ -432,7 +432,7 @@ class UnionSpec(Spec):
         """The member that describes ``value``: ``None``, a struct of its class, else the first array-like one."""
         if value is None:
             return next((o for o in self.options if isinstance(o, NoneSpec)), NoneSpec())
-        structs = [o for o in self.options if isinstance(o, StructSpec) and isinstance(value, o.cls)]
+        structs: list[Spec] = [o for o in self.options if isinstance(o, StructSpec) and isinstance(value, o.cls)]
         others = [o for o in self.options if not isinstance(o, NoneSpec)]
         return (structs or [o for o in others if o.leafy] or others)[0]
 
