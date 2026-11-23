@@ -124,7 +124,7 @@ def _node(name: str, value: Any, declared: str = "") -> _Node:
         kids = [_node(f.name, getattr(v, f.name, None), anns.get(f.name, "")) for f in dataclasses.fields(v)]
         n = _Node(name, "struct", _struct_type(v) if getattr(v, "__expex_struct__", False) else type(v).__name__, children=kids)
     elif isinstance(v, tuple) and hasattr(v, "_fields"):  # a NamedTuple
-        n = _Node(name, "struct", type(v).__name__, children=[_node(k, getattr(v, k)) for k in v._fields])
+        n = _Node(name, "struct", type(v).__name__, children=[_node(k, getattr(v, k)) for k in getattr(v, "_fields")])
     elif isinstance(v, (list, tuple)) and v and any(_array(x) or dataclasses.is_dataclass(x) for x in v):
         elem = declared[5:-1] if declared.startswith("list[") else ""
         idx = list(range(len(v)))
@@ -137,20 +137,23 @@ def _node(name: str, value: Any, declared: str = "") -> _Node:
     elif isinstance(v, dict) and any(_array(x) or dataclasses.is_dataclass(x) for x in v.values()):
         n = _Node(name, "dict", f"dict[{len(v)}]", children=[_node(f"[{k!r}]", x) for k, x in v.items()])
     elif _array(v):
-        key = _is_key(v)
-        size = math.prod(v.shape)
-        try:
-            label = describe(v)
-        except Exception:
-            label = f"{v.dtype}{list(v.shape)}"
-        n = _Node(name, "array", label, params=0 if key else size, nbytes=0 if key else size * np.dtype(v.dtype).itemsize,
-                  value=_values(v))  # fmt: skip
-        return _decl(n, declared)
+        return _decl(_leaf(name, value, describe), declared)
     else:
         return _Node(name, "static", _short(v))
     n.params = sum(k.params for k in n.children if k.kind != "more")
     n.nbytes = sum(k.nbytes for k in n.children if k.kind != "more")
     return _decl(n, declared)
+
+
+def _leaf(name: str, x: Any, describe: Any) -> _Node:
+    """An array's node: its type, and its values if it is small."""
+    key, size = _is_key(x), math.prod(x.shape)
+    try:
+        label = describe(x)
+    except Exception:
+        label = f"{x.dtype}{list(x.shape)}"
+    nbytes = 0 if key else size * np.dtype(x.dtype).itemsize
+    return _Node(name, "array", label, params=0 if key else size, nbytes=nbytes, value=_values(x))
 
 
 def _count(v: Any) -> tuple[int, int]:

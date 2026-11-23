@@ -203,7 +203,7 @@ def _modules(model: Any) -> list[dict[str, Any]]:
     """The model and every module in it, by path (a list's elements as ``[*]``, shown by its first)."""
     from .display import _struct_type
 
-    out = [dict(path="", cls=type(model).__name__, label=_struct_type(model), obj=model)]
+    out: list[dict[str, Any]] = [dict(path="", cls=type(model).__name__, label=_struct_type(model), obj=model)]
 
     def walk(obj: Any, path: str) -> None:
         for f in dataclasses.fields(obj):
