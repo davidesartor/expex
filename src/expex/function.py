@@ -563,8 +563,42 @@ class Fn(Generic[P, R]):
             bound = self._sig.bind(*args, **kwargs).arguments
         except TypeError:
             return self._impl(*args, **kwargs)  # let Python raise its own error
-        try:
-            self._match_args(bound, env)
+        try:  # as _match_args, inlined: this is every checked call
+            for name in self.static_refs:
+                v = bound[name] if name in bound else self.params[name].default
+                v = _concrete_int(v)
+                if isinstance(v, Tracer):
+                    raise StageError(
+                        f"{self.name}(): `{name}` sets a size, so it must be known when the "
+                        f"function is traced, but it is traced. Under jax.jit, mark it static: "
+                        f"jax.jit(f, static_argnames=\"{name}\")."
+                    )
+                if isinstance(v, (int, np.integer)) and not isinstance(v, bool):
+                    env.dims[name] = int(v)
+                    env.origin[name] = f"the argument `{name}`"
+                elif jax.export.is_symbolic_dim(v):  # a size passed on under the prover: `self.empty(T)`
+                    env.dims[name] = v
+                    env.origin[name] = f"the argument `{name}`"
+            if self.field_refs:
+                obj = bound.get(next(iter(self.params)))
+                for name in self.field_refs:
+                    v = _concrete_int(getattr(obj, name, None))
+                    if isinstance(v, (int, np.integer)) and not isinstance(v, bool):
+                        env.dims[name] = int(v)
+                        env.origin[name] = f"`self.{name}`"
+            for name, spec in self._check_inputs:
+                if name in bound:
+                    kind = self._var_kinds.get(name)
+                    if kind is None:
+                        spec.match(bound[name], name, env)
+                    elif kind is inspect.Parameter.VAR_POSITIONAL:
+                        for i, v in enumerate(bound[name]):
+                            spec.match(v, f"{name}[{i}]", env)
+                    else:
+                        for k, v in bound[name].items():
+                            spec.match(v, k, env)
+            if env.deferred:
+                resolve(env)
         except Mismatch as m:
             if self._auto() and batching.extra_axes(self, m):
                 raise batching.Rebatch from None
@@ -606,7 +640,10 @@ class Fn(Generic[P, R]):
         return out
 
     def _match_args(self, bound: dict[str, Any], env: Env) -> None:
-        """Bind this call's sizes in ``env`` and match the arguments (raises ``Mismatch``)."""
+        """Bind this call's sizes in ``env`` and match the arguments (raises ``Mismatch``).
+
+        For ``_wants_batch``; ``_checked`` does the same inline (keep them in step).
+        """
         for name in self.static_refs:
             v = bound[name] if name in bound else self.params[name].default
             v = _concrete_int(v)
