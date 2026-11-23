@@ -39,6 +39,21 @@
          background: var(--panel); color: var(--fg); border: 1px solid var(--border); border-radius: 6px;
          box-shadow: 0 4px 16px rgba(0,0,0,.2); font: 12px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap; }
   #error { color: #dc2626; padding: 16px; white-space: pre-wrap; }
+  #legend { padding: 5px 16px; border-bottom: 1px solid var(--border); font-size: 12px;
+            display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; }
+  #legend:empty { display: none; }
+  #legend .item { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+  #legend .sw { width: 18px; height: 12px; border-radius: 3px; border: 1.5px solid; display: inline-block; }
+  #legend .ln { width: 22px; height: 0; border-top: 3px solid; display: inline-block; }
+  #legend .what { color: var(--muted); }
+  aside h2.bad { color: #dc2626; }
+  aside pre.msg { white-space: pre-wrap; word-break: break-word; }
+  @media (prefers-color-scheme: dark) { aside h2.bad { color: #f87171; } }
+  table.times { border-collapse: collapse; width: 100%; font: 12px/1.5 ui-monospace, Menlo, monospace; }
+  table.times td { padding: 1px 4px; white-space: nowrap; }
+  table.times td.num { text-align: right; }
+  table.times td:last-child { width: 44px; }
+  table.times .bar { display: inline-block; height: 8px; border-radius: 2px; vertical-align: middle; }
   @media (max-width: 720px) {
     main { flex-direction: column; }
     aside { width: auto; max-width: none; max-height: 38%; border-left: 0; border-top: 1px solid var(--border); }
@@ -55,6 +70,7 @@
   <button id="fit">Fit</button>
   <span class="hint">Click a call to open or fold it · drag to pan · wheel to zoom</span>
 </header>
+<div id="legend"></div>
 <main>
   <div id="stage"></div>
   <aside id="panel"><p class="muted">Hover a node for its signature; click a call to open it and see its source here.</p></aside>
@@ -70,9 +86,38 @@ let expanded = new Set(), renders = 0, vb = null, base = null;
 const esc = s => [...s].map(c => '"[]<>#&|{}_*`~'.includes(c) ? "#" + c.codePointAt(0) + ";" : c).join("");
 const text = s => s.replace(/[&<>]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;"})[c]);
 const callLabel = b => b.l + (b.lift ? " · lift" : "");
+const T = M.timing, E = M.error;
+const steps = M.heat;  // shares from which a box is one step hotter
+const heat = s => steps.filter(h => s >= h).length;
+const amount = (x, unit) => {
+  if (unit === "s") {
+    for (const [sc, n] of [[1, "s"], [1e-3, "ms"], [1e-6, "µs"]]) if (x >= sc) return +(x / sc).toPrecision(3) + " " + n;
+    return +(x * 1e9).toPrecision(3) + " ns";
+  }
+  for (const [sc, n] of [[1e12, "T"], [1e9, "G"], [1e6, "M"], [1e3, "k"]]) if (x >= sc) return +(x / sc).toPrecision(3) + " " + n + "FLOP";
+  return +x.toPrecision(3) + " FLOP";
+};
+const pct = s => (100 * s).toFixed(1) + "%";
+const timing = b => T && b.t != null ? `${amount(b.t, T.unit)} · ${pct(b.s)}` : "";
+const part = (style, name) => style.split(",").find(kv => kv.split(":")[0] === name).split(":")[1];
 
-function atDepth(d) {
-  expanded = new Set(B.map((b, i) => b.k === "call" && b.d < d ? i : -1).filter(i => i >= 0));
+// A closed call's label: the same as _label in _diagram.py.
+function nodeLabel(b, mark) {
+  const lines = [(b.err ? "✗ " : "") + mark + callLabel(b)];
+  if (b.err === 2 && E && E.got) {
+    const arg = !E.head.includes("return value");
+    lines.push(arg ? `received ${E.got}` : `${b.ins} → ${E.got}`, `declared ${E.declared}`);
+  } else {
+    lines.push(`${b.ins} → ${b.outs || "?"}`);
+    if (b.err === 1) lines.push("fails inside");
+  }
+  const t = timing(b);
+  if (t) lines.push(t);
+  return lines.map(esc).join("\n");
+}
+
+function atDepth(d) {  // calls shallower than d open, and those around a failing call
+  expanded = new Set(B.map((b, i) => b.k === "call" && (b.d < d || b.err === 1) ? i : -1).filter(i => i >= 0));
 }
 
 // The visible graph: the same rules as _view in _diagram.py.
@@ -111,11 +156,25 @@ function view() {
       } else for (const [w, tw] of (succ.get(v) || []).slice().reverse()) todo.push([w, t0, tw]);
     }
   }
-  return {nodes, edges: [...edges.values()]};
+  const fail = E ? key[E.atom] : null;
+  return {nodes, edges: [...edges.values()], fail};
+}
+
+// The nodes from which the failing node is reached, and the indices of the edges between them.
+function feeds(edges, node) {
+  if (node == null) return {seen: new Set(), path: new Set()};
+  const seen = new Set([node]), todo = [node];
+  while (todo.length) {
+    const v = todo.pop();
+    for (const [u, w] of edges) if (w === v && !seen.has(u)) { seen.add(u); todo.push(u); }
+  }
+  const path = new Set(edges.map(([u, w], i) => seen.has(u) && seen.has(w) ? i : -1).filter(i => i >= 0));
+  seen.delete(node);
+  return {seen, path};
 }
 
 function mermaidText(dark) {
-  const {nodes, edges} = view();
+  const {nodes, edges, fail} = view();
   const items = new Map(), add = (box, it) => { if (!items.has(box)) items.set(box, []); items.get(box).push(it); };
   for (const n of nodes.values()) {
     add(n.box, n);
@@ -129,33 +188,38 @@ function mermaidText(dark) {
       if (typeof it === "number") {
         const b = B[it], mark = b.k === "call" ? "▾ " : "";
         drawn.push(it);
-        out.push(`${ind}subgraph b${it} ["${esc(mark + callLabel(b))}"]`);
+        out.push(`${ind}subgraph b${it} ["${esc(mark + callLabel(b) + (b.s != null && T ? " · " + pct(b.s) : ""))}"]`);  // titles wrap past ~30 characters, over the contents
         emit(it, ind + "  ");
         out.push(ind + "end");
       } else {
         let label = esc(it.label || "");
-        if (it.kind === "call") {
-          const b = B[it.call];
-          label = esc((b.o ? "▸ " : "") + callLabel(b)) + "\n" + esc(`${b.ins} → ${b.outs}`);
-        }
+        if (it.kind === "call") label = nodeLabel(B[it.call], B[it.call].o ? "▸ " : "");
         out.push(ind + it.id + shape[it.kind][0] + label + shape[it.kind][1]);
       }
     }
   };
   emit(-1, "  ");
   for (const [u, v, t] of edges) out.push(`  ${u} -->|"${esc(t)}"| ${v}`);
-  const pal = dark
-    ? {calls: "#1e3a8a,stroke:#60a5fa,color:#e2e8f0", ops: "#78350f,stroke:#f59e0b,color:#fef3c7", io: "#14532d,stroke:#22c55e,color:#dcfce7"}
-    : {calls: "#dbeafe,stroke:#2563eb,color:#0f172a", ops: "#fef3c7,stroke:#d97706,color:#0f172a", io: "#dcfce7,stroke:#16a34a,color:#0f172a"};
-  for (const [c, kinds] of [["calls", ["call"]], ["ops", ["op"]], ["io", ["in", "out"]]]) {
-    out.push(`  classDef ${c} fill:${pal[c]}`);
-    const ids = [...nodes.values()].filter(n => kinds.includes(n.kind)).map(n => n.id);
-    if (ids.length) out.push(`  class ${ids.join(",")} ${c}`);
+  const d = dark ? 1 : 0, groups = {};
+  for (const n of nodes.values()) {
+    let c = {call: "calls", op: "ops", in: "io", out: "io"}[n.kind];
+    if (n.kind === "call" && B[n.call].s != null) c = "heat" + heat(B[n.call].s);
+    if (n.id === fail) c = "error";
+    (groups[c] = groups[c] || []).push(n.id);
+  }
+  const {seen, path} = feeds(edges, fail);
+  if (seen.size) groups.feeds = [...nodes.keys()].filter(id => seen.has(id));
+  for (const c of Object.keys(M.styles)) {
+    out.push(`  classDef ${c} ${M.styles[c][d]}`);
+    if (groups[c]) out.push(`  class ${groups[c].join(",")} ${c}`);
   }
   for (const i of drawn) {
-    const color = B[i].k === "call" ? (dark ? "#60a5fa" : "#2563eb") : (dark ? "#c084fc" : "#9333ea");
-    out.push(`  style b${i} fill:transparent,stroke:${color},stroke-dasharray:4 3`);
+    const b = B[i];
+    let color = M.frame[d][b.err ? 2 : b.k === "call" ? 0 : 1], fill = "transparent";
+    if (b.s != null) { color = part(M.styles["heat" + heat(b.s)][d], "stroke"); fill = color + "26"; }
+    out.push(`  style b${i} fill:${fill},stroke:${color},stroke-dasharray:4 3`);
   }
+  if (path.size) out.push(`  linkStyle ${[...path].sort((a, b) => a - b).join(",")} ${M.path[d]}`);
   return {text: out.join("\n"), nodes};
 }
 
@@ -180,9 +244,16 @@ async function draw(refit) {
   const [x, y, w, h] = el.getAttribute("viewBox").split(/[ ,]+/).map(Number);
   const pad = 16;
   base = {x: x - pad, y: y - pad, w: w + 2 * pad, h: h + 2 * pad};
+  const minW = stage.clientWidth / 1.25, minH = stage.clientHeight / 1.25;  // small diagrams: at most 1.25x
+  if (base.w < minW && base.h < minH) {
+    const s = Math.max(base.w / minW, base.h / minH);  // the larger of the two sets the scale
+    const nw = minW * s, nh = minH * s;
+    base = {x: base.x - (nw - base.w) / 2, y: base.y, w: nw, h: nh};
+  }
   if (refit || !vb) vb = {...base};
   setViewBox();
   wire(el, nodes);
+  legend();
   stage.dataset.nodes = el.querySelectorAll("g.node").length;
 }
 
@@ -196,22 +267,73 @@ function idOf(g) {
   return m ? m[1] : null;
 }
 
+function timeText(b) {
+  if (!T || b.t == null) return "";
+  if (T.unit !== "s") return `\n\nestimated: ${amount(b.t, T.unit)} per call, ${pct(b.s)} of the FLOPs (not measured)`;
+  const runs = b.n ? `, ${Math.round(b.n)} XLA op runs per call` : "";
+  return `\n\ntime: ${amount(b.t, "s")} per call, ${pct(b.s)} of ${amount(T.total, "s")} measured${runs}`;
+}
+
 function describe(id, nodes) {
   if (id[0] === "b") {
     const b = B[+id.slice(1)];
-    if (b.k !== "call") return `${b.l}  (${b.k === "loop" ? "loop or branch" : b.k})`;
-    return `${b.sig || b.name}\n\n${b.ins} → ${b.outs}${b.lift ? "   (per element: called with .lift)" : ""}\n${b.loc}`;
+    if (b.err === 2 && E) return E.message;
+    const inside = b.err === 1 ? "\n\n✗ the failing call is inside: " + E.head : "";
+    if (b.k !== "call") return `${b.l}  (${b.k === "loop" ? "loop or branch" : b.k})${timeText(b)}${inside}`;
+    return `${b.sig || b.name}\n\n${b.ins} → ${b.outs || "?"}${b.lift ? "   (per element: called with .lift)" : ""}\n${b.loc}${timeText(b)}${inside}`;
   }
   const n = nodes.get(id);
   if (!n) return "";
+  if (E && E.atom === +id.slice(1)) return E.message;
   return n.kind === "op" ? `${n.label}  (an operation outside the calls shown)` : n.label;
+}
+
+// What the colours mean, for this diagram.
+function legend() {
+  const d = dark() ? 1 : 0, el = document.getElementById("legend");
+  const sw = (c, what) => {
+    const st = M.styles[c][d];
+    return `<span class="item"><span class="sw" style="background:${part(st, "fill")};border-color:${part(st, "stroke")}"></span>${what}</span>`;
+  };
+  const parts = [];
+  if (T) {
+    const lo = [0, ...steps], hi = [...steps, 1];
+    parts.push(`<span class="what">${T.unit === "s" ? "share of measured time" : "ESTIMATED share of FLOPs"}</span>`);
+    for (let k = 0; k <= steps.length; k++) parts.push(sw("heat" + k, k === 0 ? `< ${pct(hi[0]).replace(".0", "")}` : k === steps.length ? `≥ ${pct(lo[k]).replace(".0", "")}` : `${pct(lo[k]).replace(".0", "")}–${pct(hi[k]).replace(".0", "")}`));
+  } else parts.push(sw("calls", "call"));
+  parts.push(sw("ops", "operation"), sw("io", "input / output"));
+  if (E) {
+    parts.push(sw("error", "failing call"));
+    parts.push(`<span class="item"><span class="ln" style="border-color:${part(M.path[d], "stroke")}"></span>path from the inputs</span>`);
+  }
+  el.innerHTML = parts.join("");
+}
+
+function intro() {
+  if (E) {
+    panel.innerHTML = `<h2 class="bad">✗ ShapeError</h2><p class="muted">The trace stopped at the failing call (red); `
+      + `the red edges lead to it from the inputs.</p><pre class="msg">${text(E.message)}</pre>`;
+  } else if (T) {
+    const head = T.unit === "s"
+      ? `<p>${amount(T.total, "s")} of XLA op time per call (${amount(T.wall, "s")} wall), measured with jax.profiler on ${T.backend}, median of ${T.runs} runs.</p>`
+      : `<p><b>Estimated</b> from FLOPs, not measured: ${text(T.why)}.</p>`;
+    const calls = B.map((b, i) => [b, i]).filter(([b]) => b.k === "call" && b.t != null).sort((x, y) => y[0].t - x[0].t).slice(0, 12);
+    const d = dark() ? 1 : 0;
+    const rows = calls.map(([b]) => `<tr><td>${text(callLabel(b))}</td><td class="num">${amount(b.t, T.unit)}</td><td class="num">${pct(b.s)}</td>`
+      + `<td><span class="bar" style="width:${Math.max(2, Math.round(40 * b.s))}px;background:${part(M.styles["heat" + heat(b.s)][d], "stroke")}"></span></td></tr>`).join("");
+    panel.innerHTML = `<h2>${text(M.name)}</h2>${head}<table class="times">${rows}</table>`
+      + `<p class="muted">Each call counts the calls inside it. Hover a box for its time; click a call to open it.</p>`;
+  }
 }
 
 function showPanel(i) {
   const b = B[i];
   const src = M.sources[b.src] || "";
-  panel.innerHTML = `<h2>${text(b.name)}</h2><p>${text(b.sig)}</p><p class="muted">${text(b.ins)} → ${text(b.outs)}`
-    + `${b.lift ? " (per element, via .lift)" : ""}<br>${text(b.loc)}</p>` + (src ? `<pre>${text(src)}</pre>` : "");
+  const err = b.err === 2 && E ? `<pre class="msg">${text(E.message)}</pre>` : "";
+  const t = timeText(b).trim();
+  panel.innerHTML = `<h2${b.err === 2 ? ' class="bad"' : ""}>${b.err === 2 ? "✗ " : ""}${text(b.name)}</h2><p>${text(b.sig)}</p>`
+    + `<p class="muted">${text(b.ins)} → ${text(b.outs || "?")}`
+    + `${b.lift ? " (per element, via .lift)" : ""}<br>${text(b.loc)}${t ? "<br>" + text(t) : ""}</p>` + err + (src ? `<pre>${text(src)}</pre>` : "");
 }
 
 function wire(el, nodes) {
@@ -285,6 +407,7 @@ document.getElementById("fit").addEventListener("click", () => { vb = base && {.
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => draw(false));
 
 atDepth(M.depth);
+intro();
 if (typeof mermaid === "undefined") {
   stage.innerHTML = '<div id="error">Mermaid did not load (it comes from a CDN: is the page offline?).</div>';
 } else draw(true);

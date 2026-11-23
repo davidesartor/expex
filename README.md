@@ -38,7 +38,7 @@ python -m typax examples/transformer.py        # prove a small transformer's sha
 | [Random keys](#random-keys) | `@tx.random` and `tx.key()`, no key threading |
 | [Compiling and gradients](#compiling-and-gradients) | `@tx.fn(jit=True, lift=True, random=True, remat=True)`, or JAX's own transformations |
 | [Sharding](#sharding) | `tx.shard(f, mesh, B="data", D="model")`: shardings from axis names |
-| [Diagrams](#diagrams) | `tx.diagram(f)`: an interactive architecture diagram, shapes on every edge |
+| [Diagrams](#diagrams) | `tx.diagram(f)`: an interactive architecture diagram, shapes on every edge, measured time per module, shape errors in place |
 | [Cost estimates](#cost-estimates) | FLOPs and parameters as formulas in the sizes |
 | [Precision constants](#precision-constants) | `tx.eps`, `tx.tiny`, `tx.huge` in the dtype they meet |
 | [Debugging](#debugging) | where a NaN appeared, shapes line by line, memory, timing |
@@ -633,6 +633,70 @@ f32#91;D#93; → f32#91;D#93;"]
   follows the data and shows its type.
 - The page pans and zooms, opens and folds calls, and shows each call's
   signature, file and line, and source. It loads Mermaid from a CDN.
+
+
+<!-- To insert at the end of README's "## Diagrams" section, after its bullet list. -->
+
+### Where the time goes, and where shapes fail
+
+`tx.diagram.timed` draws the same diagram from a run on real arguments. It
+compiles the function with `jax.jit`, runs it under `jax.profiler`, and colours
+each call and loop by its share of the measured time. Shape errors get a
+diagram too. A `ShapeError` raised inside a typed call carries `e.diagram`,
+which is the trace up to the call that failed:
+
+```python
+d = tx.diagram.timed(model.__call__, jnp.ones((256, 16)))  # runs it, under jax.jit and jax.profiler
+print(d.text)
+d.save("stack_timed.html")                       # each box coloured by its share of the time
+
+@tx.struct
+class Probe[D]:
+    stack: Stack[D]
+    w: f32[D] = 1.0
+
+    def __call__[B](self, x: f32[B, D]) -> f32[B]:
+        return self.stack(x[:, 1:]) @ self.w     # a bug: x loses a feature
+
+probe = Probe.init(jr.key(1), D=16, blocks=2)
+try:
+    probe(jnp.ones((4, 16)))
+except tx.ShapeError as e:
+    print(e.diagram.text)                        # the trace up to the call that failed
+    e.diagram.save("error.html")                 # that call in red, the path into it in red
+```
+
+```
+Stack.__call__   measured with jax.profiler (CPU): 285 µs of XLA op time per call (summed over threads), 320 µs wall, median of 5 runs
+  × 24                  273 µs   95.8%  ███████████████████
+    Block.__call__      250 µs   87.8%  ██████████████████
+  (outside the calls)   11.9 µs    4.2%
+Probe.__call__   ShapeError: traced up to the failing call
+  Stack.__call__  ✗ received f32[4, 15], declared x: f32[B, D]
+
+  path:  x: f32[4, 16] → ✗ Stack.__call__
+
+  Stack.__call__(): argument `x` does not match its annotation.
+  ...
+```
+
+- The profiler names XLA instructions, not Python calls. typax looks each one
+  up in the compiled program, where it carries the scopes of the calls it came
+  from. A fused instruction that spans calls is split between them. A loop's
+  body runs once per iteration, so `× 24` adds up all 24. Each call's time
+  includes the calls inside it. Shares are of XLA op time summed over threads,
+  so on CPU they can add up to more than the wall time.
+- When the profiler can't run, the shares are estimated from FLOPs per box
+  (counted as `tx.cost` counts them). The diagram is then labelled `ESTIMATED`.
+- `d.timings` maps boxes to (seconds per call, share), and `d.at(2)` opens the
+  diagram one level further.
+- `e.diagram` is built only when you use it, so calls that succeed cost
+  nothing extra. It traces the function again on the arguments' shapes, with
+  loops unrolled, up to the call that fails. That call is drawn in red, with
+  the type it received and the one it declared, and the edges from the inputs
+  to it are red too. The calls around it are open. The error's message is
+  unchanged. A note under it says `(see e.diagram.save("error.html"))`.
+  `tx.diagram.explain(f, *args)` draws the same thing without running `f`.
 
 ## Precision constants
 

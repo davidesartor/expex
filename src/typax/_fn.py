@@ -569,6 +569,10 @@ class Fn(Generic[P, R]):
             _flow._STAGE.depth = depth
             if config.notes and not getattr(e, "_typax_local", None) is self:
                 _messages.annotate(self, e, bound, env)
+            if isinstance(e, ShapeError) and not _ops.CALLS.stack and CALL_HOOK.get() is None:
+                from ._diagram import attach  # the outermost call: e.diagram, built only if used
+
+                attach(self, e, args, kwargs)
             raise
         _flow._STAGE.depth = depth
         if self.converted:
