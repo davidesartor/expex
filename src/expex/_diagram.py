@@ -258,6 +258,7 @@ class _Builder:
         self.boxes: list[dict[str, Any]] = []
         self.atoms: list[list[Any]] = []  # [box, label or None (passed through), kind]
         self.data: list[bool] = []  # depends on an input (else on constants and sizes only)
+        self.near: list[frozenset[int]] = []  # the nearest drawn atoms each atom is computed from
         self.edges: list[tuple[int, int, int]] = []  # (from atom, to atom, type index)
         self.types: dict[str, int] = {}
         self.by_uid: dict[int, int] = {}
@@ -284,6 +285,7 @@ class _Builder:
             n = _cost.flops(types.SimpleNamespace(eqns=[eqn]), []).value if eqn is not None else 0
             self.flops.append(float(n or 0) * self.mult)
         self.data.append(kind == "in" or any(self.data[a] for v in ins for a in _get(env, v)))
+        self.near.append(frozenset({me}) if label else frozenset().union(*[self.near[a] for v in ins for a in _get(env, v)]))
         for v in ins:
             if (t := _type(v.aval)) is not None:
                 ti = self.types.setdefault(t, len(self.types))
@@ -337,11 +339,15 @@ class _Builder:
             env.update({o: s for o, s in zip(eqn.outvars, outs) if _type(o.aval) is not None})
 
     def joins(self, eqn: Any, env: dict[Any, list[int]]) -> bool:
-        """Whether an ``add`` sums two values that both depend on the inputs, with one shape."""
+        """Whether an ``add`` joins two branches: both depend on the inputs, have one shape, and neither is
+        computed only from what the other is (``x + x**3`` in ``gelu`` is not drawn, ``x + attn(x)`` is)."""
         shapes = {getattr(v.aval, "shape", None) for v in [*eqn.invars, *eqn.outvars]}
         if len(shapes) != 1 or not next(iter(shapes)) or any(type(v).__name__ == "Literal" for v in eqn.invars):
             return False
-        return all(any(self.data[a] for a in _get(env, v)) for v in eqn.invars)
+        if not all(any(self.data[a] for a in _get(env, v)) for v in eqn.invars):
+            return False
+        a, b = (frozenset().union(*[self.near[x] for x in _get(env, v)]) for v in eqn.invars)
+        return not (a <= b or b <= a)
 
     def sub(self, jaxpr: Any, box: int, ins: list[list[int]]) -> list[list[int]]:
         jaxpr = getattr(jaxpr, "jaxpr", jaxpr)
@@ -569,6 +575,8 @@ COLORS = {
     "panel": ("#f2f2f2", "#1d2026"), "panel2": ("#fafafa", "#23272e"), "frame": ("#666666", "#5d636d"),
     "h0": ("#f5f5f5", "#252830"), "h1": ("#fff0d9", "#3b2d1a"), "h2": ("#ffd7a6", "#5b3915"),
     "h3": ("#ffae66", "#8a4912"), "h4": ("#ff7a1a", "#c4590b"),
+    "p0": ("#f5f5f5", "#1f2228"), "p1": ("#fff8ee", "#2a241c"), "p2": ("#fff0dc", "#33271a"),
+    "p3": ("#ffe4c6", "#3f2a16"), "p4": ("#ffd5aa", "#4d2d12"),
     "err": ("#ffd9d9", "#5a1c1c"), "errline": ("#c62828", "#ff6b6b"),
 }  # fmt: skip
 _SANS = "Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif"
@@ -1363,10 +1371,16 @@ class _Scene:
     def paint(self, cv: _Canvas, x0: float, y0: float) -> None:
         """Draw the main flow with its top left at (x0, y0)."""
         self.x0, self.y0 = x0, y0
+        self.titles: list[Any] = []
+        self.fills: dict[int, str] = {-1: "bg"}
         self._panels(cv, -1, 0)
         edges = sorted(self.edges, key=lambda e: ((e[0], e[1]) in self.path, e[0] in self.sidenodes))
         for u, v, *_ in edges:
             self._edge(cv, u, v)
+        for x, y, runs, fill, inner, i in self.titles:  # over the edges that enter the panel
+            cv.group(class_="pt", data_box=inner, data_loop=i)
+            cv.text(x, y, runs, anchor="start", halo=fill)
+            cv.end()
         for n in self.order:
             self._node(cv, n)
 
@@ -1380,9 +1394,11 @@ class _Scene:
             b = self.B[i]
             inner = next((k for k, v in self.alias.items() if v == i), i)
             fill = "panel" if depth % 2 == 0 else "panel2"
+            self.fills[i] = fill
             stroke, sw, dash = "frame", 1.0, None
             if (hk := self.heat_of(i)) is not None:
-                fill = hk
+                fill = "p" + hk[1:]
+                self.fills[i] = fill
             if b.get("err") == 1 or self.B[inner].get("err") == 1:
                 stroke, sw = "errline", 1.4
             if b["k"] != "call" and i not in self.alias.values():
@@ -1390,8 +1406,8 @@ class _Scene:
             openable = self.B[inner]["k"] == "call"
             cv.group(class_="pn" + (" fold" if openable else ""), data_box=inner, data_loop=i)
             cv.rect(x, y, w, h, fill, stroke, sw, r=10, dash=dash)
-            cv.text(x + self.PAD, y + 20, self.title(i), anchor="start", halo=fill)
             cv.end()
+            self.titles.append((x + self.PAD, y + 20, self.title(i), fill, inner, i))
             self._panels(cv, i, depth + 1)
 
     def _edge(self, cv: _Canvas, u: str, v: str) -> None:
@@ -1408,7 +1424,7 @@ class _Scene:
         cv.head(tip[0], tip[1], xb - xa, yb - ya, color)
         info = next((e for e in self.edges if e[0] == u and e[1] == v), None)
         if info and info[4] and info[4] != info[3] and abs(xb - xa) < 0.5 and self.nodes[v][1] == "call":
-            cv.text(xb + 5, yb - 9, [(info[4], "tsh")], anchor="start", halo="bg")
+            cv.text(xb + 5, yb - 9, [(info[4], "tsh")], anchor="start", halo=self.fills[self.ncont[v]])
 
     def _node(self, cv: _Canvas, n: str) -> None:
         x, y, w, h = self.box_at(n)
@@ -1439,7 +1455,7 @@ class _Scene:
                 ty += s
                 cv.text(x + w / 2, ty - (4 if s == 16 else 3), line)
         if self.shown(n):
-            cv.text(x + w / 2, y + h + 12, [(", ".join(self.outtypes(n)), "tsh")])
+            cv.text(x + w / 2, y + h + 12, [(", ".join(self.outtypes(n)), "tsh")], halo=self.fills[self.ncont[n]])
         cv.end()
 
 
@@ -1595,7 +1611,8 @@ class _Figure:
             heights[k] += s[3] + 26
         cx = x0 + 28
         cv.text(cx, y0 + 20, [("Component internals", "tc")], anchor="start")
-        cv.text(cx, y0 + 39, [("each call above, opened one level: its steps from top to bottom", "tl")], anchor="start")
+        sub = "each call on the left, opened one level: its steps from top to bottom"
+        cv.text(cx, y0 + 39, [(sub, "tl")], anchor="start")
         ytop = y0 + 66
         bottom = ytop
         for col in cols:
@@ -1609,7 +1626,7 @@ class _Figure:
             bottom = max(bottom, y - 26)
             cx += cw + 32
         cv.line([(x0, y0 + 4), (x0, max(bottom, main_bottom))], "rule", 1.0, radius=0)
-        return cx - 32, bottom
+        return max(cx - 32, x0 + 28 + _tw(sub, "tl")), bottom
 
     def stack(self, x: float, y: float, i: int, steps: list[dict[str, Any]], sw: float, left: float) -> None:
         cv, b = self.cv, self.m["boxes"][i]
@@ -1648,7 +1665,7 @@ class _Figure:
                       for k in range(len(HEAT) + 1)]  # fmt: skip
         for k, n in enumerate(sc.stream):
             if sc.stream[n] in roles:
-                items.append((sc.stream[n], f"from {sc.nodes[n][2].split(':')[0]}", None))
+                items.append((sc.stream[n], f"{sc.nodes[n][2].split(':')[0]} stream", None))
         if "mix" in roles:
             items.append(("mix", "mixes inputs", None))
         if "side" in roles:

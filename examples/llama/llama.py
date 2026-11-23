@@ -149,11 +149,12 @@ class Llama[V, D, F, G, R, K]:
         assert n >= 1
         h, caches = self.extend(prompt, 0, self.empty(T + n - 1))
         token = (h[-1] @ self.unembed).argmax()  # logits at the last position only
-        out = [token]
-        for i in range(n - 1):
+        out = []
+        for i in range(n - 1):  # a lax.scan carrying the caches
+            out.append(token)
             h, caches = self.extend(token[None], T + i, caches)
             token = (h[0] @ self.unembed).argmax()
-            out.append(token)
+        out.append(token)
         return jnp.concatenate([prompt, jnp.asarray(out)])
 
 
