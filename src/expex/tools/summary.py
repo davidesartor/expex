@@ -28,11 +28,11 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-from .cost import Poly, cost
+from .cost import Poly, arrays, cost
 from ..annotations.dims import DConst, DExpr, DName, Env
 from ..function import Fn, unwrap
 from ..modules import _all_fields
-from ..annotations.spec import ArraySpec, SeqSpec, StructSpec, UnionSpec, parse_owner
+from ..annotations.spec import ArraySpec, NoneSpec, SeqSpec, StructSpec, UnionSpec, join, parse_owner
 
 
 @dataclass
@@ -186,7 +186,7 @@ class _Walk:
 
     def fields(self, spec: StructSpec, obj: Any, path: str, depth: int, parent: int, weight: int) -> None:
         for name, s in spec.fields.items():
-            value, here = getattr(obj, name), f"{path}.{name}" if path else name
+            value, here = getattr(obj, name), join(path, name)
             if (s := _pick(s, value)) is None:
                 continue
             n = 1
@@ -195,9 +195,9 @@ class _Walk:
                     continue
                 s, value, n, here = s.elem, value[0], len(value), here + "[*]"
                 self.lists[here.removesuffix("[*]")] = n
-            arrays = _arrays(value)
-            row = Row(here, depth, str(s), n, sum(a.size for a in arrays), _formula(s, value),
-                      sum(a.size * a.dtype.itemsize for a in arrays), parent=parent, weight=weight * n)  # fmt: skip
+            leaves = arrays(value)
+            row = Row(here, depth, str(s), n, sum(a.size for a in leaves), _formula(s, value),
+                      sum(a.size * a.dtype.itemsize for a in leaves), parent=parent, weight=weight * n)  # fmt: skip
             self.rows.append(row)
             if isinstance(s, StructSpec):
                 mapping: dict[str, Poly] = {}
@@ -236,16 +236,8 @@ class _Walk:
 def _pick(spec: Any, value: Any) -> Any:
     """The spec that describes ``value`` (the matching option of ``X | None``), or None to skip it."""
     if isinstance(spec, UnionSpec):
-        if value is None:
-            return None
-        structs: list[Any] = [o for o in spec.options if isinstance(o, StructSpec) and isinstance(value, o.cls)]
-        spec = (structs or [o for o in spec.options if o.leafy])[0]
-    return spec if spec.leafy else None
-
-
-def _arrays(x: Any) -> list[Any]:
-    leaves = jax.tree.leaves(x, is_leaf=lambda v: isinstance(v, jax.ShapeDtypeStruct))
-    return [a for a in leaves if hasattr(a, "dtype") and hasattr(a, "size") and not jnp.issubdtype(a.dtype, jax.dtypes.prng_key)]  # fmt: skip
+        spec = spec.option(value)
+    return spec if spec.leafy and not isinstance(spec, NoneSpec) else None
 
 
 def _dim(d: Any) -> Poly:

@@ -226,9 +226,10 @@ def _num(p: Poly, unit: str) -> str:
     return f"   = {float(v) / (scale or 1):.3g} {prefix}{unit}".rstrip()
 
 
-def _arrays(obj: Any) -> list[Any]:
-    leaves = jax.tree.leaves(obj, is_leaf=lambda x: isinstance(x, jax.ShapeDtypeStruct))
-    return [x for x in leaves if hasattr(x, "shape") and not jnp.issubdtype(x.dtype, jax.dtypes.prng_key)]  # fmt: skip
+def arrays(tree: Any) -> list[Any]:
+    """The arrays (or ``ShapeDtypeStruct``s) in a pytree, random keys left out."""
+    leaves = jax.tree.leaves(tree, is_leaf=lambda x: isinstance(x, jax.ShapeDtypeStruct))
+    return [x for x in leaves if hasattr(x, "shape") and hasattr(x, "dtype") and not jnp.issubdtype(x.dtype, jax.dtypes.prng_key)]  # fmt: skip
 
 
 def _count(s: Target, n: int) -> tuple[Poly, Poly | None, tuple[str, Poly] | None, list[str], list[str]]:
@@ -240,7 +241,7 @@ def _count(s: Target, n: int) -> tuple[Poly, Poly | None, tuple[str, Poly] | Non
     first = next(iter(f.params))
     params = None
     if first in ("self", "cls") and getattr(f, "_owner_cls", None) is not None:
-        params = sum((_numel(x.shape) for x in _arrays(getattr(arguments[first], "obj", arguments[first]))), Poly())
+        params = sum((_numel(x.shape) for x in arrays(getattr(arguments[first], "obj", arguments[first]))), Poly())
     values = [v.aval for e in iter_eqns(jaxpr) for v in e.outvars]
     values = [a for a in values if hasattr(a, "shape") and not jnp.issubdtype(a.dtype, jax.dtypes.prng_key)]
     big = max(values, key=lambda a: _numel(a.shape).sample(), default=None)

@@ -47,7 +47,7 @@ def mismatches(name: str, keys, actions, want: dict) -> dict[str, int]:
     out = {}
     for f in FIELDS:
         g, w = np.asarray(getattr(got, f)), np.asarray(want[f])
-        assert g.shape == w.shape, (name, f, g.shape, w.shape)
+        g = g.reshape(w.shape)  # Othello's board is flat in both; the reference stores it as 8 x 8
         out[f] = int((g != w).reshape(g.shape[0], g.shape[1], -1).any(-1).sum())
     return out
 
@@ -80,28 +80,18 @@ def describe(name: str, actions, states) -> str:
 # ------------------------------------------------------------------- speed
 
 
-def timed(f, *args, repeat: int = 5):
-    """Seconds to compile, and the best of `repeat` runs."""
-    t = time.perf_counter()
-    compiled = f.lower(*args).compile()
-    compile_s = time.perf_counter() - t
-    jax.block_until_ready(compiled(*args))
-    runs = []
-    for _ in range(repeat):
-        t = time.perf_counter()
-        jax.block_until_ready(compiled(*args))
-        runs.append(time.perf_counter() - t)
-    return compile_s, min(runs)
+def benchmark(pgx, name: str, batch: int = 1024, steps: int = 100, rounds: int = 7) -> dict[str, float]:
+    """Steps per second for `batch` parallel games playing random legal moves, Pgx vs port.
 
-
-def benchmark(pgx, name: str, batch: int = 1024, steps: int = 100) -> dict[str, float]:
-    """Steps per second for `batch` parallel games playing random legal moves, Pgx vs port."""
+    Both run the same jit-compiled rollout (`fori_loop` over `vmap`ped steps,
+    actions drawn from the legal-action mask); the runs alternate and the best
+    of `rounds` counts. Compile time is tracing plus XLA compilation.
+    """
     env, game = pgx.make(name), GAMES[name]
 
     def pick(key, mask):
         return jr.categorical(key, jnp.log(mask), axis=-1).astype(jnp.int32)
 
-    @jax.jit
     def original(key):
         state = jax.vmap(env.init)(jr.split(key, batch))
 
@@ -110,7 +100,6 @@ def benchmark(pgx, name: str, batch: int = 1024, steps: int = 100) -> dict[str, 
 
         return jax.lax.fori_loop(0, steps, body, state)
 
-    @jax.jit
     def port(key):
         state = game.new.vectorize(jr.split(key, batch))
 
@@ -120,16 +109,22 @@ def benchmark(pgx, name: str, batch: int = 1024, steps: int = 100) -> dict[str, 
         return jax.lax.fori_loop(0, steps, body, state)
 
     key = jr.PRNGKey(0)
-    out = {}
+    out, compiled = {}, {}
     for label, f in (("pgx", original), ("port", port)):
-        c, s = timed(f, key)
-        out[f"{label} compile s"] = c
-        out[f"{label} steps/s"] = batch * steps / s
-    # the same rollout must give the same final states
-    a, b = original(key), port(key)
-    out["same final boards"] = bool(
-        (np.asarray(a._x.board).reshape(np.asarray(b.board).shape) == np.asarray(b.board)).all()
-    )
+        t = time.perf_counter()
+        compiled[label] = jax.jit(f).lower(key).compile()
+        out[f"{label} compile s"] = time.perf_counter() - t
+        jax.block_until_ready(compiled[label](key))
+    best = {label: float("inf") for label in compiled}
+    for _ in range(rounds):
+        for label, c in compiled.items():
+            t = time.perf_counter()
+            jax.block_until_ready(c(key))
+            best[label] = min(best[label], time.perf_counter() - t)
+    for label in compiled:
+        out[f"{label} steps/s"] = batch * steps / best[label]
+    a, b = compiled["pgx"](key), compiled["port"](key)  # the same games: the same final boards
+    out["same final boards"] = bool((np.asarray(a._x.board).reshape(b.board.shape) == np.asarray(b.board)).all())
     return out
 
 

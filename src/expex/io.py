@@ -23,7 +23,7 @@ from .annotations.dims import Env, describe, resolve
 from .annotations.errors import Mismatch, ShapeError
 from .annotations.spec import (
     ArraySpec, DictSpec, NoneSpec, SeqSpec, Spec, StaticSpec, StructSpec, TupleSpec, UnionSpec,
-    _field_defaults, parse_owner, rebuild,
+    _field_defaults, fields, join, parse_owner, rebuild,
 )  # fmt: skip
 
 _META = "__expex__"  # the npz entry holding the JSON metadata
@@ -38,38 +38,21 @@ def save(obj: Any, path: Any) -> None:
     """
     arrays: dict[str, np.ndarray] = {}
     meta: dict[str, Any] = {"class": type(obj).__name__, "static": {}, "lengths": {}, "keys": {}, "dtypes": {}}
-
-    def walk(spec: Spec, value: Any, p: str) -> None:
+    for p, spec, value in fields(_owner_spec(type(obj)), obj):
         if isinstance(spec, ArraySpec):
             a = np.asarray(value)
             if a.dtype.type.__module__.startswith("ml_dtypes"):  # bfloat16, ...: npz loses them
                 meta["dtypes"][p], a = a.dtype.name, a.view(f"u{a.dtype.itemsize}")
             arrays[p] = a
-        elif isinstance(spec, StructSpec):
-            for name, s in spec.fields.items():
-                v, q = getattr(value, name), _join(p, name)
-                if _is_static(s):
-                    if _plain(v):
-                        meta["static"][q] = _encode(v)
-                else:
-                    walk(s, v, q)
+        elif _is_static(spec) or isinstance(spec, NoneSpec):
+            if value is None or _plain(value):
+                meta["static"][p] = _encode(value)
         elif isinstance(spec, (SeqSpec, TupleSpec)):
             meta["lengths"][p] = len(value)
-            elems = spec.elems if isinstance(spec, TupleSpec) else [spec.elem] * len(value)
-            for i, (s, v) in enumerate(zip(elems, value)):
-                walk(s, v, f"{p}[{i}]")
         elif isinstance(spec, DictSpec):
             meta["keys"][p] = list(value)
-            for k, v in value.items():
-                walk(spec.value, v, f"{p}[{k!r}]")
-        elif isinstance(spec, UnionSpec) and value is None:
-            meta["static"][p] = None
-        elif isinstance(spec, UnionSpec):
-            walk(next(o for o in spec.options if not isinstance(o, NoneSpec)), value, p)
-        else:
+        elif not isinstance(spec, StructSpec):
             raise TypeError(f"expex.save: cannot save `{p}` (annotated {spec}).")
-
-    walk(_owner_spec(type(obj)), obj, "")
     arrays[_META] = np.array(json.dumps(meta))
     np.savez(path, **arrays)  # type: ignore[arg-type]
 
@@ -104,7 +87,7 @@ def load(cls_or_template: Any, path: Any, *, strict: bool = True, **sizes: int) 
         if isinstance(spec, StructSpec):
             values = {}
             for name, s in spec.fields.items():
-                q, tv = _join(p, name), getattr(t, name, _MISSING)
+                q, tv = join(p, name), getattr(t, name, _MISSING)
                 values[name] = _static(spec.cls, name, q, tv, static) if _is_static(s) else build(s, tv, q)
             return rebuild(spec.cls, **{k: v for k, v in values.items() if v is not _MISSING})
         if isinstance(spec, (SeqSpec, TupleSpec)):
@@ -178,10 +161,6 @@ def _static(cls: type, name: str, p: str, given: Any, saved: dict[str, Any]) -> 
         f"numbers, strings, None and tuples/lists of those are saved) and has no default. "
         f"Load into a template instead: expex.load(model, path)."
     )
-
-
-def _join(p: str, name: str) -> str:
-    return f"{p}.{name}" if p else name
 
 
 def _plain(v: Any) -> bool:

@@ -13,7 +13,7 @@ import dataclasses
 import inspect
 import types
 import typing
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 import jax
 import numpy as np
@@ -61,6 +61,11 @@ from .types import ArrayAnn, BatchAnn, DType, KeyAnn, StaticAnn
 # --------------------------------------------------------------------------
 
 Visit = Callable[["Spec", Any, str], Any]
+
+
+def join(path: str, name: str) -> str:
+    """The path of field ``name`` under ``path``: ``blocks[2].mlp`` + ``w1``, or ``w1`` at the root."""
+    return f"{path}.{name}" if path else name
 
 
 class Unsynthesizable(Exception):
@@ -423,6 +428,14 @@ class UnionSpec(Spec):
     def match(self, value: Any, path: str, env: Env) -> None:
         self._select(value, path, env)
 
+    def option(self, value: Any) -> Spec:
+        """The member that describes ``value``: ``None``, a struct of its class, else the first array-like one."""
+        if value is None:
+            return next((o for o in self.options if isinstance(o, NoneSpec)), NoneSpec())
+        structs = [o for o in self.options if isinstance(o, StructSpec) and isinstance(value, o.cls)]
+        others = [o for o in self.options if not isinstance(o, NoneSpec)]
+        return (structs or [o for o in others if o.leafy] or others)[0]
+
     def walk(self, value: Any, path: str, visit: Visit) -> Any:
         try:
             opt = self._select(value, path, Env())
@@ -585,7 +598,7 @@ class StructSpec(Spec):
             )
         for name, s in self.fields.items():
             if s.leafy:
-                s.match(getattr(value, name), f"{path}.{name}", env)
+                s.match(getattr(value, name), join(path, name), env)
         for inv, back in self.invariants:
             vals: dict[str, Any] = {}
             for n in inv.names:
@@ -610,7 +623,7 @@ class StructSpec(Spec):
         if not isinstance(value, self.cls):
             return value
         new = {
-            name: s.walk(getattr(value, name), f"{path}.{name}", visit)
+            name: s.walk(getattr(value, name), join(path, name), visit)
             for name, s in self.fields.items()
             if s.leafy
         }
@@ -627,8 +640,8 @@ class StructSpec(Spec):
             if not s.leafy or isinstance(s, StaticSpec):
                 if name in defaults:
                     continue
-                raise Unsynthesizable(f"{path}.{name}")
-            kwargs[name] = s.abstract(ctx, f"{path}.{name}")
+                raise Unsynthesizable(join(path, name))
+            kwargs[name] = s.abstract(ctx, join(path, name))
         try:
             return rebuild(self.cls, **kwargs)
         except Exception as e:
@@ -909,3 +922,26 @@ def _assumptions_of(spec: Spec) -> list[Expr]:
         if isinstance(s, Spec):
             out += _assumptions_of(s)
     return out
+
+
+def fields(spec: Spec, value: Any, path: str = "") -> Iterator[tuple[str, Spec, Any]]:
+    """Every part of ``value`` that ``spec`` describes, parents first, as ``(path, spec, value)``.
+
+    Paths are those of error messages and checkpoints: ``blocks[2].mlp.w1``,
+    ``heads['q']``. Structs, tuples, lists and dicts are entered; a union is
+    resolved to the member that describes the value (:meth:`UnionSpec.option`);
+    static and unannotated fields are yielded but not entered.
+    """
+    if isinstance(spec, UnionSpec):
+        spec = spec.option(value)
+    yield path, spec, value
+    if isinstance(spec, StructSpec):
+        for name, s in spec.fields.items():
+            yield from fields(s, getattr(value, name), join(path, name))
+    elif isinstance(spec, (TupleSpec, SeqSpec)):
+        elems = spec.elems if isinstance(spec, TupleSpec) else [spec.elem] * len(value)
+        for i, (s, v) in enumerate(zip(elems, value)):
+            yield from fields(s, v, f"{path}[{i}]")
+    elif isinstance(spec, DictSpec):
+        for k, v in value.items():
+            yield from fields(spec.value, v, f"{path}[{k!r}]")

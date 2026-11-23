@@ -1,19 +1,24 @@
 """Othello, ported from Pgx (github.com/sotetsuk/pgx, pgx/othello.py).
 
-Pgx plays on a flat `bool[64]` bitboard: a direction is a `jnp.roll` by 1, 7,
-8 or 9 plus a hand-written mask against wrapping around the edges, the eight
-directions are a `lax.fori_loop` over a table of shifts and masks, and every
-decision is a `lax.cond` over lambdas. This port keeps the observations,
-rewards and legal-action masks identical (checked in compare.py), and
-writes one game on an `i32[Side, Side]` board with plain Python:
+Pgx's rules are a bitboard program: each of the eight directions is a
+`jnp.roll` by 1, 7, 8 or 9 squares guarded by one of three hand-written
+64-entry masks against wrapping around the edges, the directions are a
+`lax.fori_loop` over a table of shifts and masks, and every decision is a
+`lax.cond` over lambdas. This port keeps the observations, rewards and
+legal-action masks identical (checked in compare.py) and the same algorithm,
+written for one game with plain Python:
 
-* a move walks from the new stone in each direction with a `while` loop and
-  turns the opponent's stones it brackets with `board[r, c] = MINE`;
-* the legal moves of the next player are rays over the whole board, one `for`
-  per direction, with an edge-aware `shift(x, dr, dc)`;
-* `if action == PASS:` / `if terminated:` instead of `lax.cond(..., lambda: ...)`.
+* `for dr, dc in DIRECTIONS:` (staged as one `lax.scan`, like Pgx's
+  `fori_loop`) and `if (...).any(): flips |= line` instead of `lax.cond`;
+* a direction is a pair (dr, dc) and `shift` works out the edges from it,
+  so there are no mask tables;
+* sizes by name (`jnp.arange(Cells) // Side`), and a batch of games is
+  `Othello.new.vectorize(keys)` / `state.step.vectorize(actions)`.
 
-    python examples/pgx/othello.py            # play random games, print a board
+The board is kept flat, as in Pgx: on CPU, XLA runs the shifts of a
+`[games, 64]` array several times faster than those of a `[games, 8, 8]` one.
+
+    python examples/pgx/othello.py            # play random games, print one
     python -m expex examples/pgx/othello.py   # prove the shapes
 """
 
@@ -25,13 +30,14 @@ from expex import Batch, Bool, Dim, Key, f32, i32
 
 
 class Side(Dim, size=8): ...
-class Actions(Dim, size=65): ...  # a square (row * 8 + col), or PASS
+class Cells(Dim, size=64): ...  # square row * Side + col
+class Actions(Dim, size=65): ...  # a square, or PASS
 class Players(Dim, size=2): ...
 
 
 PASS = 64
 MINE, THEIRS, EMPTY = 1, -1, 0  # the board is always seen by the player to move
-DIRECTIONS = ((0, 1), (0, -1), (1, 0), (-1, 0), (1, -1), (-1, 1), (1, 1), (-1, -1))
+DIRECTIONS = jnp.array([(0, 1), (0, -1), (1, 0), (-1, 0), (1, -1), (-1, 1), (1, 1), (-1, -1)])
 
 
 @expex.struct
@@ -44,7 +50,7 @@ class Othello:
     legal_action_mask: Bool[Actions]
     step_count: i32
     turn: i32  # the colour to move: 0 (black, moves first) or 1
-    board: i32[Side, Side]  # MINE / THEIRS / EMPTY for the player to move
+    board: i32[Cells]  # MINE / THEIRS / EMPTY, for the player to move
     passed: Bool  # the last move was a pass
 
     @staticmethod
@@ -55,13 +61,14 @@ class Othello:
         board[4, 3] = MINE
         board[3, 3] = THEIRS
         board[4, 4] = THEIRS
+        board = board.ravel()
         game = Othello(
             current_player=jnp.int32(jr.bernoulli(key)),
             observation=jnp.zeros((Side, Side, Players), bool),
             rewards=jnp.zeros(Players),
             terminated=jnp.bool_(False),
             truncated=jnp.bool_(False),
-            legal_action_mask=legal_moves(board),
+            legal_action_mask=legal_moves(board == MINE, board == THEIRS),
             step_count=jnp.int32(0),
             turn=jnp.int32(0),
             board=board,
@@ -84,82 +91,84 @@ class Othello:
         return game.replace(observation=game.observe())
 
     def play(self, action: i32) -> "Othello":
-        """Place a stone (or pass), turn what it brackets, and hand the board over."""
-        board = self.board
-        if action != PASS:
-            row, col = action // Side, action % Side
-            board[row, col] = MINE
-            for dr, dc in DIRECTIONS:
-                r, c = row + dr, col + dc
-                while on_board(r, c) and board[r, c] == THEIRS:
-                    r, c = r + dr, c + dc
-                if on_board(r, c) and board[r, c] == MINE:  # bracketed: turn them
-                    r, c = r - dr, c - dc
-                    while r != row or c != col:
-                        board[r, c] = MINE
-                        r, c = r - dr, c - dc
+        """Place a stone (or pass), turn the lines it closes, and hand the board over."""
+        mine, theirs = self.board == MINE, self.board == THEIRS
+        placed = jnp.arange(Cells) == action  # nothing for PASS
+        flips = jnp.zeros(Cells, bool)
+        for dr, dc in DIRECTIONS:
+            line = ray(placed, theirs, dr, dc)
+            if (shift(line, dr, dc) & mine).any():  # closed by one of mine
+                flips |= line
+        mine, theirs = mine | placed | flips, theirs & ~flips
 
-        mine, theirs = (board == MINE).sum(), (board == THEIRS).sum()
+        n_mine, n_theirs = mine.sum(), theirs.sum()
+        terminated = n_mine + n_theirs == Cells or n_theirs == 0 or (self.passed and action == PASS)
         rewards = jnp.zeros(Players)
-        terminated = mine + theirs == Side * Side or theirs == 0 or (self.passed and action == PASS)
-        if terminated and mine != theirs:
+        if terminated and n_mine != n_theirs:
             rewards = -jnp.ones(Players)
-            winner = self.current_player if mine > theirs else 1 - self.current_player
+            winner = self.current_player if n_mine > n_theirs else 1 - self.current_player
             rewards[winner] = 1.0
-        legal = legal_moves(-board)
         return self.replace(
             current_player=1 - self.current_player,
             turn=1 - self.turn,
-            board=-board,  # the opponent's view
+            board=jnp.int32(theirs) - jnp.int32(mine),  # the opponent's view
             passed=action == PASS,
             rewards=rewards,
             terminated=terminated,
-            legal_action_mask=legal,
+            legal_action_mask=legal_moves(theirs, mine),
         )
 
     def observe(self) -> Bool[Side, Side, Players]:
         """Two planes: the stones of the player to move, then the opponent's."""
-        return jnp.stack([self.board == MINE, self.board == THEIRS], -1)
+        board = self.board.reshape(Side, Side)
+        return jnp.stack([board == MINE, board == THEIRS], -1)
 
 
 @expex.fn
-def on_board(r: i32, c: i32) -> Bool:
-    return 0 <= r < Side and 0 <= c < Side
+def shift(x: Bool[Cells], dr: i32, dc: i32) -> Bool[Cells]:
+    """Every square's value moved (dr, dc) squares; what moves off the board is dropped."""
+    row, col = jnp.arange(Cells) // Side, jnp.arange(Cells) % Side
+    return jnp.roll(x, dr * Side + dc) & (0 <= row - dr < Side) & (0 <= col - dc < Side)
 
 
 @expex.fn
-def shift(x: Bool[Side, Side], dr: int, dc: int) -> Bool[Side, Side]:
-    """`x` moved by (dr, dc) squares; what moves off the board is dropped."""
-    padded = jnp.pad(x, 1)
-    return padded[1 - dr : 1 - dr + Side, 1 - dc : 1 - dc + Side]
+def ray(start: Bool[Cells], through: Bool[Cells], dr: i32, dc: i32) -> Bool[Cells]:
+    """The squares of `through` reached from `start` by going (dr, dc) over `through` only."""
+    line = shift(start, dr, dc) & through
+    for _ in range(Side - 3):  # at most 6 stones in a row
+        line |= shift(line, dr, dc) & through
+    return line
 
 
 @expex.fn
-def legal_moves(board: i32[Side, Side]) -> Bool[Actions]:
-    """Where the player to move can play: empty squares that bracket a line of opponent stones."""
-    theirs, empty = board == THEIRS, board == EMPTY
-    legal = jnp.zeros((Side, Side), bool)
+def legal_moves(mine: Bool[Cells], theirs: Bool[Cells]) -> Bool[Actions]:
+    """Empty squares from which a line of `theirs` is closed by one of `mine`; PASS if none."""
+    empty = ~(mine | theirs)
+    legal = jnp.zeros(Cells, bool)
     for dr, dc in DIRECTIONS:
-        line = shift(board == MINE, dr, dc) & theirs  # opponent stones next to one of mine
-        for _ in range(Side - 3):  # ... and the ones behind them (at most 6 in a row)
-            line |= shift(line, dr, dc) & theirs
-        legal |= shift(line, dr, dc) & empty
-    return jnp.append(legal.ravel(), not legal.any())
+        legal |= shift(ray(mine, theirs, dr, dc), dr, dc) & empty
+    return jnp.append(legal, not legal.any())
 
 
 @expex.fn(jit=True)
-def random_games(key: Key, games: int, moves: int) -> Batch[Othello, games]:
-    """`games` games after `moves` uniformly random legal moves each."""
+def random_games(key: Key, games: int, moves: int) -> tuple[Batch[Othello, games], f32[games, Players]]:
+    """`games` games after `moves` uniformly random legal moves each, and each player's total reward."""
     key, start = jr.split(key)
     state = Othello.new.vectorize(jr.split(start, games))
+    returns = jnp.zeros((games, Players))
     for _ in range(moves):
         key, pick = jr.split(key)
         action = jr.categorical(pick, jnp.log(state.legal_action_mask), axis=-1)
         state = state.step.vectorize(action)
-    return state
+        returns += state.rewards
+    return state, returns
 
 
 if __name__ == "__main__":
-    state = random_games(jr.key(0), 8, 70)
-    print(state.board[0], state.rewards, state.terminated, sep="\n")
-    print(Othello.play.flow, legal_moves.flow, sep="\n")
+    state, returns = random_games(jr.key(0), 1000, 80)
+    first = returns[:, 0]
+    print(f"1000 random games: player 0 won {(first > 0).sum()}, lost {(first < 0).sum()}, drew {(first == 0).sum()}")
+    print("game 0 at the end (x: the player to move, o: the other):")
+    for row in state.board[0].reshape(8, 8):
+        print(" ", " ".join(".xo"[int(v)] for v in row))
+    print("how play() ran:", Othello.play.flow)

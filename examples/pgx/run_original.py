@@ -5,11 +5,11 @@
 
 For Connect Four and Othello, `games` games (batched with `jax.vmap`, as Pgx is
 meant to be used) start from fixed keys. Every step picks, per game, a random
-legal action, or with probability 5% a random *illegal-looking* one (any
-column; any empty square or pass), so that Pgx's illegal-action penalty is
-exercised too; games that have ended keep receiving actions, which Pgx must
-ignore. Saved per game id: the keys, the actions and, after `init` and every
-step, all of Pgx's public state plus the board.
+legal action; in every fourth game, with probability 5% it picks among all
+columns (Connect Four) or all empty squares and pass (Othello) instead, so
+that Pgx's illegal-action penalty is exercised too. Games that have ended keep
+receiving actions, which Pgx must ignore. Saved: the keys, the actions and,
+after `init` and every step, all of Pgx's public state plus the board.
 """
 
 import sys
@@ -36,9 +36,10 @@ def playable(name: str, state) -> jax.Array:
 
 
 def pick(key: jax.Array, legal: jax.Array, allowed: jax.Array) -> jax.Array:
-    """Per game: a random legal action, or (5%) a random allowed one."""
+    """Per game: a random legal action or, in every fourth game with probability 5%, a random allowed one."""
     k1, k2, k3 = jr.split(key, 3)
-    explore = jr.bernoulli(k1, EXPLORE, legal.shape[:1])
+    games = legal.shape[0]
+    explore = jr.bernoulli(k1, EXPLORE, (games,)) & (jnp.arange(games) % 4 == 0)
     return jnp.where(
         explore, jr.categorical(k3, jnp.log(allowed), axis=-1), jr.categorical(k2, jnp.log(legal), axis=-1)
     ).astype(jnp.int32)
@@ -83,9 +84,7 @@ def main(pgx_dir: str, out: str, games: int = 32) -> None:
         arrays[f"{name}/keys"] = keys
         arrays[f"{name}/actions"] = actions.astype(np.int8)
         arrays.update({f"{name}/{f}": v for f, v in states.items()})
-        ended = states["terminated"][-1].mean()
-        illegal = (states["rewards"].min(-1) == -1) & (states["rewards"].max(-1) == 1)
-        print(f"{name}: {games} games x {len(actions)} steps, {ended:.0%} ended, rewards given {illegal.any(0).sum()} times")
+        print(f"{name}: {games} games x {len(actions)} steps, {states['terminated'][-1].mean():.0%} finished")
     np.savez_compressed(out, **arrays)
     print(f"saved {len(arrays)} arrays to {out}")
 
