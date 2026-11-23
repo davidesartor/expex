@@ -446,17 +446,13 @@ def example[*Batch, H, W](
 
 ## Ported projects
 
-Two existing codebases rewritten in this style and checked against the
-originals:
+An existing codebase rewritten in this style and checked against the
+original:
 
 - **[PureJaxRL](https://github.com/luchris429/purejaxrl) PPO** (`examples/ppo/`):
   plain loops instead of four nested `lax.scan`s, `if done:` for the
   auto-reset. Identical to the original for the first 21 of 976 updates, then
   drifting as float32 programs do; same speed; all shapes proved.
-- **[bofus](https://github.com/davidesartor/bofus)** (`examples/bofus/`):
-  mixtures and the Gaussian process become modules with methods. The
-  original's 74 tests pass against the port, and 164 arrays of values and
-  gradients match to 1e-13 (6e-7 for the L-BFGS acquisition optimizer).
 
 ## Limitations
 

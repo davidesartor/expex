@@ -31,4 +31,4 @@ A call to an `@fn` goes `_fn.Fn.__call__` → (`_lift` if lifted) → `_run`
 converted body (`_convert` output calling `_runtime`), and matches the result.
 
 Tests: `tests/` per feature, `tests/regressions/` for bugs found by reviews,
-`tests/ports/` for the PPO and bofus ports checked against their originals.
+`tests/ports/` for ports checked against their originals.
