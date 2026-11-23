@@ -33,6 +33,7 @@ on the same `Fn` object, so they stack in any order. `@tx.jit` is `jax.jit` with
 | `_ops.py` | operators, in-place updates, `assert` / `raise` / `print` / `min` / `max`, checked locals. |
 | `_check.py` | The prover (`tx.prove`) and the command line. |
 | `debug.py` | `find_nan`, `shapes`, `memory`, `summary`, `timing`. |
+| `_watch.py` | `tx.debug.watch`: per-call output and gradient statistics, with flags. |
 | `pytest_plugin.py` | `pytest --typax pkg`. |
 
 A call to an `@fn` goes `_fn.Fn.__call__` → (`_lift` if lifted) → `_run`

@@ -41,7 +41,7 @@ from ._jaxpr import iter_eqns, source_key, source_of, sub_jaxprs
 __all__ = [
     "find_nan", "shapes", "ops", "timing", "memory",
     "NanReport", "ShapeTrace", "Ops", "Timing", "Memory",
-    "profile",
+    "profile", "watch",
 ]  # fmt: skip
 
 
@@ -756,3 +756,18 @@ def profile(f: Callable[..., Any], /, **sizes: Any) -> Any:
     from ._profile import profile as run
 
     return run(f, **sizes)
+
+
+def watch(loss_fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+    """One forward and backward pass of ``loss_fn``, with statistics of every call.
+
+    For each typed call (by module path, ``blocks[3].attn.__call__``): its
+    output's mean, std, max, RMS and NaN/inf counts, and the same for the
+    gradient of the loss with respect to it. Rows are flagged for NaN/inf,
+    exploding or vanishing gradients and fast-growing activations. JAX's
+    compilation caches are cleared, so jitted functions recompile once after.
+    See ``typax._watch.watch`` for the options.
+    """
+    from ._watch import watch as run
+
+    return run(loss_fn, *args, **kwargs)
