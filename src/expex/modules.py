@@ -476,7 +476,7 @@ def _constructor(cls: Any) -> None:
         if first is not _NOT_GIVEN and keyed(first):
             who = f"{cls.__name__}(key, ...)"
             config: Any = _NOT_GIVEN
-            if positional and len(values) == 2 and settings(values[1]) is not None:
+            if positional and len(values) == 2 and config_entries(values[1]) is not None:
                 config, values = values[1], values[:1]  # Cls(key, cfg)
             if positional and len(values) > 1:
                 raise coded("EX303", TypeError(
@@ -745,7 +745,7 @@ def build[C](cls: type[C], key: Any, config: Any = None, /, **given: Any) -> C:
     (``heads=4``, ``w=...``), which are taken instead of built.
 
     ``config``: the same settings in a config object (a dict, a dataclass, a
-    class with annotated attributes, ...: see :func:`settings`); its other
+    class with annotated attributes, ...: see :func:`config_entries`); its other
     entries (a learning rate, ...) are ignored. Keywords override it.
     """
     if not dataclasses.is_dataclass(cls):
@@ -763,7 +763,7 @@ class ConfigWarning(UserWarning):
     """A config entry that is ignored but looks like a misspelt size or field (``haeds`` for ``heads``)."""
 
 
-def settings(config: Any) -> dict[str, Any] | None:
+def config_entries(config: Any) -> dict[str, Any] | None:
     """The entries of a config object as a dict, or None if ``config`` is not one.
 
     A config is a mapping (``dict``), a dataclass or ``NamedTuple`` instance, a
@@ -796,23 +796,23 @@ def settings(config: Any) -> dict[str, Any] | None:
     if dataclasses.is_dataclass(config):
         return {f.name: getattr(config, f.name) for f in dataclasses.fields(config)}
     if isinstance(config, tuple) and hasattr(config, "_asdict"):
-        return dict(config._asdict())
+        return dict(getattr(config, "_asdict")())
     if isinstance(config, (argparse.Namespace, types.SimpleNamespace)):
         return dict(vars(config))
     for method in ("model_dump", "to_dict"):
         if callable(dump := getattr(config, method, None)):
             try:
-                out = dump()
+                dumped = dump()
             except Exception:
                 continue
-            if isinstance(out, Mapping):
-                return dict(out)
+            if isinstance(dumped, Mapping):
+                return dict(dumped)
     return None
 
 
 def _from_config(cls: Any, config: Any, who: str, also: set[str] = frozenset()) -> dict[str, Any]:  # type: ignore[assignment]
     """The entries of ``config`` that build ``cls``: its sizes and fields (``also``: more names to keep)."""
-    entries = settings(config)
+    entries = config_entries(config)
     if entries is None:
         raise coded("EX303", TypeError(
             f"{who}: expected a config (a dict, a dataclass, a NamedTuple, a class with the "
@@ -899,12 +899,12 @@ def _config_slot(cls: Any, names: list[str], kw: dict[str, Any]) -> Any:
 
     The generated constructor binds the value after the key to a field
     parameter (by position or by name, it cannot tell), so a value there counts
-    as a config if it is one (:func:`settings`) and the field's annotation does
+    as a config if it is one (:func:`config_entries`) and the field's annotation does
     not take it, or it holds sizes or fields of the class.
     """
     slot = names[1] if len(names) > 1 else names[0]
     v = kw.get(slot, _NOT_GIVEN)
-    if v is _NOT_GIVEN or (entries := settings(v)) is None:
+    if v is _NOT_GIVEN or (entries := config_entries(v)) is None:
         return _NOT_GIVEN
     if _accepts(cls, slot, v):
         sizes, fields, _ = _sizes_and_fields(cls)
@@ -914,7 +914,7 @@ def _config_slot(cls: Any, names: list[str], kw: dict[str, Any]) -> Any:
 
 
 def _entries(config: Any, who: str) -> dict[str, Any]:
-    entries = settings(config)
+    entries = config_entries(config)
     if entries is None:
         raise coded("EX705", TypeError(
             f"{who}: expected a config (a dict, a dataclass, a NamedTuple, a class with the "
@@ -1090,13 +1090,14 @@ def _counts(obj: Any, out: dict[str, int]) -> None:
         if isinstance(v, int) and not isinstance(v, bool) and (s is None or not s.leafy):
             out.setdefault(f.name, v)
         elif isinstance(s, SeqSpec) and isinstance(s.elem, StructSpec):
+            seq: Any = getattr(obj, f.name)
             try:
-                n = len(v)  # a list, or Stacked rows
+                n = len(seq)  # a list, or Stacked rows
             except TypeError:
                 continue
             out.setdefault(f.name, n)
             if n:
-                _counts(v[0], out)
+                _counts(seq[0], out)
         elif isinstance(v, (list, tuple)):
             for x in v:
                 _counts(x, out)
