@@ -786,7 +786,8 @@ class Fn(Generic[P, R]):
         from .annotations.expr import ExprError
 
         glb = getattr(self.raw, "__globals__", {})
-        scope = {**_scope(self.raw, self._localns), **{k: typing.TypeVar(k) for k in self.defs}}  # type: ignore[misc]  # pyright: ignore[reportGeneralTypeIssues]
+        owner = getattr(self, "_owner_cls", None) or _enclosing_class(self.raw)  # a method: the class's sizes
+        scope = {**_scope(self.raw, self._localns, owner), **{k: typing.TypeVar(k) for k in self.defs}}  # type: ignore[misc]  # pyright: ignore[reportGeneralTypeIssues]
         try:
             spec = parse(sym.evaluate(text, glb, scope, list(self.params)))
         except ExprError:
