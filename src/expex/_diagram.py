@@ -185,7 +185,7 @@ class _Hook:
         self.error: dict[str, Any] | None = None
         self.top: Any = None  # the trace the root call's arguments belong to
         self.leaves: dict[int, tuple[str, Any]] = {}  # id(array of a module) -> (its path, the array)
-        self.modules: list[tuple[str, Any]] = []  # (path, module) of the open method calls
+        self.modules: list[tuple[str | None, Any]] = []  # (path, module) of the open method calls
 
     def path(self, fn: Any, args: Any) -> str | None:
         """The module a method is called on, by path from the root's (``blocks[*].attn``); None if unknown.

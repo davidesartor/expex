@@ -528,9 +528,11 @@ def _constructor(cls: Any) -> None:
     marked = any(isinstance(f.default, (Initializer, _Required)) for f in fields)
     if settings is None or not all(_free(n) for n in settings):
         simple = False
-    elif not buildable and not marked:
-        # Nothing to build (a record of arrays): the dataclass's own constructor, at its
-        # speed. expex.build(Cls, key, ...) still explains what cannot be built.
+    elif not buildable and not marked and not settings:
+        # Nothing to build and no sizes (a record such as a game state): the dataclass's own
+        # constructor, at its speed. expex.build(Cls, key, ...) still explains what cannot be
+        # built. With sizes, the generated one takes them, so that `Embed(key, V=10, D=4)`
+        # says which field has no initializer rather than "unexpected keyword 'V'".
         cls.__init__.__expex_generated__ = True
         return
     if simple:
@@ -637,7 +639,10 @@ def _generate(cls: Any, fields: Any, slow: Any, keyed: Any, settings: list[str],
         ns[f"_expex_D_{f.name}"] = f.default
         return f"{var} = _expex_D_{f.name}"
 
-    params = [f"{first}=_expex_N"] + (["/"] if build else []) + [f"{n}=_expex_N" for n in names[1:] + extra]
+    params = [f"{first}=_expex_N"] + (["/"] if build else []) + [f"{n}=_expex_N" for n in names[1:]]
+    if extra and not build:
+        params.append("*")  # nothing to build: sizes by name only, the fields by position as in a dataclass
+    params += [f"{n}=_expex_N" for n in extra]
     lines = [f"def __init__(self, {', '.join(params)}):"]
     if settings:  # sizes or nested fields: building (or a mistake)
         lines += [f"    if {' or '.join(f'{n} is not _expex_N' for n in settings)}:", f"        {out}"]

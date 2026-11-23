@@ -188,3 +188,21 @@ def test_signature_shows_the_fields():
     params = list(inspect.signature(Block).parameters)
     assert params[:3] == ["w", "b", "act"] and params[-1] == "sizes"
     assert list(inspect.signature(State).parameters) == ["x", "t"]
+
+
+def test_sizes_for_a_class_with_nothing_to_build():
+    """One array field without a default: the sizes are still taken, and the error names the field."""
+
+    @expex.struct
+    class Embed[V, D]:
+        table: f32[V, D]
+
+    with pytest.raises(TypeError, match=r"cannot build `table`: f32\[V, D\] has no initializer"):
+        Embed(jr.key(0), V=10, D=4)
+    assert Embed(jnp.ones((10, 4))).table.shape == (10, 4)
+    assert Embed(table=jnp.ones((10, 4))).table.shape == (10, 4)
+    with pytest.raises(TypeError, match="positional"):
+        Embed(jnp.ones((10, 4)), 10)
+    with pytest.raises(TypeError, match="only when building from a key"):
+        Embed(jnp.ones((10, 4)), V=10)
+    assert expex.build(Embed, jr.key(0), table=jnp.ones((10, 4))).table.shape == (10, 4)

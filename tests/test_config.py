@@ -222,3 +222,21 @@ def test_field_wise_construction_costs_the_same():
     assert "config" not in code.co_varnames and code.co_argcount == 5  # self, the first field, b, w by name, D
     t = min(timeit.repeat(lambda: Plain(w, b), number=2000, repeat=5)) / 2000
     assert t < 20e-6
+
+
+def test_a_class_with_post_init_takes_a_config_too():
+    """Its constructor wraps the dataclass one (positional arguments seen as such)."""
+
+    @expex.struct
+    class Checked[D]:
+        w: f32[D] = 0.0
+        heads: int = 1
+
+        def __post_init__(self):
+            assert self.heads > 0
+
+    m = Checked(jr.key(0), {"D": 3, "heads": 2, "lr": 0.1})
+    assert m.w.shape == (3,) and m.heads == 2
+    assert Checked(jr.key(0), Small).sizes == {"D": 8, "heads": 2}
+    with pytest.raises(TypeError, match="after the key"):
+        Checked(jr.key(0), jnp.ones(3), 2)

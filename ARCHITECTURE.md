@@ -19,9 +19,10 @@ remat are JAX's own. Each module has one job:
 | `decorators.py` | `@fn`, `@jit` (`donate="auto"` too), `@vectorize`, `@random`, `@remat`. |
 | `batching.py` | Mapping over extra leading axes: `f.vectorize(...)`, and plain calls that need it; eager mapped calls compiled from the second call. |
 | `keys.py` | Implicit random keys (`expex.key()`). |
-| `modules.py` | `@expex.struct`: modules registered as pytrees whose methods are `@fn`s; the generated constructor (`Module(key, D=64)` builds, `Module(w, b)` takes values), `expex.build`, `model.at[...]` updates. |
+| `modules.py` | `@expex.struct`: modules registered as pytrees whose methods are `@fn`s; the generated constructor (`Module(key, D=64)` builds, `Module(w, b)` takes values, `Module(key, cfg)` takes a config), `expex.build`, `model.sizes`, `model.at[...]` updates. |
 | `io.py` | `expex.save` / `expex.load`: one `.npz` per model, checked against the annotations on load. |
 | `sharding.py` | `expex.shard`, `expex.shardings`: shardings from axis names mapped to mesh axes. |
+| `precision.py` | Mixed precision (`compute=jnp.bfloat16`): bodies wrapped to cast float inputs in and results back to their declared dtype; the compute dtype accepted for float annotations inside such a body. |
 | `consts.py` | `expex.eps`, `expex.tiny`, `expex.huge`: dtype limits resolved against the array they meet. |
 | `debug.py` | `expex.debug`: the debugging tools, gathered from `tools/`. |
 | `_diagram.py` | `expex.diagram` (being rewritten; it moves to `tools/` after). |

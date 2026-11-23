@@ -53,8 +53,9 @@ def _array(x: Any) -> bool:
 def _is_key(x: Any) -> bool:
     try:
         import jax
+        import jax.numpy as jnp
 
-        return jax.dtypes.issubdtype(x.dtype, jax.dtypes.prng_key)
+        return bool(jnp.issubdtype(x.dtype, jax.dtypes.prng_key))
     except Exception:
         return False
 
@@ -62,8 +63,9 @@ def _is_key(x: Any) -> bool:
 def _values(x: Any) -> str:
     """The values of a small concrete array (not of a tracer or ``ShapeDtypeStruct``)."""
     import jax
+    from jax.core import Tracer
 
-    if math.prod(x.shape) > SMALL or _is_key(x) or isinstance(x, jax.core.Tracer) or isinstance(x, jax.ShapeDtypeStruct):
+    if math.prod(x.shape) > SMALL or _is_key(x) or isinstance(x, (Tracer, jax.ShapeDtypeStruct)):
         return ""
     try:
         return np.array2string(np.asarray(x), precision=4, separator=", ", threshold=SMALL, max_line_width=10_000)
@@ -112,8 +114,10 @@ def _struct_type(obj: Any) -> str:
     return type(obj).__name__ + ("[" + ", ".join(f"{k}={v}" for k, v in sizes.items()) + "]" if sizes else "")
 
 
-def _node(name: str, v: Any, declared: str = "") -> _Node:
+def _node(name: str, value: Any, declared: str = "") -> _Node:
     from ..annotations.dims import describe
+
+    v: Any = value  # (not narrowed by the checks below)
 
     if dataclasses.is_dataclass(v) and not isinstance(v, type):
         anns = _declared(type(v))

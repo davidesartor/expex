@@ -240,6 +240,7 @@ def _costs(modules: list[dict[str, Any]], seen: dict[type, dict[str, int]], size
         except Exception:
             continue  # the summary says which modules have no estimate
         values = {**known, **_sizes(obj), **c.given}
+        sym: Any = None
         try:  # the formula in the class's size names, if the instance's static fields do not change it
             sym = cost(type(obj).__call__)
             if sym.flops.subs(values).value != c.flops.value:
