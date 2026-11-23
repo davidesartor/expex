@@ -202,10 +202,9 @@ class _Module:
     """``jaxtyping`` (or ``jt``) itself, for ``jaxtyping.Float[jaxtyping.Array, "b"]``."""
 
     def __getattr__(self, name: str) -> Any:
-        try:
+        if name in STAND_INS:
             return STAND_INS[name]
-        except KeyError:
-            raise AttributeError(name) from None
+        return object.__getattribute__(self, name)  # AttributeError, as for a missing name
 
 
 STAND_INS: dict[str, Any] = {name: _StandIn(name) for name in DTYPES}
@@ -383,12 +382,15 @@ def parse_shape(dim_str: str, written: str = "") -> tuple[tuple[Any, ...], int |
                 "is an expression that may broadcast; expex's sizes computed from others are exact. "
                 "Drop the `#`, or name the axis and leave it unchecked with `_`.",
             )  # fmt: skip
-        if "{" in elem:  # an f-string naming a parameter: "{n}" is the int parameter n
+        if "{" in elem:  # an f-string: "{n}" is the int parameter n, "{self.heads}" the int field heads
             import re
 
-            plain = re.sub(r"\{\s*([A-Za-z_]\w*)\s*\}", r"(\1)", elem)
+            plain = re.sub(r"\{\s*(?:self\s*\.\s*)?([A-Za-z_]\w*)\s*\}", r"(\1)", elem)
             if "{" in plain or "}" in plain:
-                raise _unsupported(written, raw, "uses an f-string expression; only `{name}` of an int parameter is read.")
+                raise _unsupported(
+                    written, raw,
+                    "uses an f-string expression; only `{n}` of an int parameter and `{self.n}` of an int field are read.",
+                )  # fmt: skip
             elem = plain
         import ast
 

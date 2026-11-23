@@ -53,6 +53,7 @@ CODES = {
     "EX408": "An axis named by its size cannot be found",
     "EX409": "`expex.einsum` / `expex.rearrange` misused",
     "EX410": "An annotation used as a value",
+    "EX411": "A jaxtyping annotation expex cannot read",
     "EX501": "A field cannot be saved or loaded",
     "EX502": "The checkpoint's keys do not match the class",
     "EX503": "A loaded array does not match its annotation",

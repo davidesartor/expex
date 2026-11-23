@@ -290,12 +290,12 @@ above 1x the port is faster, below 1x slower.
 | Project | Port | Matches the original | Speed (CPU, see benchmarks/) |
 |---|---|---|---|
 | [PureJaxRL](https://github.com/luchris429/purejaxrl) PPO | [`examples/ppo/`](examples/ppo/) | first 64 of 976 updates identical | about the same (1.05x median, 1.4x best) |
-| [mamba-jax](https://github.com/vvvm23/mamba-jax) | [`examples/mamba/`](examples/mamba/) | logits to 6e-7, tokens exact | 10–14x forward, 5–6x gradients; generation about 2x slower (0.5–0.6x) |
-| [llama-2-jax](https://github.com/ayaka14732/llama-2-jax) | [`examples/llama/`](examples/llama/) | logits to 8e-7, tokens exact | about the same (0.8–1.3x) |
-| [Pgx](https://github.com/sotetsuk/pgx) Connect Four, Othello | [`examples/pgx/`](examples/pgx/) | every state identical | Connect Four 1.4x; Othello slower (0.75x) |
-| [Vision Transformer](https://github.com/google-research/vision_transformer) | [`examples/vit/`](examples/vit/) | logits to 5e-7, gradients to 9e-7 | forward a little slower (0.8–0.9x); gradients slower (0.7x) |
+| [mamba-jax](https://github.com/vvvm23/mamba-jax) | [`examples/mamba/`](examples/mamba/) | logits to 6e-7, tokens exact | 10–14x forward, 5–6x gradients; generation the same (1.05x) |
+| [llama-2-jax](https://github.com/ayaka14732/llama-2-jax) | [`examples/llama/`](examples/llama/) | logits to 8e-7, tokens exact | 1.3x forward, 1.3x gradients (best; noisy) |
+| [Pgx](https://github.com/sotetsuk/pgx) Connect Four, Othello | [`examples/pgx/`](examples/pgx/) | every state identical | Connect Four 1.4x; Othello the same (0.96x best, 1.02x median) |
+| [Vision Transformer](https://github.com/google-research/vision_transformer) | [`examples/vit/`](examples/vit/) | logits to 5e-7, gradients to 9e-7 | forward and gradients about the same (gradients 0.92x best, 0.99x median) |
 | [mctx](https://github.com/google-deepmind/mctx) MuZero, Gumbel MuZero | [`examples/mctx/`](examples/mctx/) | every tree bit-identical | the same (0.8–1.3x across runs) |
-| [JaxNeRF](https://github.com/google-research/google-research/tree/master/jaxnerf) | [`examples/nerf/`](examples/nerf/) | pixels to 2.4e-7, loss exact | render about the same (0.8–1.0x); gradients slower (0.7x) |
+| [JaxNeRF](https://github.com/google-research/google-research/tree/master/jaxnerf) | [`examples/nerf/`](examples/nerf/) | pixels to 2.4e-7, loss exact | render and gradients about the same (gradients 1.02x best, 0.95x median) |
 
 The ports are also shorter: Llama 2 is 101 lines of code in one file, against
 478 across 15; mctx 340 against 691 across 7; NeRF 138 against 334; ViT 85

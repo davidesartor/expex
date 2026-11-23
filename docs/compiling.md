@@ -207,9 +207,9 @@ losses against a 1-device run:
   hidden  f32[B, T, D]       (32, 33, 64)   P('data', None, 'model')   (8, 33, 32)
 
 step   8 devices   resumed (new process)    1 device   |8 - 1|
-   9    3.599175                            3.599175   0.0e+00
-  10    3.586992         3.586992  exact    3.586992   2.4e-07
-  11    3.479494         3.479494  exact    3.479494   2.4e-07
+   9    3.264118                            3.264118   2.4e-07
+  10    3.219189         3.219189  exact    3.219189   2.4e-07
+  11    3.016314         3.016314  exact    3.016314   0.0e+00
 ```
 
 ---

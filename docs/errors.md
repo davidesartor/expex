@@ -82,6 +82,7 @@ from expex import f32, i32, Static
 | [EX408](#ex408) | An axis named by its size cannot be found |
 | [EX409](#ex409) | `expex.einsum` / `expex.rearrange` misused |
 | [EX410](#ex410) | An annotation used as a value |
+| [EX411](#ex411) | A jaxtyping annotation expex cannot read |
 
 **5xx · Checkpoints**
 
@@ -1246,6 +1247,40 @@ EX410 f32 is an annotation; use jnp.float32 to convert
 **Fix.** Annotations describe values; to convert, use JAX: `jnp.asarray(x, jnp.float32)`
 or `x.astype(jnp.float32)`; for a key, `jax.random.key(seed)`.
 
+<a id="ex411"></a>
+
+### EX411 · A jaxtyping annotation expex cannot read
+
+expex reads [jaxtyping](porting.md#coming-from-jaxtyping) annotations as they
+are, but a few of its forms have no expex equivalent: `?n` (a size that depends
+on the position in a `PyTree`), `#` on an expression (`#t+1`: a computed size
+that may also broadcast), and f-strings other than `{n}` (an int parameter) and
+`{self.n}` (an int field).
+
+```python
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from jaxtyping import Array, Float
+
+try:
+    @expex.fn
+    def total(x: Float[Array, "?n"]) -> Float[Array, ""]:
+        return x.sum()
+except TypeError as e:
+    print(e.code, e)
+```
+
+```
+EX411 total: bad annotation for `x`: Float[Array, '?n']: `?n` depends on the position in a PyTree, and expex has no PyTree[...] annotation. Give the axis a plain name, or `_` to leave it unchecked.
+  see https://github.com/davidesartor/expex/blob/main/docs/errors.md#ex411
+```
+
+**Fix.** Give the axis a plain name (`"n"`), shared by every array that has it,
+or `_` to leave it unchecked. For `#t+1`, drop the `#` (the size is then exact),
+or name the axis. For an f-string, compute the size in the annotation:
+`"{n}*d"` is `n * d`; for anything else, give the size a name.
+
 ## 5xx · Checkpoints
 
 <a id="ex501"></a>
@@ -1253,8 +1288,10 @@ or `x.astype(jnp.float32)`; for a key, `jax.random.key(seed)`.
 ### EX501 · A field cannot be saved or loaded
 
 `expex.save` or `expex.load` meets a field it cannot write or read (its
-annotation is not an array, a struct, or a list, tuple or dict of them), or a
-class with no array fields at all.
+annotation is not an array, a struct, or a list, tuple or dict of them), a
+field holding arrays that no annotation describes (a layer from another
+library, such as `eqx.nn.Linear`: saving would leave it out), or a class with
+no array fields at all.
 
 ```python
 @expex.struct
@@ -1273,7 +1310,9 @@ EX501 Settings has no array fields: nothing to save or load.
 ```
 
 **Fix.** Save the module that holds the arrays; keep plain configuration in static
-fields of it (numbers and strings are saved with it).
+fields of it (numbers and strings are saved with it). For a layer whose arrays
+are not annotated, annotate them, or save the model with
+[Orbax](interop.md#orbax).
 
 <a id="ex502"></a>
 

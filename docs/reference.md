@@ -58,8 +58,8 @@ runs, with medians where they differ; above 1x the port is faster.
   2048-token sequence on CPU it runs 14x faster forward (10x median) and 6x
   faster for gradients (5x median): the original materialises the full
   `T x E x N` decay before scanning, and recomputes it under `jax.checkpoint`
-  to save memory. Generation, one token at a time, is about 2x slower
-  (0.5-0.6x).
+  to save memory. Generation, one token at a time, runs at the original's
+  speed (1.05x), with the layers unrolled when compiled as the original's are.
 - **[llama-2-jax](https://github.com/ayaka14732/llama-2-jax) Llama 2** (`examples/llama/`):
   grouped-query attention contracted by axis name (`expex.einsum(q, cache.k,
   to=(G, R, T, S))`) with the head layout in the weights' annotations
@@ -83,10 +83,11 @@ runs, with medians where they differ; above 1x the port is faster.
   plain call never maps over `self`). Over 1,024 random games of each,
   illegal moves and passes included, every field of every state is identical
   to Pgx's: observation, rewards, termination, legal-action mask and board.
-  The shapes of all 14 functions are proved. On CPU with 1,024 parallel
+  The shapes of all 15 functions are proved. On CPU with 1,024 parallel
   games, Connect Four steps 1.4-1.65x faster than Pgx but takes about 1 s
-  longer to compile; Othello is slower, at 0.7-0.75x Pgx's speed. The rules
-  take half the lines: 81 vs 161 for Connect Four, 101 vs 204 for Othello.
+  longer to compile; Othello runs at Pgx's speed (0.93-1.0x), with its edge
+  masks computed once rather than per shift. The rules take half the lines:
+  81 vs 161 for Connect Four, 107 vs 204 for Othello.
 - **[Vision Transformer](https://github.com/google-research/vision_transformer) ViT** (`examples/vit/`):
   the image size is in the model's signature (`image: f32[GH * P, GW * Q, C]`:
   a grid of GH x GW patches of P x Q pixels), and the image is cut into patches
@@ -104,11 +105,10 @@ runs, with medians where they differ; above 1x the port is faster.
   docstrings; the original still has more classifier options, a pre-logits
   layer and dropout, and uses Flax's attention, dense and norm layers, which
   the port writes out). On CPU (ViT-Ti/16, 224 x 224, batch 8, jit-compiled)
-  the forward pass is a little slower (0.8-0.9x) and gradients slower, at
-  about 0.7x (0.73-0.78x). Both gradients do the same arithmetic; the port's
-  compiles to a different program (one scanned layer whose activations are
-  stacked for the backward pass, and weight gradients reduced through two
-  levels of vmap), and unrolling its layers makes it slower still, not faster.
+  gradients run at about the original's speed (0.92x best, 0.99x median; they
+  were 0.7x until expex merged the batch axes of mapped matmuls and unrolled
+  short layer lists when compiling, after which the compiled programs match
+  the original's operation counts).
 - **[mctx](https://github.com/google-deepmind/mctx) MuZero and Gumbel MuZero** (`examples/mctx/search.py`):
   tree search, the hard case for plain control flow. mctx writes the search for
   a batch of trees with `lax.fori_loop`, `jax.vmap`ped `lax.while_loop`s and
@@ -149,12 +149,10 @@ runs, with medians where they differ; above 1x the port is faster.
   against 334 (`model_utils.py` without the noise helper, `models.py` without
   the model-zoo helper, and the dataset's ray generation; 317 against 138
   when both are formatted alike). On CPU (1,024 rays, width 256, depth 8),
-  the forward render runs at about the original's speed (0.8-1.0x), but
-  gradients are slower, at about 0.7x (0.6-0.9x). Run per ray and mapped,
-  each layer's weight gradient sums over two axes (rays, samples), and XLA on
-  CPU transposes the activations to do that. The original reshapes to
-  `[rays * samples, features]` first, and so does a variant of the port
-  that does the same: it matches the original's speed.
+  the render and its gradients run at about the original's speed (gradients
+  1.02x best, 0.95x median). Written per ray, each layer's weight gradient
+  sums over rays and samples; expex merges those batch axes for the matmul,
+  as the original's `[rays * samples, features]` reshape does by hand.
 
 ## Limitations
 

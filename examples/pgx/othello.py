@@ -10,14 +10,16 @@ written for one game with plain Python:
 
 * `for dr, dc in DIRECTIONS:` (staged as one `lax.scan`, like Pgx's
   `fori_loop`) and `if (...).any(): flips |= line` instead of `lax.cond`;
-* a direction is a pair (dr, dc) and `shift` works out the edges from it,
-  so there are no mask tables;
+* a direction is a pair (dr, dc), and the edges a move must not cross are
+  worked out once from the rows and columns (`landings`), not written out;
 * sizes by name (`jnp.arange(Cells) // Side`), and a batch of games is
   `Othello.new(keys)` (mapped over the keys), stepped by
   `state.step.vectorize(actions)` (mapping over `self` is explicit).
 
 The board is kept flat, as in Pgx: on CPU, XLA runs the shifts of a
 `[games, 64]` array about three times faster than those of a `[games, 8, 8]` one.
+The edge masks are computed once, outside the shifts: computed inside, from
+the direction, XLA:CPU recomputes them for every game (about 10% slower).
 
     python examples/pgx/othello.py            # play random games, print one
     python -m expex examples/pgx/othello.py   # prove the shapes
@@ -34,6 +36,7 @@ class Side(Dim, size=8): ...
 class Cells(Dim, size=64): ...  # square row * Side + col
 class Actions(Dim, size=65): ...  # a square, or PASS
 class Players(Dim, size=2): ...
+class Steps(Dim, size=3): ...  # a move of -1, 0 or 1 rows (or columns)
 
 
 PASS = 64
@@ -126,10 +129,20 @@ class Othello:
 
 
 @expex.fn
+def landings() -> tuple[Bool[Steps, Cells], Bool[Steps, Cells]]:
+    """The squares a move of d = -1, 0, 1 rows (or columns) lands on from the board: row (column) masks by d + 1."""
+    row, col = jnp.arange(Cells) // Side, jnp.arange(Cells) % Side
+    d = jnp.arange(-1, 2)[:, None]
+    return (0 <= row - d) & (row - d < Side), (0 <= col - d) & (col - d < Side)
+
+
+ROWS, COLS = landings()  # once, so the compiled shifts read them instead of recomputing them per game
+
+
+@expex.fn
 def shift(x: Bool[Cells], dr: i32, dc: i32) -> Bool[Cells]:
     """Every square's value moved (dr, dc) squares; what moves off the board is dropped."""
-    row, col = jnp.arange(Cells) // Side, jnp.arange(Cells) % Side
-    return jnp.roll(x, dr * Side + dc) & (0 <= row - dr < Side) & (0 <= col - dc < Side)
+    return jnp.roll(x, dr * Side + dc) & ROWS[dr + 1] & COLS[dc + 1]
 
 
 @expex.fn

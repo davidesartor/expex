@@ -265,7 +265,7 @@ def statics(f: Fn[Any, Any], fixed: dict[str, Any]) -> dict[str, int]:
         defaults = (
             {fl.name: fl.default for fl in dataclasses.fields(owner)}
             if dataclasses.is_dataclass(owner)
-            else {}
+            else {n: getattr(owner, n, None) for n in f.field_refs}  # a class attribute (a Flax NNX module)
         )
         for n in f.field_refs:
             v = getattr(obj, n, defaults.get(n))

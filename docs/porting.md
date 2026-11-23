@@ -154,6 +154,121 @@ sizes in the example: B=2, T=5, D=4
   with a warning, and Equinox or Flax modules are not looked inside.
 - Names are guesses from roles; check them, or pass `names=`.
 
+## Coming from jaxtyping
+
+Code annotated with [jaxtyping](https://github.com/patrick-kidger/jaxtyping)
+needs no rewrite: put `@expex.fn` on it, and `Float[Array, "batch seq d"]`
+means to expex what `Float[Batch, Seq, D]` does. The names in the strings
+are the function's sizes, as if they were its type parameters, spelled as
+written. Calls are checked, extra leading axes are mapped over, and
+`expex.prove`, `expex.cost` and the diagrams work as for any `@expex.fn`.
+
+```python
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # or import jaxtyping as usual, if it is installed
+    from jaxtyping import Array, Float, Int
+
+@expex.fn
+def lookup(tokens: Int[Array, "batch seq"], table: Float[Array, "vocab d"]) -> Float[Array, "batch seq d"]:
+    return table[tokens]
+
+@expex.fn
+def extend(x: Float[Array, "*batch t"]) -> Float[Array, "*batch t+1"]:
+    return jnp.concatenate([jnp.zeros(x.shape[:-1] + (1,)), x], axis=-1)
+
+print(lookup.signature)
+print(lookup(jnp.zeros((4, 2, 5), jnp.int32), jnp.ones((10, 8))).shape)  # 4 batches: mapped over
+print(expex.prove(extend).ok)
+try:
+    lookup(jnp.zeros((2, 5)), jnp.ones((10, 8)))  # float tokens
+except expex.ShapeError as e:
+    print(e.code, str(e).splitlines()[5].strip())
+```
+
+```
+lookup(tokens: Int[batch, seq], table: Float[vocab, d]) -> Float[batch, seq, d]
+(4, 2, 5, 8)
+True
+EX101 expected dtype Int, got f32.
+```
+
+jaxtyping need not be installed. With it, expex reads its classes; without it
+(imported only for type checkers, as above), expex reads the annotation's
+text. Either way it is the same annotation, and expex never imports jaxtyping.
+
+| jaxtyping | expex |
+|---|---|
+| `"b t d"`, `"batch seq"` | the sizes `b`, `t`, `d`, `batch`, `seq`: bound by the first array that has them, checked against the others |
+| `"*batch d"` | a variadic, `*batch` |
+| `"..."`, `"*_"` | `...`: any number of axes, unchecked |
+| `"3"`, `"t=1"` | the fixed sizes 3 and 1 (in `t=1`, `t` is a name for the reader) |
+| `""` | a scalar |
+| `"t+1"`, `"dim-1"`, `"2*d"`, `"d//h"` | the size expressions `t + 1`, `dim - 1`, ...; a size only in one is solved for |
+| `"{n}"`, `"{self.n}"` | the int parameter `n`, the int field `n` of `self` (as `f32[n]`, `f32[self.n]`) |
+| `"_"`, `"_t"` | one axis, unchecked (`Any`) |
+| `"#b"`, `"#4"` | `b` (or 4), or 1: a size-1 axis also matches, and does not bind `b` |
+| `"*#batch"` | axes that need only broadcast together; `*batch` is their broadcast |
+| `"?b"`, `"#t+1"` | not read: [EX411](errors.md#ex411) |
+| `Float`, `Complex`, `Inexact`, `Num`, `UInt`, `Bool` | expex's dtypes of the same names |
+| `Shaped` | `Arr`: any dtype |
+| `Int`, `Integer`, `Real` | signed integers (expex's own `Int` is any integer); any integer; float or integer |
+| `Float32`, `Int8`, `UInt8`, `Complex64`, ... | `f32`, `i8`, `u8`, `c64`, ... |
+| `BFloat16`, `Float8e4m3fn`, `Int4`, ... | that dtype exactly (`bf16`, ...) |
+| `Key[Array, "n"]`, `PRNGKeyArray` | `Key[n]`, `Key` (new-style keys and legacy `uint32[2]` ones) |
+| `Float[np.ndarray, "n"]`, `Float[Array \| np.ndarray, "n"]` | `Float[n]`: expex checks the shape and dtype, not the array's class |
+| `Scalar`, `ScalarLike` | a scalar of any dtype |
+| `PyTree[...]` | not checked |
+
+A function's sizes are shared by its whole signature, as under jaxtyping's
+`@jaxtyped`, which jaxtyping needs for that (without it, each annotation is
+checked alone). So expex can find annotations that disagree although
+jaxtyping never complained. expex's own `Float`, `Int`, `Bool` and `Key`
+written the jaxtyping way (`Float[jax.Array, "b t"]`) mean the same.
+
+**In the body**, the sizes are not names: jaxtyping code reads them as
+`x.shape[0]`, and keeps doing so. Making `batch` mean a size in the body would
+change what that name means in code written without it, where `b`, `t` or
+`d` may be a global or a loop variable. The rewrite below makes them type
+parameters, which the body can then use by name.
+
+**With jaxtyping's own checks**, put `@expex.fn` on top:
+`@expex.fn` over `@jaxtyped(typechecker=beartype)` runs both checks, and
+maps over extra leading axes before jaxtyping sees one element. The other
+order works too, but jaxtyping then refuses the extra axes. Either way the
+body is not converted (`f.info()` says it wraps another function), so Python
+`if` / `for` on traced values stay as JAX has them; jaxtyping code uses
+`lax` for those anyway.
+
+### Rewriting in expex's style
+
+`python -m expex migrate jaxtyping` rewrites the annotations of a file (or of
+every `.py` file in a directory): the sizes become type parameters, the
+function gets `@expex.fn`, and `@jaxtyped` goes (it cannot read expex's
+annotations). It prints a diff; `--write` applies it. The file is read, not
+imported, so jaxtyping need not be installed.
+
+```
+$ python -m expex migrate jaxtyping model.py
+-def attend(q: Float[Array, "batch seq_len d"], k: Float[Array, "batch s d"]) -> Float[Array, "batch seq_len s"]:
++@expex.fn
++def attend[Batch, SeqLen, D, S](q: Float[Batch, SeqLen, D], k: Float[Batch, S, D]) -> Float[Batch, SeqLen, S]:
+```
+
+Sizes are renamed in expex's style (`b` to `B`, `seq_len` to `SeqLen`),
+unless the new name is taken: by a global, an import, a parameter or a name
+the body uses (`D = 64` at the top of the file keeps the size `d` as `d`).
+Field annotations of a class (an Equinox module, a dataclass) give the class
+its type parameters, which its methods share. `Float` stays `Float`, as
+jaxtyping's accepts any float dtype; `--float f32` writes `f32` (and `Int` as
+`i32`). jaxtyping's imports that are no longer used are removed.
+
+What has no expex spelling is left as jaxtyping's, and still checked, since
+expex reads it: broadcastable sizes (`#b`), `PyTree[...]`, dtypes expex has
+no name for (`BFloat16`), and aliases defined at the top of a module
+(`Image = Float[Array, "h w 3"]`). A function or class with one is left whole,
+so that its sizes keep one name, and gets `@expex.fn` all the same.
+
 ---
 
 [← Command line and editors](tools.md) · [Contents](README.md)

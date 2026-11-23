@@ -182,9 +182,9 @@ class _Rewriter:
                 for d in dims:
                     if isinstance(d, (DBroad, DBroadConst, DVarBroad)):
                         raise _Keep(f"`{ast.unparse(node)}`: `{d}` broadcasts, which expex's own annotations do not say")
-                scalar = isinstance(array_type, ast.Name) and array_type.id in _SCALARS
-                yield _Ann(node, None if scalar else DTYPES[name], dims, array_type.id if scalar else None)  # type: ignore[union-attr]
-            elif name in WHOLE and not isinstance(node, ast.Subscript):
+                scalar = array_type.id if isinstance(array_type, ast.Name) and array_type.id in _SCALARS else None
+                yield _Ann(node, None if scalar else DTYPES[name], dims, scalar)
+            elif name in WHOLE and isinstance(node, (ast.Name, ast.Attribute)):
                 yield _Ann(node, None, (), WHOLE[name])
             elif name == "PyTree":
                 raise _Keep(f"`{ast.unparse(node)}`: expex has no PyTree annotation")

@@ -8,7 +8,7 @@ an optax Adam state whose moments are models, follows the parameters. The
 run:
 
 1. prints the mesh and the per-device shapes of parameters and activations;
-2. trains a character-level model on this file's own source, with a jitted
+2. trains a character-level model on the repository's LICENSE, with a jitted
    step (`expex.shard(..., donate="auto")`) and optax, saving at step 10;
 3. resumes from the checkpoint in a new process (`expex.load(..., mesh=)`),
    checks every restored sharding and that the losses continue exactly;
@@ -62,7 +62,7 @@ from transformer import Transformer, Vocab  # noqa: E402
 CONFIG = dict(Vocab=128, D=64, F=256, blocks=2, heads=4)  # 128: the ASCII characters
 BATCH, SEQ = 32, 32  # sequences per step, characters per sequence
 NAMES = dict(B="data", D="model")  # the batch over "data", the model width over "model"
-TEXT = np.frombuffer(pathlib.Path(__file__).read_bytes(), np.uint8).astype(np.int32)  # tiny real text
+TEXT = np.frombuffer((HERE.parent.parent / "LICENSE").read_bytes(), np.uint8).astype(np.int32)  # tiny real text
 OPT = optax.chain(
     optax.clip_by_global_norm(1.0),
     optax.adamw(optax.warmup_cosine_decay_schedule(0.0, 3e-3, 5, 200), weight_decay=0.01),
@@ -256,7 +256,7 @@ def main() -> None:
     tokens = expex.device_put(batch(0), mesh, annotation=TOKENS, **NAMES)
     compiled = jax.jit(train_step).lower(state["model"], state["opt"], tokens).compile()
     xla = compiled.cost_analysis()["flops"]
-    estimate = 3 * BATCH * float(cost.flops) / 8  # forward + backward ~ 3 forwards, over 8 devices
+    estimate = 3 * BATCH * float(cost.flops.value) / 8  # forward + backward ~ 3 forwards, over 8 devices
     print(f"one training step per device: {estimate / 1e6:.1f} MFLOP from expex.cost "
           f"(3 x {BATCH} sequences / 8 devices), {xla / 1e6:.1f} MFLOP in XLA's partitioned program")  # fmt: skip
 

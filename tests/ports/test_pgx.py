@@ -81,6 +81,6 @@ def test_random_games_play_to_the_end():
 
 
 def test_all_shapes_are_proved():
-    for module, n in ((connect_four, 6), (othello, 8)):
+    for module, n in ((connect_four, 6), (othello, 9)):
         reports = expex.prove(module)
         assert len(reports) == n and all(r.status == "proved" for r in reports), reports
