@@ -466,8 +466,10 @@ def _constructor(cls: Any) -> None:
     marked = any(isinstance(f.default, (Initializer, _Required)) for f in fields)
     if settings is None or not all(_free(n) for n in settings):
         simple = False
-    elif not buildable and not settings and not marked:
-        cls.__init__.__expex_generated__ = True  # a record of arrays: the dataclass's own
+    elif not buildable and not marked:
+        # Nothing to build (a record of arrays): the dataclass's own constructor, at its
+        # speed. expex.build(Cls, key, ...) still explains what cannot be built.
+        cls.__init__.__expex_generated__ = True
         return
     if simple:
         assert settings is not None

@@ -41,7 +41,9 @@ grads = jax.grad(lambda m: m(jnp.ones((4, 16))).sum())(model)   # a Stack too
   same way.
 - Without a key first, the constructor takes the values themselves, as any
   dataclass does: `Block(w, b)` or `Block(w=w, b=b)`. (If the first field is
-  itself annotated as a key, a key first is its value.)
+  itself annotated as a key, a key first is its value. A class with nothing to
+  build, no initializers and no nested modules, such as a game state, keeps the
+  plain dataclass constructor.)
 - A hand-written `__init__` also works: assign the fields as usual, and the
   result is checked against the annotations. It replaces both forms above;
   `expex.build(Stack, key, D=16, blocks=24)` still builds from the annotations.

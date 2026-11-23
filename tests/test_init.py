@@ -83,7 +83,9 @@ def test_mistakes_are_explained():
         w: f32[D]
 
     with pytest.raises(TypeError, match="has no initializer"):
-        NoInit(jr.key(0), D=3)
+        expex.build(NoInit, jr.key(0), D=3)
+    with pytest.raises(TypeError, match="unexpected keyword argument 'D'"):
+        NoInit(jr.key(0), D=3)  # nothing to build: the dataclass constructor
 
 
 def test_the_constructor_still_takes_values():
