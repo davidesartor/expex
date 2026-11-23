@@ -42,7 +42,7 @@ import jax.numpy as jnp
 import jax.random as jr
 
 from ..annotations.dims import Env
-from ..annotations.errors import coded
+from ..annotations.errors import ShapeError, coded
 from ..annotations.spec import join, parse_owner
 from ..function import Fn, unwrap
 from . import pages
@@ -278,7 +278,7 @@ def _watch(model: Any, args: tuple[Any, ...], loss: Any) -> Any:
 def _panel(tab: str, page: Inspect) -> str:
     if tab in page.errors:
         e = page.errors[tab]
-        if hasattr(e, "_repr_html_"):
+        if isinstance(e, ShapeError):  # with its diagram
             return e._repr_html_()
         return f'<p class="err"><b>{html.escape(type(e).__name__)}</b>: {html.escape(str(e))}</p>'
     part = page._part(tab)

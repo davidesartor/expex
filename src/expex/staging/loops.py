@@ -41,12 +41,14 @@ class _Iter:
         make: Callable[[Any, Any], Any],
         py: Callable[[], Any],
         chunk: int | None = None,
+        layers: bool = False,
     ):
         self.n = n
         self.xs = xs
         self.make = make
         self.py = py
         self.chunk = chunk  # run independent iterations `chunk` at a time, in sequence
+        self.layers = layers  # over a list of identical items (layers), stacked
 
     def __iter__(self) -> Any:
         return iter(self.py())
@@ -67,7 +69,7 @@ def _as_iter(it: Any) -> _Iter | None:
     if isinstance(it, (list, tuple)) and len(it) >= 2:
         stacked = _stack_alike(it)
         if stacked is not None:  # e.g. a list of identical layers: one scan, not n copies
-            return _Iter(len(it), stacked, lambda x, i: x, lambda: it)
+            return _Iter(len(it), stacked, lambda x, i: x, lambda: it, layers=True)
     return None
 
 
@@ -148,6 +150,7 @@ def reversed_(it: Any) -> Any:
         lambda x, i: inner.make(x, n - 1 - i),
         lambda: reversed(list(inner.py())),
         inner.chunk,
+        inner.layers,
     )
 
 
@@ -179,6 +182,7 @@ def enumerate_(iterable: Any, start: int = 0) -> Any:
         lambda x, i: (_weaken(i) + start, inner.make(x, i)),
         lambda: enumerate(inner.py(), start),
         inner.chunk,
+        inner.layers,
     )
 
 
@@ -192,6 +196,7 @@ def zip_(*its: Any, **kw: Any) -> Any:
         n, xs,
         lambda x, i: tuple(inn.make(xi, i) for inn, xi in zip(inners, x)),  # type: ignore[union-attr]
         lambda: zip(*[inn.py() for inn in inners]),  # type: ignore[union-attr]
+        layers=any(inn.layers for inn in inners),  # type: ignore[union-attr]
     )  # fmt: skip
 
 
@@ -352,7 +357,7 @@ def _lower_for(
         _, (ys, lasts) = jax.vmap(lambda x, i: step((), (x, i)))(it.xs, idx)
     else:
         LOG[site] = f"for -> lax.scan (carries {', '.join(names[j] for j in carry_idx)})"
-        final, (ys, lasts) = lax.scan(step, init, (it.xs, idx))
+        final, (ys, lasts) = lax.scan(step, init, (it.xs, idx), unroll=_unroll(it))
 
     out = list(state)
     for j, v in zip(carry_idx, final):
@@ -371,6 +376,14 @@ def _lower_for(
                     f"`{names[j]}` receives values of different shapes in one iteration"
                 ) from None
     return tuple(out)
+
+
+#: Experimental: lists of identical layers up to this long are unrolled in the compiled program.
+UNROLL_LAYERS = 0
+
+
+def _unroll(it: _Iter) -> int | bool:
+    return bool(it.layers and isinstance(it.n, int) and it.n <= UNROLL_LAYERS)
 
 
 def _fori(
