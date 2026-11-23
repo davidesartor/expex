@@ -83,5 +83,5 @@ def test_guide_blocks_run(tmp_path, capsys, monkeypatch):
     assert "NaN first appears at" in out
     assert ns["dropout"].random and ns["safe_log"](jnp.ones((2, 3))).shape == (2, 3)
     assert "# scores: f32[B, T, T]" in out
-    assert "def plain_attention[B, T, S, D, A](q: f32[B, T, D], k: f32[B, S, D], v: f32[B, S, A])" in out
+    assert "def attend_jax[B, T, S, D, A](q: f32[B, T, D], k: f32[B, S, D], v: f32[B, S, A])" in out
     assert type(ns["grads"]).__name__ == "Stack" and ns["y"].shape == (4, 16)

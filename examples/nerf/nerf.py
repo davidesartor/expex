@@ -173,7 +173,7 @@ class NeRF[P, V, W, C]:
         P = 3 * (1 + 2 * (degrees["max_deg_point"] - degrees["min_deg_point"]))
         V = 3 * (1 + 2 * degrees["deg_view"])
         layers = dict(before_skip=skip_layer, after_skip=depth - skip_layer - 2)
-        return cls.init(key, P=P, V=V, W=width, C=width_condition, **layers, **settings)
+        return cls(key, P=P, V=V, W=width, C=width_condition, **layers, **settings)
 
     def __call__[B](
         self, rays: Batch[Ray, B], rng_0: Key, rng_1: Key, randomized: bool

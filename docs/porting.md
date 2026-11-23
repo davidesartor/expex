@@ -8,16 +8,16 @@ example inputs and proposes the annotated signature, without changing the
 function.
 
 ```python
-def plain_attention(q, k, v):
+def attend_jax(q, k, v):
     scores = jnp.einsum("btd,bsd->bts", q, k) / jnp.sqrt(q.shape[-1])
     return jax.nn.softmax(scores, axis=-1) @ v
 
 q, k, v = jnp.ones((2, 3, 8)), jnp.ones((2, 5, 8)), jnp.ones((2, 5, 4))
-print(expex.annotate(plain_attention, q, k, v))
+print(expex.annotate(attend_jax, q, k, v))
 ```
 
 ```
-def plain_attention[B, T, S, D, A](q: f32[B, T, D], k: f32[B, S, D], v: f32[B, S, A]) -> f32[B, T, A]:
+def attend_jax[B, T, S, D, A](q: f32[B, T, D], k: f32[B, S, D], v: f32[B, S, A]) -> f32[B, T, A]:
 
 sizes in the example: B=2, T=3, S=5, D=8, A=4
 ```
@@ -41,11 +41,11 @@ gives them (`T, D = x.shape`), and otherwise letters in order. Fix some with
 `names=`; the rest follow:
 
 ```python
-print(expex.annotate(plain_attention, q, k, v, names={"q": "N Q E"}).signature)
+print(expex.annotate(attend_jax, q, k, v, names={"q": "N Q E"}).signature)
 ```
 
 ```
-def plain_attention[N, Q, S, E, D](q: f32[N, Q, E], k: f32[N, S, E], v: f32[N, S, D]) -> f32[N, Q, D]:
+def attend_jax[N, Q, S, E, D](q: f32[N, Q, E], k: f32[N, S, E], v: f32[N, S, D]) -> f32[N, Q, D]:
 ```
 
 An array built from shapes alone (`jnp.zeros((x.shape[0], w.shape[1]))`) has

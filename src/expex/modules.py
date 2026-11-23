@@ -1059,6 +1059,8 @@ def _update(at: At[Any], name: str, whole: Callable[[Any], Any], indexed: Callab
         if env.deferred:
             resolve(env)
     except Mismatch as m:
+        if isinstance(m.spec, StructSpec) and isinstance(m.value, m.spec.cls):  # an invariant
+            raise ShapeError(f"{label}: at `{m.path or type(root).__name__}`, {m.reason}") from None
         raise ShapeError(
             f"{label}: `{m.path or type(root).__name__}` is {describe(m.value)}, but is declared "
             f"{m.spec}.\n\n    {m.reason}"
@@ -1085,7 +1087,9 @@ def _put(
 
     def down(child: Any, cspec: Any, p: str) -> Any:
         new = _put(child, cspec, rest, p, env, whole, indexed, label) if rest else whole(child)
-        if cspec is not None and cspec.leafy:
+        if isinstance(cspec, SeqSpec) and not isinstance(new, (list, tuple)):
+            return new  # a list held stacked: its rows were checked one by one
+        if cspec is not None and (cspec.leafy or isinstance(cspec, StaticSpec)):
             cspec.match(new, p, env)
         return new
 
