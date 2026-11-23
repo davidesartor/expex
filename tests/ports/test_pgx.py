@@ -5,6 +5,7 @@ unmodified Pgx from fixed keys: the actions, and every field of the state
 after ``init`` and after each step (see examples/pgx/run_original.py).
 """
 
+import importlib.util
 import pathlib
 import sys
 
@@ -17,9 +18,14 @@ import expex
 
 ROOT = pathlib.Path(__file__).parent.parent.parent
 sys.path.insert(0, str(ROOT / "examples" / "pgx"))
-import compare  # noqa: E402
 import connect_four  # noqa: E402
 import othello  # noqa: E402
+
+# under its own name: examples/mamba/compare.py may already be imported as `compare`
+_spec = importlib.util.spec_from_file_location("pgx_compare", ROOT / "examples" / "pgx" / "compare.py")
+assert _spec is not None and _spec.loader is not None
+compare = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(compare)
 
 REF = dict(np.load(ROOT / "tests" / "data" / "pgx_reference.npz"))
 
