@@ -361,6 +361,41 @@ ShapeError: tx.load(Mamba, 'mamba.npz'):
 - Keys missing from the file are an error, and so are extra keys unless you
   pass `strict=False`.
 
+
+### Comparing models and checkpoints
+
+`tx.diff(a, b)` compares two models, or files written by `tx.save`, field by
+field:
+
+```python
+small = Stack.init(jr.key(0), D=16, blocks=3)
+tx.save(small, "base.npz")
+grads = jax.grad(lambda m: (m(jnp.ones((4, 16))) ** 2).mean())(small)
+tuned = jax.tree.map(lambda p, g: p - 0.1 * g, small, grads)   # one SGD step
+print(tx.diff("base.npz", tuned))
+```
+
+```
+6 changed, 0 unchanged
+
+                                   max |a−b|  relative  changed
+changed  blocks[1].b  f32[16]       2.50e-02  1.00e+00   100.0%
+changed  blocks[2].b  f32[16]       2.10e-02  1.00e+00   100.0%
+changed  blocks[0].b  f32[16]       1.89e-02  1.00e+00   100.0%
+changed  blocks[1].w  f32[16, 16]   2.96e-02  1.15e-01   100.0%
+changed  blocks[2].w  f32[16, 16]   3.45e-02  1.10e-01   100.0%
+changed  blocks[0].w  f32[16, 16]   1.89e-02  1.04e-01   100.0%
+```
+
+(The biases started at zero, so their relative change is 1.)
+
+Changes in structure come first (fields added or removed, such as a different
+number of layers, changed shapes or dtypes, changed static fields), then
+changed values, largest relative change ‖a−b‖ / max(‖a‖, ‖b‖) first, with the
+fraction of elements beyond `atol` / `rtol`. In a notebook (or with
+`.save("diff.html")`) it is a collapsible tree of the model, coloured by
+change, with a filter for unchanged fields.
+
 ## Random keys
 
 ```python
