@@ -251,10 +251,18 @@ NaN first appears at example.py:4 (entropy)
 
 ## Ported projects
 
-Popular JAX projects rewritten in this style and checked against the originals:
-[PureJaxRL](https://github.com/luchris429/purejaxrl)'s PPO (`examples/ppo/`) and
-[mamba-jax](https://github.com/vvvm23/mamba-jax) (`examples/mamba/`: same logits
-to 6e-7, 4.5x faster forward, 3x faster gradients).
+Popular JAX projects rewritten in this style, each checked against the original
+and with every shape proved ([details](docs/reference.md#ported-projects)):
+
+| Project | Port | Matches the original | Speed |
+|---|---|---|---|
+| [PureJaxRL](https://github.com/luchris429/purejaxrl) PPO | [`examples/ppo/`](examples/ppo/) | first 21 updates identical | same |
+| [mamba-jax](https://github.com/vvvm23/mamba-jax) | [`examples/mamba/`](examples/mamba/) | logits to 6e-7, tokens exact | 4.5x forward, 3x gradients |
+| [llama-2-jax](https://github.com/ayaka14732/llama-2-jax) | [`examples/llama/`](examples/llama/) | logits to 8e-7, tokens exact | 1.1–1.4x forward, same generation |
+| [Pgx](https://github.com/sotetsuk/pgx) Connect Four, Othello | [`examples/pgx/`](examples/pgx/) | every state identical | 1.3x / 0.9–1.0x |
+
+The ports are also shorter: Llama 2 is 101 lines of code in one file, against
+478 across 15, and the two pgx games take half the lines of the originals.
 
 ## More
 

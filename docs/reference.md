@@ -53,6 +53,31 @@ originals:
   2048-token sequence on CPU it runs 4.5x faster forward and 3x faster for
   gradients (the original materialises the full `T x E x N` decay before
   scanning, and recomputes it under `jax.checkpoint` to save memory).
+- **[llama-2-jax](https://github.com/ayaka14732/llama-2-jax) Llama 2** (`examples/llama/`):
+  grouped-query attention contracted by axis name (`expex.einsum(q, cache.k,
+  to=(G, R, T, S))`) with the head layout in the weights' annotations
+  (`wq: f32[D, G, R, K]`), norms and the SwiGLU MLP written for one token and
+  `.vectorize`d, and one code path for training and generation: a forward pass
+  runs over an empty KV cache, and greedy decoding is a plain loop carrying the
+  layers' caches. Logits match the original to 8e-7, gradients to 7e-7
+  (relative) and the tokens from its own KV-cache generation loop exactly; all
+  11 functions are proved. 101 lines of code in one file, against 478 in 15
+  (the model with its shape checks and initialisers, and the generation loop).
+  On CPU (4 layers, width 256, 8 query and 2 key/value heads, batch 4), the
+  forward pass over 256 tokens is 1.1-1.4x faster and generation runs at the
+  same speed (about 1,000-1,400 tokens/s for both).
+- **[Pgx](https://github.com/sotetsuk/pgx) Connect Four and Othello** (`examples/pgx/`):
+  one game per `@expex.struct`, with the rules as plain `if` / `for` / `while`.
+  A Connect Four win is found by a `while` walk from the new stone, and a move
+  is `board[row, col] = self.color`. Othello's eight directions are one `for`
+  loop, staged as a `lax.scan`. A batch of games is `.vectorize`. Over 1,024
+  random games of each, illegal moves and passes included, every field of
+  every state is identical to Pgx's: observation, rewards, termination,
+  legal-action mask and board. The shapes of all 14 functions are proved. On
+  CPU with 1,024 parallel games, Connect Four steps 1.3x faster than Pgx (2.7 M
+  vs 2.0 M steps/s) but takes about 0.6 s longer to compile. Othello runs at
+  0.9-1.0x Pgx's speed and compiles in the same time. The rules take half the
+  lines: 81 vs 161 for Connect Four, 101 vs 204 for Othello.
 
 ## Limitations
 
