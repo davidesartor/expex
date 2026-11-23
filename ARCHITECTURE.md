@@ -12,6 +12,7 @@ remat are JAX's own. Each module has one job:
 | `dims.py` | Dimensions (`B`, `T + 1`, `*Rest`), binding sizes during a call (`Env`), printing values as `f32[3, 4]`. |
 | `expr.py` | Size arithmetic and constraints (`"T + 1"`, `"D % heads == 0"`). |
 | `sym.py` | Size arithmetic written in annotations (`f32[T + 1]`), read from their text. |
+| `jaxtyping.py` | jaxtyping's annotations (`Float[Array, "b t"]`) as expex dimensions and dtypes, from its classes or, without it, from the text; parsed once, checked by the same specs. |
 | `spec.py` | Annotations parsed into specs, values matched against them, structs included; `fields()` walks a value's parts with their paths (`blocks[2].mlp.w1`). |
 | `errors.py` | `ShapeError`, `StageError`; the error codes (`CODES`), and `coded`, which gives an error its code and the link to its section of `docs/errors.md`. |
 | `messages.py` | Error messages, hints and the notes added to exceptions. |
@@ -21,6 +22,7 @@ remat are JAX's own. Each module has one job:
 | `keys.py` | Implicit random keys (`expex.key()`). |
 | `modules.py` | `@expex.struct`: modules registered as pytrees whose methods are `@fn`s; the generated constructor (`Module(key, D=64)` builds, `Module(w, b)` takes values, `Module(key, cfg)` takes a config), `expex.build`, `model.sizes`, `model.at[...]` updates. |
 | `io.py` | `expex.save` / `expex.load`: one `.npz` per model, checked against the annotations on load. |
+| `masking.py` | `expex.mask`: a pytree of booleans chosen by path and annotation, for optax masks and Equinox's `partition`. |
 | `sharding.py` | `expex.shard`, `expex.shardings`: shardings from axis names mapped to mesh axes. |
 | `precision.py` | Mixed precision (`compute=jnp.bfloat16`): bodies wrapped to cast float inputs in and results back to their declared dtype; the compute dtype accepted for float annotations inside such a body. |
 | `consts.py` | `expex.eps`, `expex.tiny`, `expex.huge`: dtype limits resolved against the array they meet. |
@@ -38,6 +40,7 @@ remat are JAX's own. Each module has one job:
 | **`tools/`** | **Everything that looks at a function rather than runs it.** |
 | `trace.py` | The trace engine: a function (with its examples, size keywords, list lengths) traced on symbolic sizes, or on real arguments; walking jaxprs. |
 | `prove.py` | The prover (`expex.prove`) and the command line. |
+| `migrate.py` | `python -m expex migrate jaxtyping`: jaxtyping annotations rewritten in expex's style, with `annotate.py`'s edit, diff and write helpers. |
 | `cost.py` | `expex.cost`: FLOPs and parameters as polynomials in the sizes. |
 | `profile.py` | `expex.debug.profile`: FLOPs and bytes per source line. |
 | `summary.py` | `expex.summary`: one row per module with parameters and FLOPs. |

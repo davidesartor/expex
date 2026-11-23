@@ -303,6 +303,17 @@ def union(args: tuple[Any, ...]) -> JtArray | None:
     return None
 
 
+def uses(ann: Any) -> bool:
+    """Does the annotation ``ann`` (a field's, say) contain a jaxtyping one?"""
+    if isinstance(ann, (JtArray, JtPyTree)) or from_class(ann) is not None:
+        return True
+    from .types import ArrayAnn
+
+    if isinstance(ann, (ArrayAnn, KeyAnn)) and len(ann.items) == 2 and isinstance(ann.items[1], str):
+        return True
+    return any(uses(a) for a in typing.get_args(ann))
+
+
 # --------------------------------------------------------------------------
 # Shape strings
 # --------------------------------------------------------------------------

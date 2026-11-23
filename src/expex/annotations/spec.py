@@ -35,6 +35,7 @@ from .dims import (
     _same,
     describe,
     is_symbolic,
+    resolve,
     short_dtype,
 )
 from . import jaxtyping as jt
@@ -500,7 +501,7 @@ def rebuild(obj_or_cls: Any, **values: Any) -> Any:
             # an __init__ written by hand, that does not take the fields (an Equinox
             # module, say), or no dataclass at all (a Flax NNX module): set them
             # without it, as JAX does when it rebuilds an Equinox module
-            if not dataclasses.is_dataclass(cls):
+            if not hasattr(cls, "__dataclass_fields__"):  # not a dataclass
                 if not hasattr(obj_or_cls, "__dict__"):
                     raise
                 new = object.__new__(cls)
@@ -674,6 +675,25 @@ class StructSpec(Spec):
         )
 
 
+class ScopedStructSpec(StructSpec):
+    """A struct whose sizes are its own: each value binds them afresh, none is shared with the call.
+
+    For jaxtyping-annotated modules inside another struct (see ``parse``); expex's
+    own structs say which sizes they share through their type parameters.
+    """
+
+    def match(self, value: Any, path: str, env: Env) -> None:
+        own = Env()
+        super().match(value, path, own)
+        if own.deferred:
+            resolve(own)
+
+    def replace_dims(self, f: Callable[[Any], Any]) -> "Spec":
+        return ScopedStructSpec(
+            self.cls, {n: s.replace_dims(f) for n, s in self.fields.items()}, self.label, invariants=self.invariants
+        )
+
+
 def _field_defaults(cls: type) -> set[str]:
     if dataclasses.is_dataclass(cls):
         return {
@@ -824,8 +844,8 @@ def parse_owner(cls: type) -> Spec:
     """
     names = _struct_fields(cls)
     anns = _class_annotations(cls)
-    plain = names is None  # a class that is not a dataclass (a Flax NNX module, say):
-    if plain:  # its annotated attributes that are arrays, modules or lists of them
+    attrs = names is None  # a class that is not a dataclass (a Flax NNX module, say):
+    if names is None:  # its annotated attributes that are arrays, modules or lists of them
         names = [n for n in anns if not n.startswith("_")]
     params = getattr(cls, "__type_params__", ()) or getattr(cls, "__parameters__", ())
     inner: dict[Any, Any] = {p: DName(p.__name__) for p in params if isinstance(p, typing.TypeVar)}
@@ -838,7 +858,7 @@ def parse_owner(cls: type) -> Spec:
             raise coded(code_of(e) or "EX401", DimError(f"{cls.__name__}.{n}: {e}")) from None
         except TypeError:
             fields[n] = OpaqueSpec(anns.get(n))
-    if plain:
+    if attrs:
         fields = {n: s for n, s in fields.items() if s.leafy and not isinstance(s, StaticSpec)}
     if any(s.leafy for s in fields.values()):
         return StructSpec(cls, fields, cls.__name__, inner)
@@ -932,8 +952,8 @@ def parse(ann: Any, subst: dict[Any, Any] | None = None, _stack: tuple[type, ...
     cls = origin if isinstance(origin, type) else ann
     if isinstance(cls, type) and cls not in _stack:
         names = _struct_fields(cls)
-        plain = names is None  # not a dataclass (a Flax NNX module, say): as in parse_owner
-        if plain:
+        attrs = names is None  # not a dataclass (a Flax NNX module, say): as in parse_owner
+        if names is None:
             names = [n for n in _class_annotations(cls) if not n.startswith("_")]
         if names:
             params = getattr(cls, "__type_params__", ()) or getattr(cls, "__parameters__", ())
@@ -959,9 +979,14 @@ def parse(ann: Any, subst: dict[Any, Any] | None = None, _stack: tuple[type, ...
                     raise coded(code_of(e) or "EX401", DimError(f"{cls.__name__}.{n}: {e}")) from None
                 except TypeError:
                     fields[n] = OpaqueSpec(anns.get(n))
-            if plain:
+            if attrs:
                 fields = {n: s for n, s in fields.items() if s.leafy and not isinstance(s, StaticSpec)}
             if any(s.leafy for s in fields.values()):
+                if _stack and not params and any(jt.uses(anns.get(n)) for n in names):
+                    # jaxtyping's names in the fields of a module inside another one: each value
+                    # has its own (a stack of layers of different widths), as jaxtyping checks
+                    # a module's fields when that module is built
+                    return ScopedStructSpec(cls, fields, label, inner)
                 return StructSpec(cls, fields, label, inner)
     return OpaqueSpec(ann)
 

@@ -5,11 +5,10 @@
     decay = expex.mask(model, lambda path, spec: spec.ndim >= 2)   # the matrices
     opt = optax.adamw(1e-3, weight_decay=0.1, mask=decay)
 
-The annotation says what an array is, where its shape may not: a bias of
-layers held stacked (``Batch[Block[D], L]``) is ``f32[D]`` with two axes.
+The annotation says what an array is, where its shape may not: in an ensemble
+built by ``jax.vmap``, a bias is ``f32[D]`` with two axes.
 """
 
-import functools
 from typing import Any, Callable
 
 import jax
@@ -38,10 +37,12 @@ def mask(tree: Any, where: Callable[[str, ArraySpec], bool]) -> Any:
     return jax.tree.map(one, tree, is_leaf=lambda x: _spec(type(x)) is not None)
 
 
-@functools.cache
+_SPECS: dict[type, StructSpec | None] = {}
+
+
 def _spec(cls: type) -> StructSpec | None:
     """The spec of a dataclass or NamedTuple that annotates arrays, else None."""
-    if _struct_fields(cls) is None:
-        return None
-    spec = parse_owner(cls)
-    return spec if isinstance(spec, StructSpec) else None
+    if cls not in _SPECS:
+        spec = parse_owner(cls) if _struct_fields(cls) is not None else None
+        _SPECS[cls] = spec if isinstance(spec, StructSpec) else None
+    return _SPECS[cls]

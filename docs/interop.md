@@ -89,6 +89,9 @@ MLP.__call__(): argument `x` does not match its annotation.
   needs a default for them, or a bound method: `expex.prove(model.split)`.
 - `expex.summary(mlp)`, `expex.cost(MLP.__call__)` and
   `expex.diagram(MLP.__call__)` work as on structs.
+- Fields annotated with jaxtyping (`w: Float[Array, "i o"]`), as much Equinox
+  code is, work the same way: see [Coming from
+  jaxtyping](porting.md#coming-from-jaxtyping).
 
 ### Structs and Equinox modules inside each other
 

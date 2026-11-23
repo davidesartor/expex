@@ -21,7 +21,7 @@ mesh=, names=)`` puts each array straight from the file onto its devices, as
 """
 
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import jax
@@ -213,6 +213,7 @@ def _put(obj: Any, mesh: Any, names: dict[str, Any] | None) -> Any:
     """The NumPy arrays of a loaded ``obj`` as JAX arrays: on ``mesh`` as ``names`` say, if given."""
     from .sharding import _check_names, _leaf, _structs
 
+    other: Callable[[Any], Any]
     if mesh is None:
         if names:
             raise coded("EX601", TypeError("expex.load(..., names=...) needs mesh=: the mesh whose axes they name."))

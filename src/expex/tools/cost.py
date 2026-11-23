@@ -302,19 +302,18 @@ def cost(target: Any, config: Any = None, /, **sizes: Any) -> Cost:
     aliases: set[str] = set()
     preset = None
     try:
-        fl, params, largest, more, lists = _count(s, 1)
-    except Exception:
+        counted = _count(s, 1)
+    except Exception as e:
         if not isinstance(unwrap(target), BoundFn):
             raise
         # a part whose arrays are not annotated (a layer from another library) keeps its
         # own sizes: count at the instance's sizes, as numbers
         preset = {k: v for k, v in sizes.items() if isinstance(v, int) and k not in static_kw}
         try:
-            fl, params, largest, more, lists = _count(s, 1, preset)
+            counted = _count(s, 1, preset)
         except Exception:
-            preset = None
-        if preset is None:
-            raise
+            raise e from None
+    fl, params, largest, more, lists = counted
     if lists:  # the cost is linear in the length of the lists: extrapolate from 1 and 2
         fl2, params2, _, _, _ = _count(s, 2, preset)
         fl += (Poly.of("L") - 1) * (fl2 - fl)

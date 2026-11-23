@@ -319,6 +319,31 @@ def test_equinox_and_structs_nested(tmp_path):
         expex.save(h, tmp_path / "h.npz")
 
 
+def test_equinox_with_jaxtyping_annotations():
+    eqx = pytest.importorskip("equinox")
+    jt = pytest.importorskip("jaxtyping")
+    Array, Float = jt.Array, jt.Float
+
+    class Linear(eqx.Module):
+        w: Float[Array, "i o"]
+        b: Float[Array, " o"]
+
+        def __init__(self, key: Any, i: int, o: int):
+            self.w, self.b = jr.normal(key, (i, o)), jnp.zeros(o)
+
+        @expex.fn
+        def __call__(self, x: Float[Array, " i"]) -> Float[Array, " o"]:
+            return x @ self.w + self.b
+
+    m = Linear(jr.key(0), 4, 3)
+    assert m(jnp.ones((2, 4))).shape == (2, 3)
+    with pytest.raises(expex.ShapeError, match=r"i is 4 \(from `self.w: f32\[4, 3\]`\)"):
+        m(jnp.ones(5))
+    assert expex.prove(Linear.__call__).ok
+    decay = expex.mask(m, lambda p, s: s.ndim >= 2)
+    assert (decay.w, decay.b) == (True, False)
+
+
 # --------------------------------------------------------------------------- Flax
 
 

@@ -174,21 +174,24 @@ def _structs(tree: Any, path: str | None, visit: Callable[..., Any]) -> Any:
     is_struct = lambda x: _owner(type(x)) is not None
 
     def one(kp: Any, x: Any) -> Any:
-        if not is_struct(x):
+        spec = _owner(type(x))
+        if spec is None:
             return x
         where = (path or type(x).__name__) if not kp else (path or "tree") + jax.tree_util.keystr(kp)
-        return _owner(type(x)).walk(x, where, visit)  # type: ignore[union-attr]
+        return spec.walk(x, where, visit)
 
     return jax.tree_util.tree_map_with_path(one, tree, is_leaf=is_struct)
 
 
-@functools.cache
+_OWNERS: dict[type, Spec | None] = {}
+
+
 def _owner(cls: type) -> Spec | None:
     """The spec of a struct class that annotates arrays (a model; not an optax NamedTuple), else None."""
-    if _struct_fields(cls) is None:
-        return None
-    spec = parse_owner(cls)
-    return spec if spec.leafy else None
+    if cls not in _OWNERS:
+        spec = parse_owner(cls) if _struct_fields(cls) is not None else None
+        _OWNERS[cls] = spec if spec is not None and spec.leafy else None
+    return _OWNERS[cls]
 
 
 def _check_names(mesh: Mesh, names: dict[str, Any]) -> dict[str, tuple[str, ...]]:

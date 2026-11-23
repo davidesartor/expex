@@ -84,13 +84,20 @@ class DType:
         self.category = category
         self.example = np.dtype(example if example is not None else dtype)
         self.weak = weak  # Python scalar types accepted for rank-0 values
+        self._seen: dict[Any, bool] = {}  # dtype -> accepted, for a category (jnp.issubdtype is slow)
 
     def accepts(self, dtype: Any) -> bool:
         if self.dtype is not None:
             return dtype == self.dtype
         if self.category is None:
             return True
-        return any(jnp.issubdtype(dtype, c) for c in self.category)
+        try:
+            return self._seen[dtype]
+        except KeyError:
+            ok = self._seen[dtype] = any(jnp.issubdtype(dtype, c) for c in self.category)
+            return ok
+        except TypeError:  # not hashable
+            return any(jnp.issubdtype(dtype, c) for c in self.category)
 
     def __getitem__(self, items: Any) -> ArrayAnn:
         if not isinstance(items, tuple):

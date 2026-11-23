@@ -232,6 +232,40 @@ def test_structs_unions_and_the_module_name(tmp_path, mode):
 
 
 @pytest.mark.parametrize("mode", MODES)
+def test_nested_modules_have_their_own_sizes(tmp_path, mode):
+    """Layers of different widths in one model: each layer's `in` / `out` are its own, as jaxtyping has them."""
+    m = load(tmp_path, '''
+        import dataclasses
+
+        @dataclasses.dataclass(frozen=True)
+        class Linear:
+            weight: Float[Array, "out in"]
+            bias: Float[Array, "out"]
+
+            @expex.fn
+            def __call__(self, x: Float[Array, "in"]) -> Float[Array, "out"]:
+                return self.weight @ x + self.bias
+
+        @dataclasses.dataclass(frozen=True)
+        class MLP:
+            layers: tuple[Linear, ...]
+
+            @expex.fn
+            def __call__(self, x: Float[Array, "d"]) -> Float[Array, "k"]:
+                for layer in self.layers:
+                    x = layer(x)
+                return x
+    ''', mode)
+    lin = m.Linear(ones((3, 4)), ones(3))
+    assert lin(ones(4)).shape == (3,)
+    assert "in is 4" in raises("EX101", lin, ones(5))  # `self` shares its sizes with the method
+    mlp = m.MLP((m.Linear(ones((5, 4)), ones(5)), lin.__class__(ones((3, 5)), ones(3))))
+    assert mlp(ones(4)).shape == (3,)
+    bad = m.MLP((m.Linear(ones((5, 4)), ones(5)), m.Linear(ones((3, 5)), ones(4))))
+    assert "self.layers[1].bias" in raises("EX101", bad, ones(4))  # still checked within each layer
+
+
+@pytest.mark.parametrize("mode", MODES)
 def test_unsupported(tmp_path, mode):
     for ann, code, says in [
         ('"?x"', "EX411", "PyTree"),

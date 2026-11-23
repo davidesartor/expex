@@ -123,6 +123,14 @@ python -m expex shapes model.py --json
 ]}
 ```
 
+## Migrating from jaxtyping
+
+`python -m expex migrate jaxtyping model.py` rewrites jaxtyping annotations
+(`Float[Array, "b t"]`) in expex's style (`def f[B, T](x: Float[B, T])`, with
+`@expex.fn`) and prints the diff; `--write` applies it, and a directory is
+searched for `.py` files. expex also reads jaxtyping annotations as they are,
+so the rewrite is optional: see [Coming from jaxtyping](porting.md#coming-from-jaxtyping).
+
 ## VS Code
 
 [`editors/vscode/`](../editors/vscode/) is a small extension that runs this
