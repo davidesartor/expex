@@ -36,7 +36,7 @@ from .dims import (
     is_symbolic,
     short_dtype,
 )
-from .errors import Mismatch
+from .errors import Mismatch, code_of, coded, strip_see
 from .expr import Expr
 from .sym import evaluate, named_sizes, texts
 from .types import ArrayAnn, BatchAnn, DType, KeyAnn, StaticAnn
@@ -77,6 +77,13 @@ class Spec:
 
     def replace_dims(self, f: Callable[[Any], Any]) -> "Spec":
         return self
+
+
+def _computing(dtype: Any, declared: DType) -> bool:
+    """After a failed dtype check: inside a mixed-precision body, its compute dtype passes for a float one."""
+    from ..precision import accepts
+
+    return accepts(dtype, declared)
 
 
 def _dims_names(dims: tuple[Any, ...], into: set[str]) -> None:
@@ -128,7 +135,7 @@ class ArraySpec(Spec):
                 # a NumPy array is judged by the dtype JAX will give it
                 isinstance(value, (np.ndarray, np.generic))
                 and self.dtype.accepts(jax.dtypes.canonicalize_dtype(dtype))
-            ):
+            ) and not _computing(dtype, self.dtype):
                 raise Mismatch(
                     path, self, value,
                     f"expected dtype {self.dtype.name}, got {short_dtype(dtype)}.",
@@ -492,7 +499,7 @@ def rebuild(obj_or_cls: Any, **values: Any) -> Any:
         elif f.default_factory is not dataclasses.MISSING:
             v = f.default_factory()
         else:
-            raise TypeError(f"{cls.__name__}: no value for field `{f.name}`")
+            raise coded("EX302", TypeError(f"{cls.__name__}: no value for field `{f.name}`"))
         object.__setattr__(new, f.name, v)
     return new
 
@@ -634,7 +641,7 @@ class StructSpec(Spec):
         try:
             return rebuild(self.cls, **kwargs)
         except Exception as e:
-            raise Unsynthesizable(f"{path} ({self.cls.__name__}: {e})") from None
+            raise Unsynthesizable(f"{path} ({self.cls.__name__}: {strip_see(str(e))})") from None
 
     def names(self, into: set[str]) -> None:
         for s in self.fields.values():
@@ -706,12 +713,12 @@ def _bind_params(cls: type, params: Any, dims: tuple[Any, ...]) -> dict[Any, Any
     """
     var = [i for i, p in enumerate(params) if isinstance(p, typing.TypeVarTuple)]
     if len(var) > 1:
-        raise TypeError(f"{cls.__name__} has more than one variadic type parameter")
+        raise coded("EX401", TypeError(f"{cls.__name__} has more than one variadic type parameter"))
     fixed = len(params) - len(var)
     if (not var and len(dims) != fixed) or len(dims) < fixed:
-        raise TypeError(
+        raise coded("EX401", TypeError(
             f"{cls.__name__} takes {'at least ' if var else ''}{fixed} dimension(s), got {len(dims)}"
-        )
+        ))
     if not var:
         return dict(zip(params, dims))
     t = var[0]
@@ -728,7 +735,7 @@ def _prepend(spec: Spec, lead: tuple[Any, ...]) -> Spec:
         dims = lead + spec.dims
         var = [i for i, d in enumerate(dims) if isinstance(d, (DVar, DEllipsis))]
         if len(var) > 1:
-            raise TypeError("Batch[...] would give a shape with more than one variadic")
+            raise coded("EX401", TypeError("Batch[...] would give a shape with more than one variadic"))
         v = var[0] if var else None
         return ArraySpec(spec.dtype, dims, v) if isinstance(spec, ArraySpec) else KeySpec(dims, v)
     if isinstance(spec, TupleSpec):
@@ -809,7 +816,7 @@ def parse_owner(cls: type) -> Spec:
         try:
             fields[n] = parse(anns.get(n, inspect.Parameter.empty), inner, (cls,))
         except DimError as e:
-            raise DimError(f"{cls.__name__}.{n}: {e}") from None
+            raise coded(code_of(e) or "EX401", DimError(f"{cls.__name__}.{n}: {e}")) from None
         except TypeError:
             fields[n] = OpaqueSpec(anns.get(n))
     if any(s.leafy for s in fields.values()):
@@ -892,7 +899,7 @@ def parse(ann: Any, subst: dict[Any, Any] | None = None, _stack: tuple[type, ...
                 try:
                     fields[n] = parse(anns.get(n, inspect.Parameter.empty), inner, _stack + (cls,))
                 except DimError as e:
-                    raise DimError(f"{cls.__name__}.{n}: {e}") from None
+                    raise coded(code_of(e) or "EX401", DimError(f"{cls.__name__}.{n}: {e}")) from None
                 except TypeError:
                     fields[n] = OpaqueSpec(anns.get(n))
             if any(s.leafy for s in fields.values()):

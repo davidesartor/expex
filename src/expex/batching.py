@@ -23,7 +23,7 @@ from jax.core import Tracer
 
 from . import keys
 from .annotations.dims import describe
-from .annotations.errors import ShapeError, StageError
+from .annotations.errors import ShapeError, StageError, coded
 from .annotations.spec import KeySpec, Spec
 
 if TYPE_CHECKING:
@@ -175,10 +175,10 @@ def batch_plan(
             if auto:
                 batches.append(())
                 continue
-            raise TypeError(
+            raise coded("EX106", TypeError(
                 f"{f.name}{what}(): `{path}: {spec}` has a variadic shape, so its "
                 f"batch axes cannot be told apart from its own axes."
-            )
+            ))
         if isinstance(spec, KeySpec):
             shape = KeySpec.batch_shape(v) or ()
         else:
@@ -199,7 +199,7 @@ def batch_plan(
             if auto
             else f"{f.name}{what}(): the batch axes of the arguments do not broadcast."
         )
-        raise ShapeError(f"{head}\n\n{listing}\n\n    {f.signature}") from None
+        raise coded("EX105", ShapeError(f"{head}\n\n{listing}\n\n    {f.signature}")) from None
     return leaves, batches, bshape
 
 
@@ -228,7 +228,7 @@ def _per_element(
     while at < len(lines) and lines[at] != "":
         at += 1
     lines[at:at] = ["", note]
-    out = ShapeError("\n".join(lines))
+    out = coded(e.code or "EX101", ShapeError("\n".join(lines)))
     out.__notes__ = list(getattr(e, "__notes__", ()))
     return out
 

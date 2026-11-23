@@ -27,7 +27,7 @@ from jax.core import Tracer
 from . import batching, keys
 from .annotations import messages, sym
 from .annotations.dims import DExpr, DName, Env, is_symbolic, resolve
-from .annotations.errors import Mismatch, ShapeError, StageError
+from .annotations.errors import Mismatch, ShapeError, StageError, code_of, coded
 from .annotations.expr import Expr
 from .annotations.spec import ArraySpec, KeySpec, OpaqueSpec, Spec, StaticSpec, _assumptions_of, _struct_fields, parse, parse_owner, static_type
 from .staging import flow, ops
@@ -75,12 +75,15 @@ class Config:
         #: Outside ``jax.jit``, run a mapped call (``f.vectorize``, or mapped
         #: automatically) compiled from its second call with the same shapes on.
         self.compile_vectorized: bool = os.environ.get("EXPEX_COMPILE_VECTORIZED", "1") not in ("0", "false", "")
+        #: Mixed precision for every ``@fn`` without a setting of its own (``jnp.bfloat16``,
+        #: or a name): float inputs cast to it, float results back to their declared dtype.
+        self.compute: Any = os.environ.get("EXPEX_COMPUTE") or None
 
     def __call__(self, **changes: Any) -> "_Scoped":
         """``with expex.config(checked=False): ...`` changes settings inside the block."""
         for k in changes:
             if k not in vars(self):
-                raise AttributeError(f"expex.config has no setting {k!r}")
+                raise coded("EX803", AttributeError(f"expex.config has no setting {k!r}"))
         return _Scoped(self, changes)
 
     def __repr__(self) -> str:
@@ -184,6 +187,9 @@ class Fn(Generic[P, R]):
     matching the arguments (and afterwards the result) against the annotations.
     """
 
+    #: ``@expex.fn(compute=...)``: the dtype the body computes in (see ``precision.py``).
+    compute: Any = None
+
     def __init__(
         self,
         raw: Callable[P, R],
@@ -271,7 +277,7 @@ class Fn(Generic[P, R]):
             try:
                 spec = parse(ann)
             except TypeError as e:
-                raise TypeError(f"{self.name}: bad annotation for `{name}`: {e}") from None
+                raise coded(code_of(e) or "EX401", TypeError(f"{self.name}: bad annotation for `{name}`: {e}")) from None
             if not spec.leafy and ann is not inspect.Parameter.empty and static_type(ann):
                 # `n: int`, `mode: str`, `cfg: Config`: configuration, not data
                 spec = StaticSpec(ann)
@@ -281,7 +287,7 @@ class Fn(Generic[P, R]):
         try:
             ret = parse(anns.get("return", inspect.Parameter.empty))
         except TypeError as e:
-            raise TypeError(f"{self.name}: bad return annotation: {e}") from None
+            raise coded(code_of(e) or "EX401", TypeError(f"{self.name}: bad return annotation: {e}")) from None
         self.ret: Spec = ret.replace_dims(derive) if self.defs else ret
 
         # Names in the raw signature (before derivation), for validation.
@@ -342,10 +348,10 @@ class Fn(Generic[P, R]):
         unknown = used - declared - set(self.defs) - set(self.static_names) - set(self.field_refs)
         maybe_method = self._owner is None and first in ("self", "cls")
         if unknown and not (maybe_method and not getattr(self, "_resolved", False)):
-            raise TypeError(
+            raise coded("EX402", TypeError(
                 f"{self.name}: {', '.join(sorted(unknown))} used in a size or a constraint is "
                 f"neither a size of the signature, nor an int parameter, nor a field of self."
-            )
+            ))
         self.input_names -= set(self.static_refs) | set(self.field_refs)
         self._avail = self.input_names | set(self.static_refs) | set(self.field_refs)
         #: Invariants of the structs among the inputs: the prover may assume them.
@@ -445,6 +451,10 @@ class Fn(Generic[P, R]):
         key: Any = None,
     ) -> Any:
         __tracebackhide__ = True
+        if config.compute is not None and self.compute is None:  # mixed precision, globally
+            from .precision import under_config
+
+            self = under_config(self)
         try:
             if self.random:
                 if key is None and "key" in self.params:
@@ -452,12 +462,12 @@ class Fn(Generic[P, R]):
                 if not isinstance(key, _BatchTracer) and any(
                     isinstance(x, _BatchTracer) for x in jax.tree.leaves((args, kwargs))
                 ):
-                    raise StageError(
+                    raise coded("EX223", StageError(
                         f"{self.name}() is being mapped with jax.vmap, but its random key is "
                         f"shared by the whole batch: every element would draw the same numbers.\n"
                         f"    - use {self.name}.vectorize(...), which gives each element its own key\n"
                         f"    - or split a key yourself and pass the keys: {self.name}(..., key=keys)"
-                    )
+                    ))
                 if key is None:
                     key = keys.fresh(f"{self.name}()")
                 with keys.child(key):
@@ -518,11 +528,11 @@ class Fn(Generic[P, R]):
             return
         if missing and leafy:
             what = "the result" if where == "return" else f"`{where}`"
-            raise TypeError(
+            raise coded("EX402", TypeError(
                 f"{self.name}: the annotation of {what} ({text}) uses "
                 f"{', '.join(sorted(missing))}, which is not defined. Sizes are type "
                 f"parameters (def f[T, D](...)), int parameters, or fields of self."
-            )
+            ))
 
     def _own_key(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
         """For a random function with its own ``key`` parameter: derive the implicit keys from it."""
@@ -568,11 +578,11 @@ class Fn(Generic[P, R]):
                 v = bound[name] if name in bound else self.params[name].default
                 v = _concrete_int(v)
                 if isinstance(v, Tracer):
-                    raise StageError(
+                    raise coded("EX202", StageError(
                         f"{self.name}(): `{name}` sets a size, so it must be known when the "
                         f"function is traced, but it is traced. Under jax.jit, mark it static: "
                         f"jax.jit(f, static_argnames=\"{name}\")."
-                    )
+                    ))
                 if isinstance(v, (int, np.integer)) and not isinstance(v, bool):
                     env.dims[name] = int(v)
                     env.origin[name] = f"the argument `{name}`"
@@ -648,11 +658,11 @@ class Fn(Generic[P, R]):
             v = bound[name] if name in bound else self.params[name].default
             v = _concrete_int(v)
             if isinstance(v, Tracer):
-                raise StageError(
+                raise coded("EX202", StageError(
                     f"{self.name}(): `{name}` sets a size, so it must be known when the "
                     f"function is traced, but it is traced. Under jax.jit, mark it static: "
                     f"jax.jit(f, static_argnames=\"{name}\")."
-                )
+                ))
             if isinstance(v, (int, np.integer)) and not isinstance(v, bool):
                 env.dims[name] = int(v)
                 env.origin[name] = f"the argument `{name}`"
@@ -694,10 +704,10 @@ class Fn(Generic[P, R]):
                 continue  # cannot be refuted for symbolic sizes
             if not ok:
                 binds = ", ".join(f"{n}={env.dims[n]}" for n in sorted(w.names))
-                raise ShapeError(
+                raise coded("EX104", ShapeError(
                     f"{self.name}(): constraint `{w}` is violated ({binds}).\n\n"
                     f"    {self.signature}\n    defined at {self.location}"
-                )
+                ))
 
     # ---------------------------------------------------------------- errors
 

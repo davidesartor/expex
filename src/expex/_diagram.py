@@ -87,7 +87,7 @@ from jax.core import Tracer
 
 from . import function as _fn
 from .annotations.dims import fmt_dim, short_dtype
-from .annotations.errors import ShapeError
+from .annotations.errors import ShapeError, coded
 from .annotations.spec import fn_fixed_sizes
 from .tools import cost as _cost
 from .tools.trace import sub_jaxprs
@@ -184,6 +184,45 @@ class _Hook:
         self.lifted: dict[int, bool] = {}
         self.error: dict[str, Any] | None = None
         self.top: Any = None  # the trace the root call's arguments belong to
+        self.leaves: dict[int, tuple[str, Any]] = {}  # id(array of a module) -> (its path, the array)
+        self.modules: list[tuple[str, Any]] = []  # (path, module) of the open method calls
+
+    def path(self, fn: Any, args: Any) -> str | None:
+        """The module a method is called on, by path from the root's (``blocks[*].attn``); None if unknown.
+
+        Found by the identity of its arrays, as ``debug.watch`` does. A layer
+        sliced out of a staged loop has new arrays: it is the one field (or list)
+        of its class in the enclosing module, and its own modules follow from it.
+        """
+        if next(iter(fn.params), None) != "self" or not args:
+            return None
+        me = args[0]
+        leaves = jax.tree_util.tree_flatten_with_path(me)[0]
+        rel = jax.tree_util.keystr(leaves[0][0]) if leaves else ""
+        known = self.leaves.get(id(leaves[0][1])) if leaves else None
+        if known is not None and known[0].endswith(rel) and known[1] is leaves[0][1]:
+            return known[0][: len(known[0]) - len(rel)].lstrip(".")
+        if not self.modules:
+            if self.depth:  # inside a plain function: no module to start from
+                return None
+            path = ""
+        else:
+            up, parent = self.modules[-1]
+            if up is None:
+                return None
+            names = []
+            for f in getattr(type(parent), "__dataclass_fields__", {}):
+                v = getattr(parent, f, None)
+                if type(v) is type(me):
+                    names.append(f)
+                elif isinstance(v, (list, tuple)) and v and all(type(x) is type(me) for x in v):
+                    names.append(f + "[*]")
+            if len(names) != 1:
+                return None
+            path = f"{up}.{names[0]}".lstrip(".")
+        for p, x in leaves:
+            self.leaves.setdefault(id(x), ((f".{path}" if path else "") + jax.tree_util.keystr(p), x))
+        return path
 
     def __call__(self, fn: Any, args: Any, kwargs: Any, run: Any) -> Any:
         self.uid += 1
@@ -211,8 +250,12 @@ class _Hook:
                 self.sources[fn.name] = textwrap.dedent(inspect.getsource(fn.raw))
             except (OSError, TypeError):
                 self.sources[fn.name] = ""
+        path = self.path(fn, args)
         self.calls[uid] = dict(name=_short(fn.name), sig=fn.signature, loc=fn.location,
-                               src=fn.name, ins=", ".join(ins), outs="")  # fmt: skip
+                               src=fn.name, ins=", ".join(ins), outs="", path=path)  # fmt: skip
+        method = path is not None or next(iter(fn.params), None) == "self"
+        if method:
+            self.modules.append((path, args[0] if args else None))
         batched = self.stop and any(isinstance(x, _fn._BatchTracer) for x in _arrays(list(bound.values())))
         self.lifted[uid] = batched and not (self.batched and self.batched[-1])
         self.open.append(uid)
@@ -235,6 +278,8 @@ class _Hook:
             self.depth -= 1
             self.open.pop()
             self.batched.pop()
+            if method:
+                self.modules.pop()
         self.calls[uid]["outs"] = _brief(out) or ""
         if top:
             with jax.named_scope("expex-out"):
@@ -1821,7 +1866,8 @@ def _page(m: dict[str, Any]) -> str:
     start = ",".join(map(str, sorted(_opened(m))))
     boxes = [dict(name=b["l"], k=b["k"], sig=b.get("sig", ""), loc=b.get("loc", ""), ins=b.get("ins", ""),
                   outs=b.get("outs", ""), src=b.get("src", ""), vectorize=b.get("vectorize", False),
-                  err=b.get("err", 0), t=b.get("t"), s=b.get("s"), n=b.get("n"), o=b.get("o", False))
+                  err=b.get("err", 0), t=b.get("t"), s=b.get("s"), n=b.get("n"), o=b.get("o", False),
+                  p=b["p"], path=b.get("path"))
              for b in m["boxes"]]  # fmt: skip
     data = dict(name=m["name"], start=start, depths=depths, svgs=svgs, clicks=clicks, boxes=boxes, sources=m["sources"],
                 timing=m.get("timing"), error=m.get("error"),
@@ -1885,10 +1931,10 @@ def _png(fig: "_Figure", path: Path, theme: str = "light", scale: float = 2.0) -
     try:
         import matplotlib  # noqa: F401
     except ImportError:
-        raise RuntimeError(
+        raise coded("EX708", RuntimeError(
             "saving a PNG needs a browser to draw the SVG (Playwright, or Chromium / Chrome on the PATH) "
             "or matplotlib; none was found. Save an .svg or .html instead."
-        ) from None
+        )) from None
     _png_matplotlib(fig, path, theme, scale)
 
 
@@ -2011,7 +2057,7 @@ class Diagram:
         path = Path(path)
         suffix = path.suffix.lower()
         if theme not in ("light", "dark"):
-            raise ValueError(f"theme is 'light' or 'dark', not {theme!r}")
+            raise coded("EX708", ValueError(f"theme is 'light' or 'dark', not {theme!r}"))
         if suffix == ".svg":
             path.write_text(self.svg, encoding="utf-8")
         elif suffix == ".png":
@@ -2019,7 +2065,7 @@ class Diagram:
         elif suffix in (".html", ".htm", ""):
             path.write_text(self.html(), encoding="utf-8")
         else:
-            raise ValueError(f"cannot save a diagram as {suffix!r}: use .svg, .png or .html")
+            raise coded("EX708", ValueError(f"cannot save a diagram as {suffix!r}: use .svg, .png or .html"))
         return path
 
     def _repr_html_(self) -> str:
@@ -2051,7 +2097,7 @@ def _draw(target: Any, depth: int, sizes: dict[str, Any]) -> Diagram:
         jaxpr, lists, hook = trace(given[0], aliases)
     for k in sizes:
         if k not in known | aliases:
-            raise TypeError(f"{f.name}: unknown size or parameter `{k}`")
+            raise coded("EX706", TypeError(f"{f.name}: unknown size or parameter `{k}`"))
     length = lambda x: "L" if lists and not given and x == 3 else fmt_dim(x)
     b = _Builder(hook, length)
     b.walk(jaxpr.jaxpr, -1, {})
@@ -2311,14 +2357,19 @@ def attach(fn: Any, e: BaseException, args: tuple[Any, ...], kwargs: dict[str, A
 class DiagramFn:
     """``expex.diagram``: draw a function from a symbolic trace; ``.timed`` and ``.explain`` use arguments."""
 
-    def __call__(self, target: Any, /, depth: int = 1, **sizes: Any) -> Diagram:
+    def __call__(self, target: Any, config: Any = None, /, depth: int = 1, **sizes: Any) -> Diagram:
         """Draw an ``@fn``, an unbound struct method or a bound one, without data.
 
         ``depth=1`` shows the calls ``target`` makes as nodes, ``depth=2`` opens
         those one level further, and so on. Keywords set sizes (``T=128``), static
         parameters (``heads=4``) and the length of lists of modules (``L=12`` or
-        ``blocks=12``), as for ``expex.cost``. See the module docstring.
+        ``blocks=12``), as for ``expex.cost``; ``config``, a config object, as
+        ``expex.cost`` takes it. See the module docstring.
         """
+        if config is not None:
+            from .modules import call_config
+
+            target, sizes = call_config(target, config, sizes, "expex.diagram")
         return _draw(target, depth, sizes)
 
     def timed(self, target: Any, /, *args: Any, **kwargs: Any) -> Diagram:
@@ -2342,7 +2393,7 @@ class DiagramFn:
         if isinstance(target, BaseException):
             d = getattr(target, "diagram", None)
             if not isinstance(d, Diagram):
-                raise ValueError("this error has no diagram: only a ShapeError leaving a typed call has one")
+                raise coded("EX708", ValueError("this error has no diagram: only a ShapeError leaving a typed call has one"))
             return d
         return _explain(target, args, kwargs)
 

@@ -13,8 +13,8 @@ what changes is how it is written:
   reshape/transpose chains
 - the image size is in the model's signature (`f32[GH * P, GW * Q, C]`), with
   the position embeddings laid out on the patch grid
-- per-token layers (norms, MLP) are written for one token and `.vectorize`d,
-  and so is the model, over a batch of images
+- per-token layers (norms, MLP) are written for one token, and the model for
+  one image: called on a sequence or a batch, they map over it
 - the loop over layers is a plain `for` (identical blocks: one `lax.scan`)
 
 The ViT models of the paper: a class token, no ResNet stem, no
@@ -103,8 +103,8 @@ class Block[D, H, K, F]:
     mlp: MLP[D, F]
 
     def __call__[T](self, x: f32[T, D]) -> f32[T, D]:
-        x = x + self.attn(self.attn_norm.vectorize(x))
-        return x + self.mlp.vectorize(self.mlp_norm.vectorize(x))
+        x = x + self.attn(self.attn_norm(x))
+        return x + self.mlp(self.mlp_norm(x))
 
 
 @expex.struct
@@ -115,7 +115,7 @@ class Encoder[D, H, K, F]:
     def __call__[T](self, x: f32[T, D]) -> f32[T, D]:
         for layer in self.layers:  # identical blocks: one lax.scan
             x = layer(x)
-        return self.norm.vectorize(x)
+        return self.norm(x)
 
 
 @expex.struct
@@ -148,12 +148,12 @@ if __name__ == "__main__":
 
     @jax.jit  # the model's call checks the images against its sizes
     def step(model: ViT, images: jax.Array, labels: jax.Array) -> tuple[ViT, jax.Array]:
-        loss, grads = jax.value_and_grad(lambda m: m.loss.vectorize(images, labels).mean())(model)
+        loss, grads = jax.value_and_grad(lambda m: m.loss(images, labels).mean())(model)
         return jax.tree.map(lambda p, g: p - 0.05 * g, model, grads), loss
 
     for i in range(5):
         model, loss = step(model, images, labels)
         print(f"step {i}: loss {float(loss):.4f}")
-    print("predicted", model.vectorize(images).argmax(-1))
+    print("predicted", model(images).argmax(-1))
     print()
     print(expex.prove(__import__("__main__")))

@@ -5,7 +5,7 @@ the search is `lax.fori_loop` over simulations around a `jax.vmap`ped
 `lax.while_loop` that walks down to a leaf and another that backs values up
 to the root, and choosing between the root and interior selection rules is a
 `lax.cond`. This port writes the same search for ONE tree, with plain Python,
-and batches it with `.vectorize`:
+and a call on a batch of roots maps over them:
 
 * `Tree[N, A, E]` holds N nodes with A actions and embeddings of width E;
 * `simulate` picks the root's action, then `while` the child is expanded
@@ -29,8 +29,8 @@ Trees, action weights and actions are identical to mctx's for the same keys
 * each tree's recurrent function gets its own key (`jr.split(key, B)` of
   mctx's key for the batch, which a batched model would use as a whole).
 
-    python examples/mctx/mctx.py            # search a small MDP, print one tree
-    python -m expex examples/mctx/mctx.py   # prove the shapes
+    python examples/mctx/search.py            # search a small MDP, print one tree
+    python -m expex examples/mctx/search.py   # prove the shapes
 """
 
 import functools
@@ -220,7 +220,7 @@ def search[S, A, E](
 
 @expex.fn
 def search_keys(key: Key, simulations: int) -> tuple[Key[simulations], Key[simulations]]:
-    """mctx's keys: three per simulation, (next, select, model). `.vectorize` splits each one per tree."""
+    """mctx's keys: three per simulation, (next, select, model). A call mapped over trees splits each one per tree."""
     select, model = [], []
     for _ in range(simulations):
         key, s, m = jr.split(key, 3)
@@ -374,19 +374,19 @@ class Policy[N, A, E]:
     search_tree: Tree[N, A, E]
 
 
-@expex.vectorize
+@expex.fn
 def mask_invalid[A](logits: f32[A], invalid: Bool[A]) -> f32[A]:
     """Invalid actions at the lowest finite logit, so a softmax gives them no mass and no NaN."""
     logits = logits - logits.max()
     return jnp.where(invalid, -expex.huge(logits), logits)
 
 
-@expex.vectorize
+@expex.fn
 def logits_of[A](probs: f32[A]) -> f32[A]:
     return jnp.log(jnp.maximum(probs, expex.tiny(probs)))
 
 
-@expex.vectorize
+@expex.fn
 def with_temperature[A](logits: f32[A], temperature: f32) -> f32[A]:
     """`logits / temperature`, also for temperature 0."""
     return (logits - logits.max()) / jnp.maximum(expex.tiny(logits), temperature)
@@ -419,7 +419,7 @@ def muzero_policy[B, A, E](
     else:
         invalid_actions = jnp.zeros((B, A), bool)
     select = functools.partial(muzero_action_selection, pb_c_init=pb_c_init, pb_c_base=pb_c_base, qtransform=qtransform)
-    trees = search.vectorize(
+    trees = search(
         params, *search_keys(search_key, num_simulations), root.replace(prior_logits=logits), recurrent_fn,
         functools.partial(select, depth=0), select, invalid_actions, jnp.zeros((B, A)), max_depth,
     )  # fmt: skip
@@ -455,11 +455,11 @@ def gumbel_muzero_policy[B, A, E](
         num_simulations=num_simulations, max_num_considered_actions=max_num_considered_actions, qtransform=qtransform,
     )  # fmt: skip
     select = functools.partial(gumbel_muzero_interior_action_selection, qtransform=qtransform)
-    trees = search.vectorize(
+    trees = search(
         params, *search_keys(key, num_simulations), root.replace(prior_logits=logits), recurrent_fn,
         select_root, select, invalid_actions, gumbel, max_depth,
     )  # fmt: skip
-    return gumbel_decision.vectorize(trees, qtransform)
+    return gumbel_decision(trees, qtransform)  # mapped over the trees
 
 
 @expex.fn
@@ -516,7 +516,7 @@ def random_mdp(key: Key, states: int, actions: int) -> MDP[states, actions]:
 
 if __name__ == "__main__":
     mdp = random_mdp(jr.key(0), 12, 4)
-    roots = mdp.root.vectorize(jnp.arange(8))
+    roots = mdp.root(jnp.arange(8))  # 8 roots: mapped over the states
     for policy in (muzero_policy, gumbel_muzero_policy):
         out = jax.jit(policy, static_argnums=(3, 4))(mdp, jr.key(1), roots, recurrent_fn, 32)
         print(f"{policy.__name__}: actions {out.action}, root visits of tree 0 {out.search_tree.children_visits[0, ROOT]}")

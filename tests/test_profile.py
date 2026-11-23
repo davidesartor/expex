@@ -2,6 +2,7 @@
 
 import importlib.util
 import pathlib
+import re
 import sys
 
 import jax.numpy as jnp
@@ -116,12 +117,15 @@ def test_sizes_give_numbers_and_shares():
 
 def test_html_is_self_contained(tmp_path):
     p = profile(recur, T=16, D=8)
-    page = p._repr_html_()
+    page = p.html()
     assert page.startswith("<!doctype html>") and "prefers-color-scheme:dark" in page
+    fragment = p._repr_html_()  # for notebooks: styles scoped to its own id, not the page's
+    assert fragment.startswith('<div class="txp" id="txp') and ":root{" not in fragment.split("</style>")[0].split("@media")[0]
     assert "http://" not in page and "https://" not in page  # no CDN
     assert "2·T·D²" in page and "\"loops\": [\"T\"]" in page
     path = p.save(str(tmp_path / "p.html"))
-    assert pathlib.Path(path).read_text(encoding="utf-8") == page
+    same = lambda t: re.sub(r"txp\d+", "txp", t)  # noqa: E731  (each rendering has its own id)
+    assert same(pathlib.Path(path).read_text(encoding="utf-8")) == same(page)
 
 
 def test_transformer_example():

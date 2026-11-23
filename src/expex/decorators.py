@@ -17,7 +17,8 @@ from typing import Any, Callable, overload
 
 import jax
 
-from . import keys
+from . import keys, precision
+from .annotations.errors import coded
 from .annotations.spec import StaticSpec
 from .function import REGISTRY, BoundCompiled, Fn, P, Param, R, unwrap
 
@@ -35,6 +36,7 @@ def fn(
     examples: dict[str, Any] | None = None,
     prove: bool = True,
     convert: bool = True,
+    compute: Any = None,
     **moved: Any,
 ) -> Callable[[Callable[P, R]], Fn[P, R]]: ...
 def fn(
@@ -49,6 +51,7 @@ def fn(
     examples: dict[str, Any] | None = None,
     prove: bool = True,
     convert: bool = True,
+    compute: Any = None,
     **moved: Any,
 ) -> Any:
     """Make a function's shape annotations real.
@@ -89,6 +92,13 @@ def fn(
         ``False`` leaves the function out of ``expex.prove`` and ``pytest --expex``.
     ``convert``
         ``False`` keeps Python control flow as it is (no rewriting).
+    ``compute``
+        Mixed precision: a float dtype (``jnp.bfloat16``) the body computes in.
+        Float arguments, struct fields included, are cast to it after they are
+        checked; float results are cast back to the dtype their annotation
+        declares, so annotations keep meaning the storage dtype. Integer and
+        bool arrays and keys are left alone. Overrides the struct's setting
+        (``@expex.struct(compute=...)``) and ``expex.config.compute``.
 
     Combine with :func:`vectorize`, :func:`random` and :func:`jit`, and with JAX's
     own transformations.
@@ -102,16 +112,20 @@ def fn(
         hint = hints.get(
             k, f"write the size in the annotation instead, e.g. -> f32[{v}] in place of {k}"
         )
-        raise TypeError(f"@expex.fn got {k}={v!r}: {hint}.")
+        raise coded("EX801", TypeError(f"@expex.fn got {k}={v!r}: {hint}."))
 
     def wrap(raw: Callable[..., Any]) -> Fn[Any, Any]:
         flags: dict[str, bool | None] = {}
+        own = compute
         if isinstance(raw, Fn):
             flags = {"random": raw.random, "auto_vectorize": raw.auto_vectorize}
+            own = raw.compute if own is None else own
             REGISTRY.discard(raw)
             raw = raw.raw
         out = Fn(raw, prove=prove, convert=convert, examples=examples)
         vars(out).update(flags)
+        if own is not None:
+            precision.install(out, own)
         if random:
             out.random = True
         if vectorize is not None:
@@ -123,7 +137,7 @@ def fn(
             how = donate if donate == "auto" else (donate,) if isinstance(donate, str) else tuple(donate)
             result = _jit(result, donate_argnames=how)
         elif donate:
-            raise TypeError("@expex.fn(donate=...) only applies with jit=True")
+            raise coded("EX801", TypeError("@expex.fn(donate=...) only applies with jit=True"))
         return result
 
     if f is not None:
@@ -136,16 +150,18 @@ def _flagged(f: Any, flag: str) -> Any:
         return type(f)(_flagged(f.__func__, flag))
     if not isinstance(f, Fn) and hasattr(f, "__wrapped__"):
         deco = "@expex.random" if flag == "random" else "@expex.vectorize"
-        raise TypeError(
+        raise coded("EX802", TypeError(
             f"{deco} must go under @jax.jit / @jax.checkpoint (inside it would be "
             f"compiled once and repeat): put it directly on the @expex.fn function, or use "
             f"@expex.jit, which handles random functions."
-        )
+        ))
     if isinstance(f, Fn):
         g = copy.copy(f)
         g.params = {k: Param(p.name, p.spec, p.kind, p.default) for k, p in f.params.items()}
         g._declared = set(f._declared)
         g.examples = dict(f.examples)
+        if g.compute is not None:  # the cast wraps the body of this copy, not of f
+            precision.install(g, g.compute)
         REGISTRY.discard(f)
     else:
         g = fn(f)
@@ -305,7 +321,7 @@ def remat(f: Any = None, /, *, policy: Any = None) -> Any:
 def _remat(f: Any, how: Any) -> Any:
     g: Any = unwrap(f)
     if isinstance(how, str) and how not in _POLICIES:
-        raise ValueError(f"remat must be True, a JAX policy or one of {sorted(_POLICIES)}, not {how!r}")
+        raise coded("EX801", ValueError(f"remat must be True, a JAX policy or one of {sorted(_POLICIES)}, not {how!r}"))
     policy = None if how is True else _POLICIES.get(how, how) if isinstance(how, str) else how
     static = set(static_argnames(g))
     sig = g._sig

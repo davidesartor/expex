@@ -146,12 +146,13 @@ class Watcher:
         return 1 if errors or any(r.status in FAILING for r in reports) else 0
 
     def _prove(self, f: Any) -> Any:
+        from ..annotations.errors import code_of
         from ..tools.prove import ERROR, Report, _summ, prove
 
         try:
             return prove(f)
         except Exception as e:  # a bug in a tool should not stop the watch
-            return Report(f, ERROR, f"the prover raised:\n    {_summ(e)}")
+            return Report(f, ERROR, f"the prover raised:\n    {_summ(e)}", code=code_of(e) or "EX704")
 
     # -- watching -------------------------------------------------------------
 

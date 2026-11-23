@@ -54,7 +54,7 @@ Transformer.__call__   (sizes: T=1024, D=512, F=2048, Vocab=32000, L=12)
    87 |     x = self.embed[tokens]                                f32[T,D]       3·T                           3.07 kFLOP   0.0%             2.11 MB
    88 |     for block in self.blocks:  # identical blocks: one …
    89 |         x = block(x)                                      f32[T,D]       ×L -                                       0.0%             calls 75.6%  277 MB
-   90 |     return self.norm.vectorize(x) @ self.unembed               f32[T,Vocab]   2·T·D·Vocab                   33.6 GFLOP  24.4% ██          131 MB
+   90 |     return self.norm(x) @ self.unembed                    f32[T,Vocab]   2·T·D·Vocab                   33.6 GFLOP  24.4% ██          131 MB
 
 ── MLP.__call__   transformer.py:63   self 37.7%
    64 |     return jax.nn.gelu(x @ self.w1) @ self.w2             f32[T,D]       ×L 4·T·D·F·L + 8·T·F·L        51.7 GFLOP  37.7% ████        931 MB
@@ -201,7 +201,7 @@ Probe.__call__   ShapeError: traced up to the failing call
 </picture>
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/transformer_error_dark.png">
-  <img src="images/transformer_error.png" alt="The transformer whose MLP is called without .vectorize: the failing call and the path into it in red">
+  <img src="images/transformer_error.png" alt="A transformer whose attention does not split the keys into heads: the call to Attention.causal that received keys of 24 × 32 where it declared k: f32[T, K], and the path into it, in red">
 </picture>
 
 - The profiler names XLA instructions, not Python calls. expex looks each one

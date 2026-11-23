@@ -135,13 +135,19 @@ class Profile:
                      "cs": self.share(ln.calls, self.flops), "loops": ln.loops, "shapes": ln.shapes[-4:],
                      "hot": bool(ln.flops.terms or ln.bytes.terms or ln.calls.terms)} for ln in s.lines]  # fmt: skip
             data["sections"].append({"name": s.name, "file": f"{_short(s.file)}:{s.lines[0].number}", "share": self.share(s.flops, self.flops), "bshare": self.share(sum((ln.bytes for ln in s.lines), Poly()), self.bytes), "rows": rows})  # fmt: skip
-        style = pages.tokens(":root", _LIGHT, _DARK) + _CSS
-        return pages.document(f"{self.name} profile", _BODY.replace("%DATA%", pages.data(data)), style)
+        uid = pages.uid("txp")
+        css = (pages.tokens("#ID", _LIGHT, _DARK) + _CSS).replace("#ID", "#" + uid)
+        script = _JS.replace("ID", pages.data(uid)).replace("%DATA%", pages.data(data))  # the id first: data may say ID
+        return f'<div class="txp" id="{uid}"><style>{css}</style>{_BODY}<script>{script}</script></div>'
+
+    def html(self) -> str:
+        """The page ``save`` writes: :meth:`_repr_html_` as a standalone document."""
+        return pages.document(f"{self.name} profile", self._repr_html_(), "body{padding:0}")
 
     def save(self, path: str) -> str:
         """Write the HTML page to ``path``; returns the path."""
         with open(path, "w", encoding="utf-8") as fh:
-            fh.write(self._repr_html_())
+            fh.write(self.html())
         return path
 
 
@@ -315,31 +321,31 @@ def profile(target: Any, /, **sizes: Any) -> Profile:
 
 _LIGHT = "--heat:255,110,40;--mem:40,120,255"
 _DARK = "--heat:255,120,60;--mem:90,150,255"
-_CSS = """*{box-sizing:border-box}body{margin:0;padding:0;background:var(--hd);color:var(--fg);font:14px/1.45 system-ui,sans-serif}
-main{max-width:1180px;margin:0 auto;padding:20px 16px 48px}h1{font-size:18px;margin:0 0 4px;overflow-wrap:anywhere}
-.meta{color:var(--mu);margin-bottom:14px;overflow-wrap:anywhere}.meta b{color:var(--fg)}
-.bar{display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
-button{font:inherit;border:1px solid var(--ln);background:var(--bg);color:var(--fg);padding:4px 12px;border-radius:6px;cursor:pointer}
-button[aria-pressed=true]{border-color:currentColor;font-weight:600}
-details{background:var(--bg);border:1px solid var(--ln);border-radius:8px;margin-bottom:12px;overflow:hidden}
-summary{padding:8px 12px;cursor:pointer;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
-summary .nm{font-weight:600;font-family:ui-monospace,monospace}summary .fl{color:var(--mu);font-size:12px}summary .pc{margin-left:auto;font-variant-numeric:tabular-nums}
-.code{overflow-x:auto;border-top:1px solid var(--ln)}
-.row{display:grid;grid-template-columns:3.2em minmax(28em,1fr) 17em;font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;min-width:min-content}
-.row>*{padding:0 8px;white-space:pre}.no{color:var(--mu);text-align:right;user-select:none}
-.src{background:rgba(var(--heat),var(--a,0))}.mem .src{background:rgba(var(--mem),var(--b,0))}
-#s:not(.mem) .vb,.mem .vf{display:none}.cost b{font-weight:500}.cost{color:var(--mu);text-align:right;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis}.hot .cost{color:var(--fg)}
-.loop{font-size:11px;border:1px solid var(--ln);border-radius:4px;padding:0 4px;margin-right:6px;color:var(--mu)}
-#tip{position:fixed;pointer-events:none;background:var(--tip);color:var(--tipfg);padding:8px 10px;border-radius:6px;font:12px/1.5 ui-monospace,monospace;max-width:min(520px,calc(100vw - 24px));white-space:pre-wrap;display:none;z-index:9}
-@media (max-width:700px){.row{grid-template-columns:2.6em minmax(24em,1fr) 10em}.cost .f{display:none}
-.cost{position:sticky;right:0;background:var(--bg);box-shadow:-6px 0 8px -6px rgba(0,0,0,.25)}}"""
-_BODY = """<main><h1 id="t"></h1><div class="meta" id="m"></div>
-<div class="bar"><span>Heat by</span><button id="bf" aria-pressed="true">FLOPs</button><button id="bm" aria-pressed="false">bytes written</button></div>
-<div id="s"></div></main><div id="tip"></div><script>
-const D=%DATA%,$=id=>document.getElementById(id),pct=x=>(100*x).toFixed(x<0.001?2:1)+"%";
-$("t").textContent=D.title;$("m").append("sizes: "+(D.sizes||"none")+" · total ",Object.assign(document.createElement("b"),{textContent:D.total[1]||D.total[0]})," · "+(D.bytes[1]||D.bytes[0])+" written · ↳ = in the functions called from the line");
+_CSS = """#ID{background:var(--hd);color:var(--fg);font:14px/1.45 system-ui,sans-serif;border-radius:8px}#ID *{box-sizing:border-box}
+#ID .pm{max-width:1180px;margin:0 auto;padding:20px 16px 48px}#ID h1{font-size:18px;margin:0 0 4px;overflow-wrap:anywhere}
+#ID .meta{color:var(--mu);margin-bottom:14px;overflow-wrap:anywhere}#ID .meta b{color:var(--fg)}
+#ID .bar{display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
+#ID button{font:inherit;border:1px solid var(--ln);background:var(--bg);color:var(--fg);padding:4px 12px;border-radius:6px;cursor:pointer}
+#ID button[aria-pressed=true]{border-color:currentColor;font-weight:600}
+#ID details{background:var(--bg);border:1px solid var(--ln);border-radius:8px;margin-bottom:12px;overflow:hidden}
+#ID summary{padding:8px 12px;cursor:pointer;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+#ID summary .nm{font-weight:600;font-family:ui-monospace,monospace}#ID summary .fl{color:var(--mu);font-size:12px}#ID summary .pc{margin-left:auto;font-variant-numeric:tabular-nums}
+#ID .code{overflow-x:auto;border-top:1px solid var(--ln)}
+#ID .row{display:grid;grid-template-columns:3.2em minmax(28em,1fr) 17em;font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;min-width:min-content}
+#ID .row>*{padding:0 8px;white-space:pre}#ID .no{color:var(--mu);text-align:right;user-select:none}
+#ID .src{background:rgba(var(--heat),var(--a,0))}#ID .mem .src{background:rgba(var(--mem),var(--b,0))}
+#ID .s:not(.mem) .vb,#ID .mem .vf{display:none}#ID .cost b{font-weight:500}#ID .cost{color:var(--mu);text-align:right;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis}#ID .hot .cost{color:var(--fg)}
+#ID .loop{font-size:11px;border:1px solid var(--ln);border-radius:4px;padding:0 4px;margin-right:6px;color:var(--mu)}
+#ID .tip{position:fixed;pointer-events:none;background:var(--tip);color:var(--tipfg);padding:8px 10px;border-radius:6px;font:12px/1.5 ui-monospace,monospace;max-width:min(520px,calc(100vw - 24px));white-space:pre-wrap;display:none;z-index:9}
+@media (max-width:700px){#ID .row{grid-template-columns:2.6em minmax(24em,1fr) 10em}#ID .cost .f{display:none}
+#ID .cost{position:sticky;right:0;background:var(--bg);box-shadow:-6px 0 8px -6px rgba(0,0,0,.25)}}"""
+_BODY = """<div class="pm"><h1 class="t"></h1><div class="meta"></div>
+<div class="bar"><span>Heat by</span><button class="bf" aria-pressed="true">FLOPs</button><button class="bm" aria-pressed="false">bytes written</button></div>
+<div class="s"></div></div><div class="tip"></div>"""
+_JS = """(()=>{const D=%DATA%,R=document.getElementById(ID),$=c=>R.querySelector("."+c),pct=x=>(100*x).toFixed(x<0.001?2:1)+"%";
+$("t").textContent=D.title;$("meta").append("sizes: "+(D.sizes||"none")+" · total ",Object.assign(document.createElement("b"),{textContent:D.total[1]||D.total[0]})," · "+(D.bytes[1]||D.bytes[0])+" written · ↳ = in the functions called from the line");
 const tip=$("tip"),root=$("s");let mf=Math.max(...D.sections.flatMap(s=>s.rows.map(r=>r.fs)),1e-9),mb=Math.max(...D.sections.flatMap(s=>s.rows.map(r=>r.bs)),1e-9);
-D.sections.forEach((s,i)=>{const d=document.createElement("details");d.open=i<4;const sm=document.createElement("summary");
+D.sections.forEach((s,i)=>{const d=document.createElement("details");d.open=i<4;d.dataset.name=s.name;const sm=document.createElement("summary");
  sm.innerHTML='<span class="nm"></span><span class="fl"></span><span class="pc"></span>';sm.children[0].textContent=s.name;sm.children[1].textContent=s.file;sm.children[2].innerHTML='<span class="vf"></span><span class="vb"></span>';sm.children[2].children[0].textContent=pct(s.share)+" of FLOPs";sm.children[2].children[1].textContent=pct(s.bshare)+" of bytes";
  const c=document.createElement("div");c.className="code";d.append(sm,c);
  s.rows.forEach(r=>{const e=document.createElement("div");e.className="row"+(r.hot?" hot":"");
@@ -357,5 +363,4 @@ root.addEventListener("pointermove",ev=>{const e=ev.target.closest(".row[data-ti
 root.addEventListener("pointerdown",ev=>{const e=ev.target.closest(".row[data-tip]");e&&show(e,ev.clientX,ev.clientY)});
 root.addEventListener("pointerleave",()=>tip.style.display="none");
 const mode=m=>{root.classList.toggle("mem",m);$("bf").setAttribute("aria-pressed",!m);$("bm").setAttribute("aria-pressed",m)};
-$("bf").onclick=()=>mode(false);$("bm").onclick=()=>mode(true);
-</script>"""
+$("bf").onclick=()=>mode(false);$("bm").onclick=()=>mode(true)})();"""

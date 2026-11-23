@@ -18,6 +18,8 @@ from typing import Any
 import jax.numpy as jnp
 import numpy as np
 
+from .annotations.errors import coded
+
 _LIMITS = {"eps": "eps", "tiny": "smallest_normal", "huge": "max"}
 
 
@@ -39,7 +41,7 @@ class Limit:
         else:
             dtype = jnp.result_type(like)  # a Python number: JAX's default float
         if not jnp.issubdtype(dtype, jnp.inexact):
-            raise TypeError(f"expex.{self.kind} needs a floating-point array, not one of dtype {dtype}")
+            raise coded("EX804", TypeError(f"expex.{self.kind} needs a floating-point array, not one of dtype {dtype}"))
         real = jnp.finfo(dtype)
         return np.asarray(getattr(real, _LIMITS[self.kind]) * self.scale, dtype=real.dtype)
 

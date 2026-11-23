@@ -11,6 +11,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from .errors import coded
+
 __all__ = [
     "Dim", "DType", "ArrayAnn", "StaticAnn", "KeyAnn",
     "Arr", "Bool", "Int", "UInt", "Float", "Complex", "Inexact", "Num",
@@ -59,7 +61,7 @@ class ArrayAnn:
 
     # Lets these objects sit inside typing constructs that insist on callables.
     def __call__(self, *a: Any, **k: Any) -> Any:
-        raise TypeError(f"{self!r} is an annotation, not a constructor")
+        raise coded("EX410", TypeError(f"{self!r} is an annotation, not a constructor"))
 
 
 def _item_repr(item: Any) -> str:
@@ -109,7 +111,7 @@ class DType:
         return Union[other, self]
 
     def __call__(self, *a: Any, **k: Any) -> Any:
-        raise TypeError(f"{self.name} is an annotation; use jnp.{self.example.name} to convert")
+        raise coded("EX410", TypeError(f"{self.name} is an annotation; use jnp.{self.example.name} to convert"))
 
 
 class StaticAnn:
@@ -134,7 +136,7 @@ class StaticAnn:
         return Union[other, self]
 
     def __call__(self, *a: Any, **k: Any) -> Any:
-        raise TypeError("Static[...] is an annotation")
+        raise coded("EX410", TypeError("Static[...] is an annotation"))
 
 
 class _StaticRuntime:
@@ -158,7 +160,7 @@ class BatchAnn:
         return f"Batch[{_item_repr(self.inner)}, {', '.join(map(_item_repr, self.items))}]"
 
     def __call__(self, *a: Any, **k: Any) -> Any:
-        raise TypeError("Batch[...] is an annotation")
+        raise coded("EX410", TypeError("Batch[...] is an annotation"))
 
     def __or__(self, other: Any) -> Any:
         from typing import Union
@@ -174,7 +176,7 @@ class BatchAnn:
 class _BatchRuntime:
     def __getitem__(self, args: Any) -> BatchAnn:
         if not isinstance(args, tuple) or len(args) < 2:
-            raise TypeError("use Batch[Type, Dim, ...], e.g. Batch[Transition, T]")
+            raise coded("EX401", TypeError("use Batch[Type, Dim, ...], e.g. Batch[Transition, T]"))
         return BatchAnn(args[0], tuple(args[1:]))
 
     def __repr__(self) -> str:
@@ -198,7 +200,7 @@ class KeyAnn:
         return "Key" + (f"[{', '.join(map(_item_repr, self.items))}]" if self.items else "")
 
     def __call__(self, *a: Any, **k: Any) -> Any:
-        raise TypeError("Key is an annotation; use jax.random.key(seed)")
+        raise coded("EX410", TypeError("Key is an annotation; use jax.random.key(seed)"))
 
     def __or__(self, other: Any) -> Any:
         from typing import Union

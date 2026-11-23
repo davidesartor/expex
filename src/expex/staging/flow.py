@@ -23,7 +23,7 @@ from jax import lax
 from jax.core import Tracer, eval_jaxpr
 
 from .. import keys
-from ..annotations.errors import StageError
+from ..annotations.errors import StageError, coded, strip_see
 
 #: site ("file:line") -> how the statement there was last executed.
 LOG: dict[str, str] = {}
@@ -36,7 +36,7 @@ class _Undefined:
         return "<undefined>"
 
     def __bool__(self) -> bool:
-        raise NameError("this variable is not defined on every path that reaches here")
+        raise coded("EX212", NameError("this variable is not defined on every path that reaches here"))
 
 
 UNDEF = _Undefined()
@@ -125,13 +125,13 @@ def _check_pred(pred: Any, what: str, site: str) -> None:
     if isinstance(pred, Tracer) or _is_arr(pred):
         shape = tuple(pred.shape)
         if shape != () and (isinstance(pred, Tracer) or pred.size != 1):
-            raise StageError(
+            raise coded("EX203", StageError(
                 f"the condition of the `{what}` at {site} is an array of shape {shape}, "
                 f"not a single True/False.\n"
                 f"    - to choose per element:      write the function for one element (x: f32): a call\n"
                 f"                                  on an array maps over it. Or jnp.where(cond, a, b)\n"
                 f"    - to test all/any elements:   cond.all()  /  cond.any()"
-            )
+            ))
 
 
 def _cond(
@@ -203,12 +203,12 @@ def _cond(
             # placeholder arrays get), since the other path must not read it
             out.append(m1[1] if m0[1] is UNDEF else m0[1])
         else:
-            raise StageError(
+            raise coded("EX204", StageError(
                 f"`{names[i]}` is set to different non-array values in the two branches of "
                 f"the traced `if` at {site}: {_desc(m0[1])} vs {_desc(m1[1])}.\n"
                 f"    A traced condition can only select between arrays of the same shape "
                 f"and dtype."
-            )
+            ))
     return tuple(out)
 
 
@@ -223,30 +223,30 @@ def _plan(recs: list[list[tuple[str, Any]]], names: tuple[str, ...], site: str) 
                 plan[i] = {"fill": _shapes(given)}
                 continue
             a, b = _desc(m0[1]), _desc(m1[1])
-            raise StageError(
+            raise coded("EX204", StageError(
                 f"`{names[i]}` is {a} in one branch of the traced `if` at {site} and {b} "
                 f"in the other.\n    Both branches must give it an array of the same shape "
                 f"and dtype."
-            )
+            ))
         if m0[0] == "dyn":
             t0: Any
             t1: Any
             l0, t0 = jax.tree.flatten(m0[1])
             l1, t1 = jax.tree.flatten(m1[1])
             if t0 != t1:
-                raise StageError(
+                raise coded("EX204", StageError(
                     f"`{names[i]}` has a different structure in the two branches of the "
                     f"traced `if` at {site}: {_desc(m0[1])} vs {_desc(m1[1])}."
-                )
+                ))
             casts = []
             change = False
             for v0, v1 in zip(l0, l1):
                 if jnp.shape(v0) != jnp.shape(v1):
-                    raise StageError(
+                    raise coded("EX204", StageError(
                         f"`{names[i]}` has shape {_desc(v0)} in one branch of the traced `if` "
                         f"at {site} and {_desc(v1)} in the other.\n    Both branches must "
                         f"give it the same shape and dtype."
-                    )
+                    ))
                 d0, d1 = jnp.result_type(v0), jnp.result_type(v1)
                 change = change or d0 != d1 or _weak(v0) != _weak(v1)
                 casts.append((jnp.result_type(_promotes_as(v0), _promotes_as(v1)), _weak(v0) and _weak(v1)))
@@ -323,17 +323,17 @@ def _guard_lists(state: tuple[Any, ...], names: tuple[str, ...], what: str, site
     lens = {i: len(v) for i, v in enumerate(state) if isinstance(v, list)}
     colls = [i for i, v in enumerate(state) if isinstance(v, _Collector)]
     if colls:
-        raise _CannotLower(f"`{names[colls[0]]}.append(...)` inside a traced `{what}`")
+        raise coded("EX205", _CannotLower(f"`{names[colls[0]]}.append(...)` inside a traced `{what}`"))
 
     def check(out: tuple[Any, ...]) -> None:
         for i, n in lens.items():
             if out[i] is state[i] and len(out[i]) != n:
-                raise StageError(
+                raise coded("EX205", StageError(
                     f"`{names[i]}.append(...)` runs inside the traced `{what}` at {site}, so "
                     f"the list's length would depend on data.\n"
                     f"    Append unconditionally and select the value instead: "
                     f"{names[i]}.append(jnp.where(cond, a, b))."
-                )
+                ))
 
     return check
 
@@ -469,7 +469,7 @@ def while_(
     try:
         check = _guard_lists(state, names, "while", site)
     except _CannotLower as e:
-        raise StageError(f"{e} at {site}: the number of iterations depends on data.") from None
+        raise coded("EX205", StageError(f"{strip_see(str(e))} at {site}: the number of iterations depends on data.")) from None
     need = [i for i, v in enumerate(state) if v is UNDEF and names[i] in live]
     if need:
         zeros = _probe(body_fn, state, need)
@@ -500,15 +500,15 @@ def while_(
                 continue
             if state[i] is UNDEF:
                 if names[i] in live and v is not UNDEF:
-                    raise StageError(
+                    raise coded("EX206", StageError(
                         f"`{names[i]}` is first assigned inside the traced `while` at {site} "
                         f"and used after it. Give it a value before the loop."
-                    )
+                    ))
             elif not _same_static(v, state[i]):
-                raise StageError(
+                raise coded("EX207", StageError(
                     f"`{names[i]}` ({_desc(state[i])}) changes inside the traced `while` at "
                     f"{site}; only arrays can change in a traced loop."
-                )
+                ))
         return n + 1, tuple(out[i] for i in dyn)
 
     LOG[site] = "while -> lax.while_loop"
@@ -553,11 +553,11 @@ class Stacked(Sequence):  # type: ignore[type-arg]
         try:
             return int(n)
         except Exception:
-            raise TypeError(
+            raise coded("EX210", TypeError(
                 f"the values collected by this loop number {n}, a size not known while "
                 f"proving: use jnp.asarray(ys) (or expex.stack(ys) for pytrees), which takes "
                 f"the stacked array as it is, rather than jnp.stack(ys)."
-            ) from None
+            )) from None
 
     def __getitem__(self, i: Any) -> Any:
         if isinstance(i, slice):

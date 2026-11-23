@@ -76,8 +76,8 @@ def compare(ref: dict) -> dict[str, float]:
     """Largest differences between the port and the original."""
     model = from_reference(ref)
     images, labels = jnp.asarray(ref["images"]), jnp.asarray(ref["labels"])
-    logits = jax.jit(lambda m, x: m.vectorize(x))(model, images)
-    loss, grads = jax.jit(jax.value_and_grad(lambda m: m.loss.vectorize(images, labels).mean()))(model)
+    logits = jax.jit(lambda m, x: m(x))(model, images)
+    loss, grads = jax.jit(jax.value_and_grad(lambda m: m.loss(images, labels).mean()))(model)
     g = gradients_by_reference_name(grads)
     names = {k[len("grad."):] for k in ref if k.startswith("grad.")}
     assert names == g.keys(), names ^ g.keys()  # every parameter compared

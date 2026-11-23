@@ -33,7 +33,7 @@ from jax import export
 
 from .. import keys
 from ..annotations.dims import DAny, DConst, DEllipsis, DExpr, DName, DVar, Env
-from ..annotations.errors import ShapeError, StageError
+from ..annotations.errors import ShapeError, StageError, coded
 from ..annotations.expr import divisibility, to_jax_constraint
 from ..annotations.spec import KeySpec, Spec, StaticSpec, Unsynthesizable, parse
 from ..function import BoundFn, Fn, unwrap
@@ -213,7 +213,7 @@ def choices(f: Fn[Any, Any], examples: dict[str, Any]) -> dict[str, list[Any]]:
     """For each parameter: ``[ABSTRACT]`` or the list of concrete values to try."""
     for k in examples:
         if k not in f.params:
-            raise TypeError(f"{f.name}: examples given for unknown parameter `{k}`")
+            raise coded("EX706", TypeError(f"{f.name}: examples given for unknown parameter `{k}`"))
     out: dict[str, list[Any]] = {}
     for name, p in f.params.items():
         if p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
@@ -459,7 +459,7 @@ def resolve(target: Any, sizes: dict[str, Any] | None = None, what: str = "trace
     target = unwrap(target)
     f: Fn[Any, Any] = target.fn if isinstance(target, BoundFn) else target
     if not isinstance(f, Fn):
-        raise TypeError(f"cannot {what} {target!r}: expected an @fn function or a struct method")
+        raise coded("EX705", TypeError(f"cannot {what} {target!r}: expected an @fn function or a struct method"))
     fixed: dict[str, Any] = {}
     if f._lazy:
         f._resolve_owner()
@@ -473,7 +473,7 @@ def resolve(target: Any, sizes: dict[str, Any] | None = None, what: str = "trace
     try:
         options = choices(f, {**f.examples, **static_kw, **fixed})
     except Unchecked as u:
-        raise TypeError(f"cannot {what} {f.name}: {u}") from None
+        raise coded("EX701", TypeError(f"cannot {what} {f.name}: {u}")) from None
     abstract = [a for a, c in options.items() if c == [ABSTRACT]]
     fixed = {a: c[0] for a, c in options.items() if a not in abstract}
     notes = [f"{a}={v!r} (choose with {a}=...)" for a, v in fixed.items()

@@ -22,7 +22,7 @@ from typing import Any, Iterator
 import jax.random as jr
 from jax.core import Tracer
 
-from .annotations.errors import StageError
+from .annotations.errors import StageError, coded
 
 try:  # private, but there is no public equivalent
     from jax._src.core import trace_state_clean as _clean
@@ -92,23 +92,23 @@ def fresh(what: str = "expex.key()") -> Any:
     ctx = current()
     if ctx is not None:
         if ctx.outside and tracing() and not isinstance(ctx.key, Tracer):
-            raise StageError(
+            raise coded("EX222", StageError(
                 f"{what} needs a key, but the key in scope was set outside this "
                 f"jit/vmap/grad, so inside it would be a constant: a compiled function "
                 f"would draw the same numbers on every call.\n"
                 f"    - pass the key to a @expex.random function:   f(x, key=key)\n"
                 f"    - or open the scope inside the transformed function:   with expex.rng(key): ..."
-            )
+            ))
         return ctx.next()
     if tracing():
-        raise StageError(
+        raise coded("EX221", StageError(
             f"{what} needs a key, but it is being traced (jit/vmap/grad/scan) with no key "
             f"in scope.\n"
             f"    The global key lives in Python, so inside a compiled function it would be "
             f"frozen into a constant and every call would draw the same numbers.\n"
             f"    - pass the key to a @expex.random function:   f(x, key=key)\n"
             f"    - or open a key scope inside the jitted function:   with expex.rng(key): ..."
-        )
+        ))
     if _state.root is None:
         _state.root = KeyCtx(jr.key(0))
     return _state.root.next()

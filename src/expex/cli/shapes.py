@@ -9,10 +9,12 @@ hints
     being its shape (``f32[B, T, D]``), and one per ``return`` (``-> f32[B, T]``).
     ``column`` / ``end_column`` span the name, or the returned expression.
 diagnostics
-    ``{file, line, column, end_column, severity, message}``: shape errors and
+    ``{file, line, column, end_column, severity, message, code}``: shape errors and
     proof failures (``error``), spot checks (``warning``) and functions the
     prover could not check (``information``), on the line where the error
-    happened when it is known, else on the ``def`` line.
+    happened when it is known, else on the ``def`` line. ``code`` is the error's
+    code (``"EX102"``; ``null`` when it has none, as for a syntax error) and
+    ``href`` the section of the guide that explains it, when there is a code.
 
 Lines are 1-based and columns 0-based, in characters. With ``--json``
 the output is one object ``{"hints": [...], "diagnostics": [...]}``; without,
@@ -128,8 +130,20 @@ def _error_line(file: str, f: Any, node: Any, err: BaseException | None, message
     return node.lineno
 
 
+def _diagnostic(file: str, line: int, col: int, end: int, severity: str, message: str, code: str | None) -> dict[str, Any]:
+    from ..annotations.errors import DOCS_URL, strip_see
+
+    # the link is in `href`, for the editor to show with the code
+    out: dict[str, Any] = {"file": file, "line": line, "column": col, "end_column": end,
+                           "severity": severity, "message": strip_see(message), "code": code}  # fmt: skip
+    if code:
+        out["href"] = f"{DOCS_URL}#{code.lower()}"
+    return out
+
+
 def analyse(path: str) -> FileShapes:
     """The hints and diagnostics of every typed function in the file at ``path``."""
+    from ..annotations.errors import code_of
     from ..debug import shapes
     from ..tools.prove import ERROR, FAILED, PROVED, Report, _summ, collect, import_target, prove
 
@@ -143,10 +157,7 @@ def analyse(path: str) -> FileShapes:
     except SyntaxError as e:
         line = e.lineno or 1
         col = max((e.offset or 1) - 1, 0)
-        out.diagnostics.append(
-            {"file": file, "line": line, "column": col, "end_column": col + 1,
-             "severity": "error", "message": f"SyntaxError: {e.msg}"}
-        )  # fmt: skip
+        out.diagnostics.append(_diagnostic(file, line, col, col + 1, "error", f"SyntaxError: {e.msg}", None))
         out.text.append(f"{shown}:{line}: SyntaxError: {e.msg}")
         return out
     src = text.splitlines()
@@ -161,9 +172,7 @@ def analyse(path: str) -> FileShapes:
         line = (frames[-1].lineno if frames else None) or 1
         col, end = _span(src, line)
         msg = f"cannot import the file: {_summ(e)}"
-        out.diagnostics.append(
-            {"file": file, "line": line, "column": col, "end_column": end, "severity": "error", "message": msg}
-        )
+        out.diagnostics.append(_diagnostic(file, line, col, end, "error", msg, code_of(e)))
         out.text.append(f"{shown}:{line}: {msg}")
         return out
 
@@ -177,7 +186,7 @@ def analyse(path: str) -> FileShapes:
         try:
             report = prove(f)
         except Exception as e:
-            report = Report(f, ERROR, f"the prover raised:\n    {_summ(e)}")
+            report = Report(f, ERROR, f"the prover raised:\n    {_summ(e)}", code=code_of(e) or "EX704")
         err: BaseException | None = None
         trace: Any
         try:
@@ -193,19 +202,20 @@ def analyse(path: str) -> FileShapes:
                     out.hints.append(h)
         if report.status == PROVED and err is None:
             continue
+        code = report.code
         if report.status == PROVED:  # proved, but shapes() could not run it
             severity, message = "warning", f"expex.debug.shapes: {_summ(err)}" if err else ""
+            code = code_of(err)
         else:
             severity = SEVERITY[report.status]
             message = "\n".join([report.detail, *report.notes]).strip()
             if report.status in (FAILED, ERROR) and not message and err is not None:
                 message = _summ(err)
+                code = code or code_of(err)
         line = _error_line(file, f, node, err, message)
         col, end = _span(src, line)
-        out.diagnostics.append(
-            {"file": file, "line": line, "column": col, "end_column": end,
-             "severity": severity, "message": f"{report.name}: {report.status}\n{message}".strip()}
-        )  # fmt: skip
+        message = f"{report.name}: {report.status}\n{message}".strip()
+        out.diagnostics.append(_diagnostic(file, line, col, end, severity, message, code))
         out.text.append(f"{shown}:{line}: {report}")
     out.hints.sort(key=lambda h: (h["line"], h["column"]))
     out.diagnostics.sort(key=lambda d: d["line"])

@@ -24,7 +24,7 @@ import numpy as np
 
 HERE = pathlib.Path(__file__).parent
 sys.path.insert(0, str(HERE))
-from mctx import MDP, gumbel_muzero_policy, muzero_policy, recurrent_fn  # noqa: E402
+from search import MDP, gumbel_muzero_policy, muzero_policy, recurrent_fn  # noqa: E402
 from run_original import CASES, TREE_FIELDS  # noqa: E402
 
 POLICIES = {"muzero": muzero_policy, "gumbel": gumbel_muzero_policy}
@@ -43,7 +43,7 @@ def run(name: str, mdp: MDP, starts, invalid, seed: int, jit: bool = True):
     f = POLICIES[policy]
 
     def go(mdp, key):
-        roots = mdp.root.vectorize(starts)
+        roots = mdp.root(starts)
         return f(mdp, key, roots, recurrent_fn, sims, invalid if masked else None, **kwargs)
 
     return (jax.jit(go) if jit else go)(mdp, jax.random.key(seed))
@@ -82,9 +82,9 @@ def one_tree(ref: dict, name: str, b: int):
     """Tree `b` of a case, searched alone by `search` as plain Python: no `vmap`, no `jit`.
 
     The root (its noisy, masked prior), the mask and the Gumbel noise are those
-    of the reference tree; the keys are those `.vectorize` gives tree `b`.
+    of the reference tree; the keys are those the batched call gives tree `b`.
     """
-    import mctx as port
+    import search as port
 
     policy, sims, kwargs, _ = CASES[name]
     t, key = f"{name}/tree/", jax.random.key(int(ref[f"{name}/seed"]))
@@ -113,14 +113,12 @@ def one_tree(ref: dict, name: str, b: int):
 
 @contextlib.contextmanager
 def original_mctx(path: str):
-    """The original package as `mctx`, for run_original's functions; the port's module is `mctx` too."""
-    port = sys.modules.pop("mctx")
+    """The original package, `mctx`, imported from `path` (for run_original's functions too)."""
     sys.path.insert(0, path)
     try:
         yield importlib.import_module("mctx")
     finally:
         sys.path.remove(path)
-        sys.modules["mctx"] = port
 
 
 def benchmark(path: str, ref: dict, batch: int, sims: int, rounds: int = 15) -> dict[str, dict[str, float]]:
@@ -147,7 +145,7 @@ def benchmark(path: str, ref: dict, batch: int, sims: int, rounds: int = 15) -> 
                 return f(params, key, root, run_original.recurrent_fn, sims, invalid_actions=invalid)
 
         def go_port(mdp, key):
-            roots = mdp.root.vectorize(starts)
+            roots = mdp.root(starts)
             return POLICIES[policy](mdp, key, roots, recurrent_fn, sims, invalid)
 
         key = jax.random.key(3)

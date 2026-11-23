@@ -14,7 +14,7 @@ import jax
 import numpy as np
 
 from .dims import Env, describe
-from .errors import Mismatch, ShapeError, StageError
+from .errors import Mismatch, ShapeError, StageError, coded, coded_note
 from .spec import ArraySpec, KeySpec
 
 if TYPE_CHECKING:
@@ -56,8 +56,12 @@ def error(f: Fn[Any, Any], m: Mismatch, role: str, env: Env, site: str = "") -> 
         text = linecache.getline(*_split_site(site)).strip()
         lines += ["", f"    at {site}" + (f"\n    > {text}" if text else "")]
     lines += ["", f"    {f.signature}", f"    defined at {f.location}"]
-    cls = StageError if getattr(m, "stage", False) else ShapeError
-    return cls("\n".join(lines))
+    if getattr(m, "stage", False):
+        return coded("EX202", StageError("\n".join(lines)))
+    return coded(_CODES[role], ShapeError("\n".join(lines)))
+
+
+_CODES = {"argument": "EX101", "return": "EX102", "local": "EX103"}
 
 
 def hint(f: Fn[Any, Any], m: Mismatch, role: str, env: Env) -> str:
@@ -141,18 +145,20 @@ def _size_hint(e: NameError, f: Fn[Any, Any], env: Env) -> None:
     setattr(e, "_expex_hint", True)
     if code is getattr(f._impl, "__code__", None) or code is getattr(raw, "__code__", None):
         why = f.convert_note or "it is not converted"
-        e.add_note(
+        coded_note(
+            "EX406", e,
             f"expex: {name} is a size of {f.name}(), declared in its annotations, but the body "
-            f"cannot use it by name because {why}."
-        )
+            f"cannot use it by name because {why}.",
+        )  # fmt: skip
         return
     helper = getattr(code, "co_qualname", code.co_name)
-    e.add_note(
+    coded_note(
+        "EX405", e,
         f"expex: {name} is a size of {f.name}(), but `{helper}` ({code.co_filename}:{tb.tb_lineno}) "
         f"is defined outside {f.name}(), so it does not see {f.name}()'s sizes.\n"
         f"    - define `{helper}` inside {f.name}(): a nested function sees the sizes of the call\n"
-        f"    - or decorate it with @expex.fn and annotate its arguments with {name}"
-    )
+        f"    - or decorate it with @expex.fn and annotate its arguments with {name}",
+    )  # fmt: skip
 
 
 def _is_np(dtype: Any) -> bool:
@@ -228,4 +234,4 @@ def _stage_hint(e: Exception, f: Fn[Any, Any]) -> None:
         "Static[...]"
         + (f" (array parameters of {f.name}: {', '.join(traced)})" if traced else "")
     )
-    e.add_note("\n".join(lines))
+    coded_note("EX201", e, "\n".join(lines))

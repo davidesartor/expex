@@ -71,7 +71,7 @@ def compare(ref: dict) -> dict[str, float]:
 
     pose, focal = jnp.asarray(ref["pose"]), float(ref["focal"])
     ys, xs = jnp.meshgrid(jnp.arange(SIDE, dtype=jnp.float32), jnp.arange(SIDE, dtype=jnp.float32), indexing="ij")
-    made = camera_ray.vectorize(pose, focal, xs.ravel(), ys.ravel(), SIDE, SIDE)
+    made = camera_ray(pose, focal, xs.ravel(), ys.ravel(), SIDE, SIDE)
     diffs["camera rays"] = max(float(np.abs(np.asarray(a) - np.asarray(b)).max()) for a, b in zip(made, rays))
     return diffs
 

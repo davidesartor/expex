@@ -65,8 +65,8 @@ def compare(ref: dict) -> dict[str, float]:
     """Largest differences between the port and the original."""
     model = from_reference(ref)
     tokens = jnp.asarray(ref["tokens"])
-    logits = jax.jit(lambda m, t: m.vectorize(t))(model, tokens)
-    loss, grads = jax.jit(jax.value_and_grad(lambda m, t: m.loss.vectorize(t).mean()))(model, tokens)
+    logits = jax.jit(lambda m, t: m(t))(model, tokens)
+    loss, grads = jax.jit(jax.value_and_grad(lambda m, t: m.loss(t).mean()))(model, tokens)
     n = ref["generated"].shape[1]
     generated = np.stack([np.asarray(model.generate(row[:PROMPT], n))[PROMPT:] for row in tokens])
     g = gradients_by_reference_name(grads)

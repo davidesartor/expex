@@ -11,7 +11,8 @@ player identical (checked in compare.py), and writes one game as one
 * the board is `i32[Rows, Cols]`, and a move is `board[row, col] = self.color`;
 * a win is counted by walking from the new stone with a `while` loop;
 * `if self.terminated:` / `if won:` instead of `lax.cond(..., lambda: ...)`;
-* a batch of games is `ConnectFour.new.vectorize(keys)` / `state.step.vectorize(actions)`.
+* a batch of games is `ConnectFour.new(keys)` (mapped over the keys), and
+  `state.step.vectorize(actions)` steps it (mapping over `self` is explicit).
 
 The walk only looks at the lines through the new stone, so on CPU a batch of
 games steps about 1.3x faster than with Pgx's table, but its eight `while`
@@ -126,7 +127,7 @@ def line_length(board: i32[Rows, Cols], row: i32, col: i32, dr: int, dc: int) ->
 def random_games(key: Key, games: int, moves: int) -> tuple[Batch[ConnectFour, games], f32[games, Players]]:
     """`games` games after `moves` uniformly random legal moves each, and each player's total reward."""
     key, start = jr.split(key)
-    state = ConnectFour.new.vectorize(jr.split(start, games))
+    state = ConnectFour.new(jr.split(start, games))
     returns = jnp.zeros((games, Players))
     for _ in range(moves):
         key, pick = jr.split(key)

@@ -16,6 +16,8 @@ import typing
 import weakref
 from typing import Any
 
+from .errors import coded
+
 _PRECEDENCE = {"+": 1, "-": 1, "*": 2, "//": 2, "%": 2}
 
 
@@ -74,7 +76,7 @@ class Sym:
         return self._op("%", o, True)
 
     def __call__(self, *a: Any) -> Any:  # lets typing accept it where it wants a type
-        raise TypeError("a size is not callable")
+        raise coded("EX410", TypeError("a size is not callable"))
 
     def __repr__(self) -> str:
         return self.src
@@ -271,17 +273,17 @@ def _scan(owner: str, anns: dict[str, str], glb: dict[str, Any]) -> dict[str, tu
                         size = None
                 if type(size) is not int or size < 0:
                     shown = ast.unparse(it)
-                    raise TypeError(
+                    raise coded("EX404", TypeError(
                         f"{owner}: `{shown}` in {where} declares the size {name}, but "
                         + ("its size is missing" if it.upper is None else "a size takes no step" if it.step is not None
                            else "its size is not an int known where it is declared")
                         + f". Write it as {name}:6 (a literal, or a global int)."
-                    )
+                    ))
                 if name in out and out[name][0] != size:
-                    raise TypeError(
+                    raise coded("EX404", TypeError(
                         f"{owner}: the size {name} is declared twice, with different values: "
                         f"{name}:{out[name][0]} in {out[name][1]}, and {name}:{size} in {where}."
-                    )
+                    ))
                 out.setdefault(name, (size, where))
     return out
 
@@ -289,10 +291,10 @@ def _scan(owner: str, anns: dict[str, str], glb: dict[str, Any]) -> dict[str, tu
 def _merge(owner: str, into: dict[str, tuple[int, str]], more: dict[str, tuple[int, str]], whose: str) -> None:
     for name, (size, where) in more.items():
         if name in into and into[name][0] != size:
-            raise TypeError(
+            raise coded("EX404", TypeError(
                 f"{owner}: the size {name} is declared twice, with different values: "
                 f"{name}:{into[name][0]} in {into[name][1]}, and {name}:{size} in {where} ({whose})."
-            )
+            ))
         into.setdefault(name, (size, where))
 
 
@@ -354,17 +356,17 @@ def _size(dim: type) -> int:
 def _not_params(owner: str, found: dict[str, tuple[int, str]], type_params: set[str], params: set[str]) -> None:
     for name, (size, where) in found.items():
         if name in type_params:
-            raise TypeError(
+            raise coded("EX404", TypeError(
                 f"{owner}: {name}:{size} in {where} declares {name} as a size fixed at {size}, "
                 f"but {name} is also a type parameter, a size bound by the arguments. "
                 f"Use one or the other: drop {name} from the type parameters, or write {name} "
                 f"without `:{size}`."
-            )
+            ))
         if name in params:
-            raise TypeError(
+            raise coded("EX404", TypeError(
                 f"{owner}: {name}:{size} in {where} declares the size {name}, but {name} is "
                 f"also a parameter. Rename one of them."
-            )
+            ))
 
 
 # A method's body may use its class's sizes, but the class does not exist yet

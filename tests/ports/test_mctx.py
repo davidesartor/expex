@@ -18,7 +18,7 @@ import expex
 
 ROOT = pathlib.Path(__file__).parent.parent.parent
 sys.path.insert(0, str(ROOT / "examples" / "mctx"))
-import mctx  # noqa: E402  (the port)
+import search  # noqa: E402  (the port)
 
 # several examples have a compare.py: load this one under its own name
 _spec = importlib.util.spec_from_file_location("mctx_compare", ROOT / "examples" / "mctx" / "compare.py")
@@ -62,9 +62,9 @@ def test_the_reference_covers_the_search():
 
 
 def test_the_search_is_staged_as_written(compiled):
-    assert set(mctx.Tree.simulate.flow.values()) == {"while -> lax.while_loop"}
-    assert set(mctx.Tree.backward.flow.values()) == {"while -> lax.while_loop"}
-    assert set(mctx.search.flow.values()) == {"for -> lax.scan (carries tree)", "if -> lax.cond"}
+    assert set(search.Tree.simulate.flow.values()) == {"while -> lax.while_loop"}
+    assert set(search.Tree.backward.flow.values()) == {"while -> lax.while_loop"}
+    assert set(search.search.flow.values()) == {"for -> lax.scan (carries tree)", "if -> lax.cond"}
 
 
 def test_eager_and_compiled_agree():
@@ -80,6 +80,6 @@ def test_eager_and_compiled_agree():
 
 
 def test_every_shape_is_proved():
-    reports = expex.prove(mctx)
+    reports = expex.prove(search)
     assert all(r.status == "proved" for r in reports), str(reports)
     assert len(reports) == 26

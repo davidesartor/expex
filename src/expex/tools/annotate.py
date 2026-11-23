@@ -33,6 +33,8 @@ import jax.numpy as jnp
 import numpy as np
 from jax.core import Tracer
 
+from ..annotations.errors import coded
+
 __all__ = ["annotate", "Annotation"]
 
 # ------------------------------------------------------------------ sizes as polynomials
@@ -782,7 +784,7 @@ class Annotation:
     def source(self) -> str:
         """The function's file as it would be after :meth:`apply`."""
         if self._src is None:
-            raise ValueError(f"no source file for {self.name}: annotate can only print its proposal")
+            raise coded("EX707", ValueError(f"no source file for {self.name}: annotate can only print its proposal"))
         return self._src.edited(self)
 
     def diff(self) -> str:
@@ -804,7 +806,7 @@ class Annotation:
         new = self.source()
         assert self._src is not None
         if self._src.path.read_text() != self._src.text:
-            raise RuntimeError(f"{self._src.path} changed since annotate read it; run annotate again")
+            raise coded("EX707", RuntimeError(f"{self._src.path} changed since annotate read it; run annotate again"))
         self._src.path.write_text(new)
         self._src.text = new
         return self._src.path
@@ -1114,7 +1116,7 @@ class _Annotator:
         if fn is not None and hasattr(fn, "__code__"):
             self.f = fn
         if not hasattr(self.f, "__code__"):
-            raise TypeError(f"annotate needs a Python function, got {f!r}")
+            raise coded("EX705", TypeError(f"annotate needs a Python function, got {f!r}"))
         self.sig = inspect.signature(self.f)
         self.bound = self.sig.bind(*args, **kwargs)
         self.vary = vary
@@ -1235,20 +1237,20 @@ class _Annotator:
                     continue
                 items = given.replace(",", " ").split() if isinstance(given, str) else list(given)
                 if len(items) != len(leaf.shape):
-                    raise ValueError(f"names for `{path}`: {len(items)} names for {len(leaf.shape)} axes {tuple(leaf.shape)}")
+                    raise coded("EX707", ValueError(f"names for `{path}`: {len(items)} names for {len(leaf.shape)} axes {tuple(leaf.shape)}"))
                 for ax, nm in enumerate(items):
                     if nm in ("_", "...", "", None):
                         continue
                     nm = str(nm)
                     if not nm.isidentifier() or keyword.iskeyword(nm):
-                        raise ValueError(f"names for `{path}`: `{nm}` is not a name")
+                        raise coded("EX707", ValueError(f"names for `{path}`: `{nm}` is not a name"))
                     g = self.group_at(li, ax)
                     if g is None:
                         continue
                     if assigned.get(g, nm) != nm:
-                        raise ValueError(
+                        raise coded("EX707", ValueError(
                             f"names for `{path}`: axis {ax} is the same size as {assigned[g]} (the dataflow joins them), not {nm}"
-                        )
+                        ))
                     assigned[g] = nm
                     if g not in by_name[nm]:
                         by_name[nm].append(g)
@@ -1258,7 +1260,7 @@ class _Annotator:
             for gs in merges:
                 for g in gs[1:]:
                     if self.gsize[g] != self.gsize[gs[0]]:
-                        raise ValueError(f"names: {assigned[g]} is both {self.gsize[gs[0]]} and {self.gsize[g]} in the example")
+                        raise coded("EX707", ValueError(f"names: {assigned[g]} is both {self.gsize[gs[0]]} and {self.gsize[g]} in the example"))
                     a, b = self.members[gs[0]][0], self.members[g][0]
                     self.flow.union(self.inputs[a[0]][a[1]], self.inputs[b[0]][b[1]])
             self.groups()

@@ -12,7 +12,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .errors import Mismatch
+from .errors import Mismatch, coded
 from .expr import Expr
 from .types import SHORT_NAMES, Dim
 
@@ -113,14 +113,14 @@ def parse_dim(item: Any, subst: dict[Any, Any]) -> Any:
             return subst[inner]
         if isinstance(inner, typing.TypeVarTuple):
             return DVar(inner.__name__)
-        raise TypeError(f"cannot unpack {inner!r} in a shape")
+        raise coded("EX401", TypeError(f"cannot unpack {inner!r} in a shape"))
     if type(item) is int:
         return DConst(item)
     if origin is typing.Literal:
         args = typing.get_args(item)
         if len(args) == 1 and type(args[0]) is int:
             return DConst(args[0])
-        raise TypeError(f"{item!r} is not a valid dimension; use Literal[<int>]")
+        raise coded("EX401", TypeError(f"{item!r} is not a valid dimension; use Literal[<int>]"))
     if isinstance(item, typing.TypeAliasType):
         d = parse_dim(item.__value__, subst)
         if isinstance(d, DConst) and d.label is None:
@@ -141,20 +141,20 @@ def parse_dim(item: Any, subst: dict[Any, Any]) -> Any:
             and item.stop == start.size and item.step is None
         ):  # fmt: skip
             return DConst(start.size, start.__name__)
-        raise DimError(
+        raise coded("EX401", DimError(
             f"{_slice_src(item)} is not a valid dimension. To declare a fixed size by name, "
             f"write Name:size, e.g. f32[R:6, 7]."
-        )
+        ))
     if isinstance(item, str):
-        raise DimError(
+        raise coded("EX401", DimError(
             f"{item!r}: sizes are type parameters, not strings. Declare them in the "
             f"signature (def f[T](...)) and compute with them directly: f32[T + 1] "
             f"(annotations are evaluated lazily, so this works as written)."
-        )
-    raise DimError(
+        ))
+    raise coded("EX401", DimError(
         f"{item!r} is not a valid dimension. Use a type parameter, Literal[n], "
         f"a Dim subclass, Any or `...`."
-    )
+    ))
 
 
 def _slice_src(s: slice) -> str:
@@ -184,7 +184,7 @@ def _parse_dims(items: tuple[Any, ...], subst: dict[Any, Any]) -> tuple[tuple[An
             dims.append(d)
     var = [i for i, d in enumerate(dims) if isinstance(d, (DVar, DEllipsis))]
     if len(var) > 1:
-        raise TypeError("a shape can contain at most one variadic (*Name or ...)")
+        raise coded("EX401", TypeError("a shape can contain at most one variadic (*Name or ...)"))
     return tuple(dims), (var[0] if var else None)
 
 

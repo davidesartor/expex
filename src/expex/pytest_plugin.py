@@ -37,7 +37,9 @@ class ProofItem(pytest.Item):
 
         report = prove(self.fn)
         if report.status in (FAILED, ERROR):
-            raise ProofFailed(str(report))
+            err = ProofFailed(str(report))
+            err.code = report.code  # type: ignore[attr-defined]
+            raise err
         if report.status == UNCHECKED:
             pytest.skip(report.detail)
         if report.status == SPOT:

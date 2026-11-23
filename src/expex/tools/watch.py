@@ -63,6 +63,7 @@ from jax.custom_batching import custom_vmap
 
 from .. import function
 from ..annotations.dims import fmt_dim, short_dtype
+from ..annotations.errors import coded
 from . import pages
 
 @dataclass
@@ -252,7 +253,7 @@ _STATS = ("mean", "std", "absmax", "rms")
 class Watch:
     """The rows of :func:`watch`. ``str()`` is a text table, ``save(path)`` / notebooks a page."""
 
-    def __init__(self, name: str, loss: float, aux: Any, rows: list[Row], options: dict[str, Any]):
+    def __init__(self, name: str, loss: float | None, aux: Any, rows: list[Row], options: dict[str, Any]):
         self.name, self.loss, self.aux, self.options = name, loss, aux, options
         self.rows = rows  #: one :class:`Row` per call, in call order
 
@@ -266,7 +267,8 @@ class Watch:
         return [r.shape, f"{r.count:,}", *(_num(r.out[k]) for k in _STATS), "", _bad(r.out), *g, "", _bad(r.grad)]
 
     def _title(self) -> str:
-        return (f"watch {self.name}: loss {self.loss:.6g}, {len(self.rows)} calls, {len(self.flagged)} flagged  "
+        loss = "forward only" if self.loss is None else f"loss {self.loss:.6g}"  # None: built by expex.inspect from a call
+        return (f"watch {self.name}: {loss}, {len(self.rows)} calls, {len(self.flagged)} flagged  "
                 f"({', '.join(f'{k}={v}' for k, v in self.options.items())})")  # fmt: skip
 
     def __str__(self) -> str:
@@ -316,7 +318,8 @@ class Watch:
             cells = [html.escape(c) for c in self._cells(r)]
             cells[6], cells[12] = spark(r, "out"), spark(r, "grad")
             body.append(
-                "<tr " + " ".join(f'data-{k}="{v}"' for k, v in data.items()) + (' class="flag">' if r.flags else ">")
+                "<tr " + " ".join(f'data-{k}="{v}"' for k, v in data.items())
+                + (f' data-path="{html.escape(r.path)}"' if r.path is not None else "") + (' class="flag">' if r.flags else ">")
                 + f'<td class="m" style="--d:{r.depth}" title="{html.escape(r.name)}">{pages.toggle(kids)}{html.escape(label)}</td>'
                 + "".join(f'<td class="{c[1]}">{x}</td>' for c, x in zip(_COLS[1:], cells))
                 + '<td class="f">' + "".join(f'<span title="{html.escape(f)}">{f.split(":")[0]}</span>' for f in r.flags)
@@ -376,7 +379,7 @@ def watch(
         out = loss_fn(*a, **k)
         loss, aux = out if isinstance(out, tuple) else (out, None)
         if jnp.shape(loss) != () or not jnp.issubdtype(jnp.result_type(loss), jnp.floating):
-            raise TypeError(f"watch: {fname} must return a float scalar loss, or (loss, aux); it returned {_brief(loss) or type(loss).__name__}")  # fmt: skip
+            raise coded("EX705", TypeError(f"watch: {fname} must return a float scalar loss, or (loss, aux); it returned {_brief(loss) or type(loss).__name__}"))  # fmt: skip
         return loss, aux
 
     jax.clear_caches()  # functions jitted earlier must be traced again, with the hook

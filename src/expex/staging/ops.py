@@ -15,6 +15,7 @@ import numpy as np
 from jax.core import Tracer
 
 from .. import keys
+from ..annotations.errors import coded
 from .flow import (
     _NUM,
     _PATH,
@@ -124,11 +125,11 @@ def _leaf(v: Any) -> bool:
 
 def _no_mutation(obj: Any, what: str) -> None:
     if _STAGE.depth:
-        raise _CannotLower(
+        raise coded("EX209", _CannotLower(
             f"{what} on a {type(obj).__name__} inside traced control flow: the update "
             f"would happen once while tracing, not once per iteration or branch. "
             f"Use a JAX array (updated functionally) or move it out of the traced code"
-        )
+        ))
 
 
 _IOP = {

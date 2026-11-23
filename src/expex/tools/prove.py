@@ -25,7 +25,7 @@ from typing import Any, Iterable, overload
 import jax
 from jax import export
 
-from ..annotations.errors import ShapeError, StageError
+from ..annotations.errors import ShapeError, StageError, code_of, coded, see
 from ..annotations.expr import Expr
 from ..annotations.spec import Unsynthesizable
 from ..function import REGISTRY, BoundFn, Fn, unwrap
@@ -51,6 +51,8 @@ class Report:
     detail: str = ""
     cases: int = 0
     notes: list[str] = field(default_factory=list)
+    #: The code of what went wrong (``EX102``, ``EX702``), the section of ``docs/errors.md`` on it.
+    code: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -62,9 +64,19 @@ class Report:
         mod = getattr(self.fn.raw, "__module__", None)
         return f"{mod}.{self.fn.name}" if mod else self.fn.name
 
+    def _repr_html_(self) -> str:
+        from .display import reports_html
+
+        return reports_html([self])
+
+    def _repr_pretty_(self, p: Any, cycle: bool) -> None:
+        p.text(str(self))
+
     def raise_if_failed(self) -> None:
         if self.status in (FAILED, ERROR):
-            raise AssertionError(str(self))
+            err = AssertionError(str(self))
+            err.code = self.code  # type: ignore[attr-defined]
+            raise err
 
     def __str__(self) -> str:
         head = f"{self.name}: {self.status}"
@@ -76,6 +88,8 @@ class Report:
             out.append(_indent(self.detail))
         for note in self.notes:
             out.append(_indent(note))
+        if self.code and self.status != PROVED and see(self.code) not in self.detail:
+            out.append(_indent(see(self.code).strip()))
         return "\n".join(out)
 
 
@@ -175,7 +189,7 @@ def collect(target: Any) -> list[Fn[Any, Any]]:
     if isinstance(target, str):
         target = importlib.import_module(target)
     if not isinstance(target, types.ModuleType):
-        raise TypeError(f"cannot prove {target!r}: expected an @fn function, a module or a name")
+        raise coded("EX705", TypeError(f"cannot prove {target!r}: expected an @fn function, a module or a name"))
     prefix = target.__name__
     if hasattr(target, "__path__"):
         for info in pkgutil.walk_packages(target.__path__, prefix + "."):
@@ -209,7 +223,7 @@ def _prove_fn(f: Fn[Any, Any], examples: dict[str, Any] | None) -> Report:
     try:
         choices = trace.choices(f, ex)
     except trace.Unchecked as u:
-        return Report(f, UNCHECKED, str(u))
+        return Report(f, UNCHECKED, str(u), code="EX701")
 
     abstract = [n for n, c in choices.items() if c == [trace.ABSTRACT]]
     fixed_names = [n for n in choices if n not in abstract]
@@ -240,7 +254,7 @@ def _prove_fn(f: Fn[Any, Any], examples: dict[str, Any] | None) -> Report:
             if r.status == FAILED:
                 break
     if skipped == len(cases):
-        return Report(f, UNCHECKED, "no combination of the values tried satisfies the leading asserts.")
+        return Report(f, UNCHECKED, "no combination of the values tried satisfies the leading asserts.", code="EX703")
     worst.cases = len(cases) - skipped
     if dropped and worst.status == PROVED:
         worst.notes.append(
@@ -315,7 +329,7 @@ def _prove_case(
         return Report(
             f, UNCHECKED,
             f"the prover cannot invent a value for `{u}`. "
-            f"Add @fn(examples={{...}}) for that parameter.",
+            f"Add @fn(examples={{...}}) for that parameter.", code="EX701",
         )  # fmt: skip
     unproven = _unproven_reshapes(jaxpr) if jaxpr is not None else []
 
@@ -338,8 +352,8 @@ def _prove_case(
             continue
         at = _at(ctx.sizes)
         if isinstance(err, (ShapeError, StageError)):
-            detail = _full(sym_err) if isinstance(sym_err, ShapeError) else _full(err)
-            return Report(f, FAILED, detail, notes=[f"confirmed at sizes {at}."])
+            shown = sym_err if isinstance(sym_err, ShapeError) else err
+            return Report(f, FAILED, _full(shown), notes=[f"confirmed at sizes {at}."], code=code_of(shown))
         hint = ""
         if sym_err is None:
             hint = (
@@ -349,13 +363,13 @@ def _prove_case(
         return Report(
             f, ERROR,
             f"the function raised while being traced on abstract inputs ({at}):\n"
-            + _indent(_summ(err, 12)) + _expex_notes(err) + hint,
+            + _indent(_summ(err, 12)) + _expex_notes(err) + hint, code=code_of(err) or "EX704",
         )  # fmt: skip
 
     if not used:
         why = f"\nsymbolic trace failed with: {_summ(sym_err)}" if sym_err else ""
         return Report(
-            f, UNCHECKED, "could not find sizes satisfying the `where` constraints." + why
+            f, UNCHECKED, "could not find sizes satisfying the `where` constraints." + why, code="EX703"
         )
     if sym_err is None and not unproven:
         return Report(f, PROVED)
@@ -363,7 +377,7 @@ def _prove_case(
     reason = _summ(sym_err) if sym_err is not None else "\n".join(unproven)
     return Report(
         f, SPOT,
-        f"holds at sizes {at}, but could not be proved for all sizes:\n" + _indent(reason),
+        f"holds at sizes {at}, but could not be proved for all sizes:\n" + _indent(reason), code="EX702",
     )  # fmt: skip
 
 
@@ -378,6 +392,14 @@ class Reports(list):  # type: ignore[type-arg]
         return format_reports(self)
 
     __repr__ = __str__
+
+    def _repr_html_(self) -> str:
+        from .display import reports_html
+
+        return reports_html(self)
+
+    def _repr_pretty_(self, p: Any, cycle: bool) -> None:
+        p.text(str(self))
 
 
 def format_reports(reports: list[Report], verbose: bool = False) -> str:

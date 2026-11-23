@@ -1,5 +1,7 @@
 # Command line and editors
 
+[← Reference](reference.md) · [Contents](README.md) · [Porting JAX code →](porting.md)
+
 The prover and `expex.debug.shapes` from a terminal, while you edit, and in
 your editor. None of it needs example data.
 
@@ -95,13 +97,15 @@ model.py:15: model.pool: error
     the function raised while being traced on abstract inputs (D=2, T=3):
         TypeError: dot_general requires contracting dimensions to have the same shape, got (3,) and (2,).
         expex: in pool(x: f32[3, 2])  [T=3, D=2]
+    see https://github.com/davidesartor/expex/blob/main/docs/errors.md#ex704
 ```
 
 With `--json` the same is data for an editor: one hint per assigned name (its
 shape) and per `return` (`-> ` and its shape), spanning the name or the returned
 expression; and one diagnostic per failure, on the line where it happened (else
 on the `def` line), with severity `error` for failures, `warning` for spot
-checks and `information` for functions that could not be checked. Lines count
+checks and `information` for functions that could not be checked. Each diagnostic
+has the `code` of its error ([errors](errors.md)) and `href`, the link to its section. Lines count
 from 1 and columns (in characters) from 0; `file` is the absolute path. The command exits with 1
 when there is an error, and the file's own output goes to stderr.
 
@@ -115,7 +119,7 @@ python -m expex shapes model.py --json
   {"file": "/path/to/model.py", "line": 9, "column": 11, "end_column": 42, "text": "-> f32[B, T, T]"},
   {"file": "/path/to/model.py", "line": 14, "column": 4, "end_column": 11, "text": "f32[T]"}
 ], "diagnostics": [
-  {"file": "/path/to/model.py", "line": 15, "column": 4, "end_column": 26, "severity": "error", "message": "model.pool: error\nthe function raised while being traced on abstract inputs (D=2, T=3):\n    TypeError: dot_general requires contracting dimensions to have the same shape, got (3,) and (2,).\n    expex: in pool(x: f32[3, 2])  [T=3, D=2]"}
+  {"file": "/path/to/model.py", "line": 15, "column": 4, "end_column": 26, "severity": "error", "message": "model.pool: error\nthe function raised while being traced on abstract inputs (D=2, T=3):\n    TypeError: dot_general requires contracting dimensions to have the same shape, got (3,) and (2,).\n    expex: in pool(x: f32[3, 2])  [T=3, D=2]", "code": "EX704", "href": "https://github.com/davidesartor/expex/blob/main/docs/errors.md#ex704"}
 ]}
 ```
 
@@ -129,4 +133,4 @@ install it from source.
 
 ---
 
-[← Reference](reference.md) · [Contents](README.md)
+[← Reference](reference.md) · [Contents](README.md) · [Porting JAX code →](porting.md)

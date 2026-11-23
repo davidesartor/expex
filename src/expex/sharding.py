@@ -27,6 +27,7 @@ import jax
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
 from .annotations.dims import DConst, DName
+from .annotations.errors import coded
 from .annotations.spec import ArraySpec, KeySpec, Spec, _struct_fields, parse, parse_owner
 from .annotations.types import ArrayAnn, DType
 from .decorators import fn, static_argnames
@@ -50,13 +51,13 @@ def shardings(tree: Any, mesh: Mesh, /, *, annotation: Any = None, **names: Any)
     if isinstance(tree, (ArrayAnn, DType)):
         spec: Any = parse(tree)
         if spec.var_index is not None:
-            raise TypeError(f"{spec}: a variadic shape needs a value to know its rank")
+            raise coded("EX603", TypeError(f"{spec}: a variadic shape needs a value to know its rank"))
         return NamedSharding(mesh, _partition(spec, None, names, mesh, "annotation"))
     if isinstance(tree, type):
-        raise TypeError(
+        raise coded("EX603", TypeError(
             f"expex.shardings needs a value, not the class {tree.__name__} (lists of layers have "
             f"no length yet). Pass jax.eval_shape(lambda: {tree.__name__}(...)) instead."
-        )
+        ))
     return _tree(tree, mesh, names, annotation, None)
 
 
@@ -113,10 +114,10 @@ def _check_names(mesh: Mesh, names: dict[str, Any]) -> dict[str, tuple[str, ...]
         axes = () if axes is None else (axes,) if isinstance(axes, str) else tuple(axes)
         for a in axes:
             if a not in mesh.axis_names:
-                raise ValueError(
+                raise coded("EX601", ValueError(
                     f"{size}={a!r}: the mesh has no axis {a!r} (its axes are "
                     f"{', '.join(map(repr, mesh.axis_names))})."
-                )
+                ))
         out[size] = axes
     return out
 
@@ -178,10 +179,10 @@ def _partition(
             n = math.prod(mesh.shape[a] for a in axes)
             if shape[axis] % n:
                 on = " x ".join(map(repr, axes))
-                raise ValueError(
+                raise coded("EX602", ValueError(
                     f"{path}: {spec} has {name} = {shape[axis]} on axis {axis}, which mesh "
                     f"axis {on} cannot split evenly ({n} devices do not divide {shape[axis]})."
-                )
+                ))
         out.append(axes[0] if len(axes) == 1 else axes)
     while out and out[-1] is None:
         out.pop()

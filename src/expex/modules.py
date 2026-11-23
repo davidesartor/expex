@@ -58,13 +58,14 @@ from jax.core import Tracer
 
 from .annotations import sym
 from .annotations.dims import DConst, DExpr, DName, Env, describe, resolve
-from .annotations.errors import Mismatch, ShapeError, StageError
+from .annotations.errors import Mismatch, ShapeError, StageError, coded
 from .annotations.spec import (
     ArraySpec, DictSpec, KeySpec, NoneSpec, SeqSpec, Spec, StaticSpec, StructSpec, TupleSpec,
     UnionSpec, _class_annotations, join, parse, parse_owner, rebuild, static_type,
 )  # fmt: skip
+from . import precision
 from .decorators import CompiledMethod, fn
-from .function import Fn, unwrap
+from .function import BoundFn, Fn, unwrap
 
 T = TypeVar("T", bound=type)
 M = TypeVar("M")
@@ -75,12 +76,17 @@ _SKIP = {"__init__", "__post_init__", "__repr__", "__eq__", "__hash__", "__init_
 @overload
 def struct(cls: T, /) -> T: ...
 @overload
-def struct(**moved: Any) -> Callable[[T], T]: ...
-def struct(cls: Any = None, /, **moved: Any) -> Any:
+def struct(*, compute: Any = None, **moved: Any) -> Callable[[T], T]: ...
+def struct(cls: Any = None, /, *, compute: Any = None, **moved: Any) -> Any:
     """Turn a class into a typed module. See the module docstring.
 
     Methods are wrapped with ``@expex.fn``; one already decorated (``@expex.fn(...)``,
     ``@expex.vectorize``, ``@expex.random``, ``@expex.jit``) keeps its own options.
+
+    ``compute`` (``jnp.bfloat16``) is mixed precision for the methods defined in
+    the class that do not set their own (``@expex.fn(compute=...)``): see
+    ``@expex.fn``. Modules called from them compute in the same dtype unless
+    they set another.
 
     A method's leading ``assert`` that only involves the class's sizes and
     fields, such as ``assert D % self.heads == 0``, is an invariant of the
@@ -88,11 +94,11 @@ def struct(cls: Any = None, /, **moved: Any) -> Any:
     assumed by every function that receives one (the prover does).
     """
     for k in moved:
-        raise TypeError(
+        raise coded("EX306", TypeError(
             f"@expex.struct got {k}=...: write invariants as an `assert` at the top of a "
             f"method instead, e.g. assert D % self.heads == 0."
-        )
-
+        ))
+    compute = precision.dtype_of(compute)
     localns = sym.caller_locals()
 
     def build(original: Any) -> Any:
@@ -126,18 +132,22 @@ def struct(cls: Any = None, /, **moved: Any) -> Any:
             inner = unwrap(value)
             if inner is not value and isinstance(inner, Fn):  # e.g. @jax.jit over @expex.fn
                 inner.__set_name__(cls, name)
+                if compute is not None and inner.compute is None:
+                    precision.install(inner, compute)
                 if hasattr(value, "vectorize") and wrapper is None:  # @expex.jit: bind .vectorize too
                     setattr(cls, name, CompiledMethod(value))
                 continue
             if inspect.isfunction(getattr(value, "__wrapped__", None)) and hasattr(value, "lower"):
-                raise TypeError(
+                raise coded("EX306", TypeError(
                     f"{cls.__name__}.{name} is jitted but not checked. Put @expex.fn under "
                     f"@jax.jit:\n\n    @jax.jit\n    @expex.fn\n    def {name}(self, ...): ..."
-                )
+                ))
             if not inspect.isfunction(value) and not isinstance(value, Fn):
                 continue
             method = value if isinstance(value, Fn) else fn(value)
             method.__set_name__(cls, name)
+            if compute is not None and method.compute is None:
+                precision.install(method, compute)
             setattr(cls, name, wrapper(method) if wrapper else method)
 
         if isinstance(unwrap(getattr(cls, "__call__", None)), Fn) and "vectorize" not in vars(cls):
@@ -155,13 +165,30 @@ def struct(cls: Any = None, /, **moved: Any) -> Any:
                 return rebuild(self, **changes)
 
             cls.replace = replace
+        if not hasattr(cls, "sizes") and "sizes" not in fields:
+            cls.sizes = _SIZES
+        if "_repr_html_" not in vars(cls):  # notebooks: a tree of the fields, built when displayed
+            cls._repr_html_, cls._repr_pretty_ = _repr_html, _repr_pretty
         cls.__expex_struct__ = True
+        cls.__expex_compute__ = compute
         cls.__expex_where__ = _invariants(cls)
         if not custom_init and not getattr(vars(cls).get("__init__"), "__expex_generated__", False):
             _constructor(cls)  # last: it reads the annotations of the finished class
         return cls
 
     return build(cls) if cls is not None else build
+
+
+def _repr_html(self: Any) -> str:
+    from .tools.display import struct_html
+
+    return struct_html(self)
+
+
+def _repr_pretty(self: Any, p: Any, cycle: bool) -> None:
+    from .tools.display import struct_text
+
+    p.text(f"{type(self).__name__}(...)" if cycle else struct_text(self))
 
 
 def _invariants(cls: Any) -> tuple[Any, ...]:
@@ -187,11 +214,11 @@ def _register(cls: Any, data: tuple[str, ...], meta: tuple[str, ...]) -> None:
         out = tuple(getattr(obj, n) for n in meta)
         for n, v in zip(meta, out):
             if any(isinstance(x, Tracer) for x in jax.tree.leaves(v)):
-                raise StageError(
+                raise coded("EX202", StageError(
                     f"{cls.__name__}.{n} is a static field (its annotation is a plain Python "
                     f"type), but it holds a traced value. Pass a Python value, or annotate "
                     f"the field with a dtype (f32, i32, ...) to make it an array."
-                )
+                ))
         return out
 
     def flatten_with_keys(obj: Any) -> Any:
@@ -235,7 +262,7 @@ def _wrap_init(cls: Any) -> None:
             else:
                 missing.append(f.name)
         if missing:
-            raise TypeError(f"{cls.__name__}.__init__ did not set {', '.join(missing)}")
+            raise coded("EX302", TypeError(f"{cls.__name__}.__init__ did not set {', '.join(missing)}"))
         unbuilt(cls, self)
         _check_new(cls, self)
 
@@ -266,12 +293,12 @@ def _check_new(cls: Any, obj: Any) -> None:
     except Mismatch as m:
         from .annotations.dims import describe
 
-        raise ShapeError(
+        raise coded("EX305", ShapeError(
             f"{cls.__name__}(): the constructed object does not match its annotations.\n\n"
             f"    declared  {m.path}: {m.spec}\n"
             f"    got       {describe(m.value)}\n\n"
             f"    {m.reason}"
-        ) from None
+        )) from None
 
 
 # ------------------------------------------------------------------ init
@@ -420,25 +447,33 @@ def _constructor(cls: Any) -> None:
         kw = {k: v for k, v in kw.items() if v is not _NOT_GIVEN}
         first = values[0] if values else _NOT_GIVEN
         if first is not _NOT_GIVEN and keyed(first):
+            who = f"{cls.__name__}(key, ...)"
+            config: Any = _NOT_GIVEN
+            if positional and len(values) == 2 and settings(values[1]) is not None:
+                config, values = values[1], values[:1]  # Cls(key, cfg)
             if positional and len(values) > 1:
-                raise TypeError(
+                raise coded("EX303", TypeError(
                     f"{cls.__name__}(key, ...): after the key, give sizes and fields by name, "
-                    f"e.g. {cls.__name__}(key, D=64)."
-                )
+                    f"e.g. {cls.__name__}(key, D=64), or a config: {cls.__name__}(key, cfg)."
+                ))
             kw.update({n: v for n, v in zip(names[1:], values[1:]) if v is not _NOT_GIVEN})
-            _build_root(cls, first, kw, f"{cls.__name__}(key, ...)", self)
+            if config is _NOT_GIVEN and names:
+                config = _config_slot(cls, names, kw)
+            if config is not _NOT_GIVEN:
+                kw = {**_from_config(cls, config, who), **kw}  # keywords override the config
+            _build_root(cls, first, kw, who, self)
             return
         given = {n: v for n, v in zip(names, values) if v is not _NOT_GIVEN}
         unknown = []
         for k, v in kw.items():
             if k in given:
-                raise TypeError(f"{cls.__name__}() got two values for field `{k}`.")
+                raise coded("EX303", TypeError(f"{cls.__name__}() got two values for field `{k}`."))
             if k in names:
                 given[k] = v
             else:
                 unknown.append(k)
         if unknown:
-            raise TypeError(_unexpected(cls, unknown))
+            raise coded("EX303", TypeError(_unexpected(cls, unknown)))
         missing = []
         for f in fields:
             if f.name in given:
@@ -450,7 +485,7 @@ def _constructor(cls: Any) -> None:
             else:
                 given[f.name] = f.default
         if missing:
-            raise TypeError(_not_given(cls, missing))
+            raise coded("EX302", TypeError(_not_given(cls, missing)))
         for n in names:
             object.__setattr__(self, n, given[n])
 
@@ -670,10 +705,10 @@ def unbuilt(cls: Any, obj: Any) -> None:
         if isinstance(getattr(obj, f.name, None), (Initializer, _Required))
     ]  # fmt: skip
     if left:
-        raise TypeError(_not_given(cls, left))
+        raise coded("EX302", TypeError(_not_given(cls, left)))
 
 
-def build[C](cls: type[C], key: Any, /, **given: Any) -> C:
+def build[C](cls: type[C], key: Any, config: Any = None, /, **given: Any) -> C:
     """Build ``cls`` from its annotations: ``expex.build(Stack, key, D=64, blocks=12)``.
 
     The same as ``Stack(key, D=64, blocks=12)``; for a class with its own
@@ -681,10 +716,374 @@ def build[C](cls: type[C], key: Any, /, **given: Any) -> C:
     (``D=64``, any size the class or a module in it uses), lengths of lists of
     modules by field name (``blocks=12``), and values of fields at any depth
     (``heads=4``, ``w=...``), which are taken instead of built.
+
+    ``config``: the same settings in a config object (a dict, a dataclass, a
+    class with annotated attributes, ...: see :func:`settings`); its other
+    entries (a learning rate, ...) are ignored. Keywords override it.
     """
     if not dataclasses.is_dataclass(cls):
-        raise TypeError(f"expex.build: {getattr(cls, '__name__', cls)!r} is not an @expex.struct class.")
-    return _build_root(cls, key, given, f"expex.build({cls.__name__}, key, ...)", None)
+        raise coded("EX306", TypeError(f"expex.build: {getattr(cls, '__name__', cls)!r} is not an @expex.struct class."))
+    who = f"expex.build({cls.__name__}, key, ...)"
+    if config is not None:
+        given = {**_from_config(cls, config, who), **given}
+    return _build_root(cls, key, given, who, None)
+
+
+# ------------------------------------------------------------------ configs
+
+
+class ConfigWarning(UserWarning):
+    """A config entry that is ignored but looks like a misspelt size or field (``haeds`` for ``heads``)."""
+
+
+def settings(config: Any) -> dict[str, Any] | None:
+    """The entries of a config object as a dict, or None if ``config`` is not one.
+
+    A config is a mapping (``dict``), a dataclass or ``NamedTuple`` instance, a
+    class whose attributes are the settings (``class Small: D: int = 64``),
+    an ``argparse.Namespace`` / ``SimpleNamespace``, or an object with
+    ``model_dump()`` (pydantic) or ``to_dict()`` (ml_collections).
+    """
+    import argparse
+    import types
+    from collections.abc import Mapping
+
+    if isinstance(config, Mapping):
+        return dict(config)
+    if isinstance(config, type):
+        if getattr(config, "__expex_struct__", False):
+            return None
+        out: dict[str, Any] = {}
+        for base in reversed(config.__mro__[:-1]):  # not object's
+            for name, v in vars(base).items():
+                if name.startswith("_") or isinstance(v, (staticmethod, classmethod, property)) or inspect.isfunction(v):
+                    continue
+                out[name] = v
+        if dataclasses.is_dataclass(config):  # fields with a default_factory are not class attributes
+            for f in dataclasses.fields(config):
+                if f.name not in out and f.default_factory is not dataclasses.MISSING:
+                    out[f.name] = f.default_factory()
+        return out
+    if getattr(type(config), "__expex_struct__", False):
+        return None
+    if dataclasses.is_dataclass(config):
+        return {f.name: getattr(config, f.name) for f in dataclasses.fields(config)}
+    if isinstance(config, tuple) and hasattr(config, "_asdict"):
+        return dict(config._asdict())
+    if isinstance(config, (argparse.Namespace, types.SimpleNamespace)):
+        return dict(vars(config))
+    for method in ("model_dump", "to_dict"):
+        if callable(dump := getattr(config, method, None)):
+            try:
+                out = dump()
+            except Exception:
+                continue
+            if isinstance(out, Mapping):
+                return dict(out)
+    return None
+
+
+def _from_config(cls: Any, config: Any, who: str, also: set[str] = frozenset()) -> dict[str, Any]:  # type: ignore[assignment]
+    """The entries of ``config`` that build ``cls``: its sizes and fields (``also``: more names to keep)."""
+    entries = settings(config)
+    if entries is None:
+        raise coded("EX303", TypeError(
+            f"{who}: expected a config (a dict, a dataclass, a NamedTuple, a class with the "
+            f"settings as attributes, ...), got {describe(config)}."
+        ))
+    sizes, fields, _ = _sizes_and_fields(cls)
+    known = sizes | fields | set(also)
+    _misspelt(entries, known, who)
+    return {k: v for k, v in entries.items() if k in known}
+
+
+def _misspelt(entries: dict[str, Any], known: set[str], who: str) -> None:
+    """Warn about ignored config entries named almost like a size or field (``haeds`` for ``heads``)."""
+    import warnings
+
+    for k in entries:
+        if not isinstance(k, str) or k in known:
+            continue
+        near = _near(k, known)
+        if near is not None and near not in entries:
+            warnings.warn(
+                f"{who}: the config's `{k}` is not a size or field, so it is ignored; did you mean "
+                f"`{near}`?",
+                ConfigWarning,
+                stacklevel=_user_level(),
+            )
+
+
+def _user_level() -> int:
+    """The ``stacklevel`` of the first caller outside expex (and its generated constructors)."""
+    import os
+    import sys
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    frame, level = sys._getframe(1), 1
+    while frame is not None and (frame.f_code.co_filename.startswith(here) or frame.f_code.co_filename == "<string>"):
+        frame, level = frame.f_back, level + 1
+    return level
+
+
+def _near(name: str, known: set[str]) -> str | None:
+    """A name in ``known`` that ``name`` looks like a misspelling of, if any.
+
+    The same but for case (``vocab``, ``Vocab``); otherwise an edit (an insertion,
+    a deletion, a substitution or two letters swapped) for names of three letters
+    or more, two for names longer than five. Short names such as ``lr`` are too
+    close to everything to tell.
+    """
+    low = name.lower()
+    for k in sorted(known):
+        if k.lower() == low:
+            return k
+    if len(name) < 3:
+        return None
+    best: tuple[int, str] | None = None
+    for k in sorted(known):
+        if len(k) < 3:
+            continue
+        d = _distance(low, k.lower())
+        if d <= (1 if max(len(name), len(k)) <= 5 else 2) and (best is None or d < best[0]):
+            best = (d, k)
+    return None if best is None else best[1]
+
+
+def _distance(a: str, b: str) -> int:
+    """Edit distance with swaps of neighbouring letters (optimal string alignment)."""
+    if abs(len(a) - len(b)) > 2:
+        return 3
+    prev2: list[int] = []
+    prev = list(range(len(b) + 1))
+    for i in range(1, len(a) + 1):
+        cur = [i] + [0] * len(b)
+        for j in range(1, len(b) + 1):
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] != b[j - 1]))
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                cur[j] = min(cur[j], prev2[j - 2] + 1)
+        prev2, prev = prev, cur
+    return prev[-1]
+
+
+def _config_slot(cls: Any, names: list[str], kw: dict[str, Any]) -> Any:
+    """``Cls(key, cfg)``: the config given after the key, taken out of ``kw``; else ``_NOT_GIVEN``.
+
+    The generated constructor binds the value after the key to a field
+    parameter (by position or by name, it cannot tell), so a value there counts
+    as a config if it is one (:func:`settings`) and the field's annotation does
+    not take it, or it holds sizes or fields of the class.
+    """
+    slot = names[1] if len(names) > 1 else names[0]
+    v = kw.get(slot, _NOT_GIVEN)
+    if v is _NOT_GIVEN or (entries := settings(v)) is None:
+        return _NOT_GIVEN
+    if _accepts(cls, slot, v):
+        sizes, fields, _ = _sizes_and_fields(cls)
+        if not set(entries) & (sizes | fields):
+            return _NOT_GIVEN
+    return kw.pop(slot)
+
+
+def _entries(config: Any, who: str) -> dict[str, Any]:
+    entries = settings(config)
+    if entries is None:
+        raise coded("EX705", TypeError(
+            f"{who}: expected a config (a dict, a dataclass, a NamedTuple, a class with the "
+            f"settings as attributes, ...) after the target, got {describe(config)}."
+        ))
+    return entries
+
+
+def _list_fields(spec: Any) -> set[str]:
+    """Names of the fields that are lists of modules, in a struct and the structs inside it."""
+    out: set[str] = set()
+    todo = [spec]
+    while todo:
+        s = todo.pop()
+        if isinstance(s, (SeqSpec, TupleSpec, UnionSpec)):
+            todo += [getattr(s, "elem", None)] if isinstance(s, SeqSpec) else list(getattr(s, "elems", getattr(s, "options", ())))
+        elif isinstance(s, StructSpec):
+            for name, f in s.fields.items():
+                if isinstance(f, SeqSpec) and isinstance(f.elem, StructSpec):
+                    out.add(name)
+                todo.append(f)
+    return out
+
+
+def _defaults(spec: Any) -> dict[str, list[Any]]:
+    """The defaults of the plain fields of a struct and the structs inside it, by field name."""
+    out: dict[str, list[Any]] = {}
+    seen: set[type] = set()
+    todo = [spec]
+    while todo:
+        s = todo.pop()
+        if isinstance(s, SeqSpec):
+            todo.append(s.elem)
+        elif isinstance(s, (TupleSpec, UnionSpec)):
+            todo += list(getattr(s, "elems", getattr(s, "options", ())))
+        elif isinstance(s, StructSpec) and s.cls not in seen:
+            seen.add(s.cls)
+            for f in dataclasses.fields(s.cls):
+                sub = s.fields.get(f.name)
+                if sub is not None and sub.leafy and not isinstance(sub, StaticSpec):
+                    todo.append(sub)
+                elif f.default is not dataclasses.MISSING and not isinstance(f.default, (Initializer, _Required)):
+                    out.setdefault(f.name, []).append(f.default)
+                else:
+                    out.setdefault(f.name, []).append(_NOT_GIVEN)
+    return out
+
+
+def call_config(target: Any, config: Any, sizes: dict[str, Any], who: str) -> tuple[Any, dict[str, Any]]:
+    """For ``expex.cost(f, cfg, T=128)`` and ``expex.diagram(f, cfg)``: the target and keywords to use.
+
+    The config's entries that the tool takes for ``target`` become keywords
+    (keywords given override them): the call's sizes and static parameters
+    and, for an unbound method, the class's sizes and lengths of lists of
+    modules. A bound method's instance fixes its own sizes, so those entries
+    are left out. Fields of the modules that the tool cannot vary (``heads``),
+    when the config gives them values other than the class defaults, are
+    applied by building the model from the config (abstractly: nothing is
+    allocated) and using its bound method. Other entries are ignored.
+    """
+    if config is None:
+        return target, sizes
+    entries = _entries(config, who)
+    t = unwrap(target)
+    f = t.fn if isinstance(t, BoundFn) else t
+    if not isinstance(f, Fn):
+        return target, {**entries, **sizes}  # the tool says what it cannot inspect
+    if f._lazy:
+        f._resolve_owner()
+    owner = getattr(f, "_owner_cls", None)
+    first = next(iter(f.params), None) if owner is not None else None
+    call = (set(f.params) | {n for n in f._declared if n.isidentifier()}) - {first}
+    model: set[str] = set()
+    takes = call | {"L"}
+    if getattr(owner, "__expex_struct__", False):
+        model_sizes, model_fields, spec = _sizes_and_fields(owner)
+        model = model_sizes | model_fields
+        if isinstance(t, BoundFn):
+            takes = call - model
+        else:
+            takes |= model_sizes | _list_fields(spec)
+            defaults = _defaults(spec)
+            changed = sorted(
+                k for k in entries
+                if k in model_fields and k not in takes and k in defaults
+                and any(d is _NOT_GIVEN or d != entries[k] for d in defaults[k])
+            )  # fmt: skip
+            if changed:
+                import warnings
+
+                try:
+                    built = jax.eval_shape(lambda: build(owner, jr.key(0), {k: v for k, v in entries.items() if k in model}))
+                except Exception as e:
+                    warnings.warn(
+                        f"{who}: the config sets {', '.join(changed)}, fields that only a model "
+                        f"has; building one from the config failed ({type(e).__name__}: {e}), so "
+                        f"the class defaults are used.",
+                        ConfigWarning,
+                        stacklevel=_user_level(),
+                    )
+                else:
+                    _misspelt(entries, takes | model, who)
+                    return f.__get__(built), {**{k: v for k, v in entries.items() if k in call - model}, **sizes}
+    _misspelt(entries, takes | model, who)
+    return target, {**{k: v for k, v in entries.items() if k in takes}, **sizes}
+
+
+def model_config(model: Any, config: Any, sizes: dict[str, Any], who: str) -> dict[str, Any]:
+    """For ``expex.summary(Cls, cfg, T=128)``: the keywords to use, keywords given overriding the config.
+
+    For a class, the entries that build it and the sizes of its ``__call__``;
+    for a model, only the latter (the model fixes the rest).
+    """
+    if config is None:
+        return sizes
+    entries = _entries(config, who)
+    cls = model if isinstance(model, type) else type(model)
+    call = unwrap(getattr(cls, "__call__", None))
+    names: set[str] = set()
+    if isinstance(call, Fn):
+        if call._lazy:
+            call._resolve_owner()
+        names = (set(call.params) | {n for n in call._declared if n.isidentifier()}) - {next(iter(call.params), None)}
+    try:
+        model_sizes, model_fields, _ = _sizes_and_fields(cls)
+    except Exception:
+        model_sizes, model_fields = set(), set()
+    takes = names | model_sizes | model_fields if isinstance(model, type) else names - model_sizes - model_fields
+    _misspelt(entries, names | model_sizes | model_fields, who)
+    return {**{k: v for k, v in entries.items() if k in takes}, **sizes}
+
+
+def sizes_of(model: Any) -> dict[str, int]:
+    """``model.sizes``: the sizes a model was built with, read from its arrays.
+
+    Sizes (``D``, ``Vocab``), then the lengths of lists of modules and the int
+    fields of the model and the modules in it, by field name (``blocks``,
+    ``heads``), as ``Cls(key, ...)`` takes them, so that
+    ``Cls(key, model.sizes)`` builds a model of the same shape.
+    """
+    cls = type(model)
+    spec = parse_owner(cls)
+    env = Env()
+    try:
+        spec.match(model, "", env)
+        if env.deferred:
+            resolve(env)
+    except Mismatch as m:
+        raise coded("EX305", ShapeError(
+            f"{cls.__name__}.sizes: `{m.path or cls.__name__}` is {describe(m.value)}, but is declared "
+            f"{m.spec}.\n\n    {m.reason}"
+        )) from None
+    sizes, _, _ = _sizes_and_fields(cls)
+    order = [p.__name__ for p in getattr(cls, "__type_params__", ())] + sorted(sizes)
+    out = {
+        n: int(env.dims[n]) for n in dict.fromkeys(order)
+        if n in sizes and isinstance(env.dims.get(n), (int, np.integer))
+    }  # fmt: skip
+    _counts(model, out)
+    return out
+
+
+def _counts(obj: Any, out: dict[str, int]) -> None:
+    """Lengths of lists of modules and int fields, by field name, in ``obj`` and the modules in it."""
+    if not (dataclasses.is_dataclass(obj) and getattr(type(obj), "__expex_struct__", False)):
+        return
+    spec = parse_owner(type(obj))
+    specs = getattr(spec, "fields", {})
+    for f in dataclasses.fields(obj):
+        v, s = getattr(obj, f.name, None), specs.get(f.name)
+        if isinstance(v, int) and not isinstance(v, bool) and (s is None or not s.leafy):
+            out.setdefault(f.name, v)
+        elif isinstance(s, SeqSpec) and isinstance(s.elem, StructSpec):
+            try:
+                n = len(v)  # a list, or Stacked rows
+            except TypeError:
+                continue
+            out.setdefault(f.name, n)
+            if n:
+                _counts(v[0], out)
+        elif isinstance(v, (list, tuple)):
+            for x in v:
+                _counts(x, out)
+        else:
+            _counts(v, out)
+
+
+class _SizesProperty:
+    """``model.sizes``: see :func:`sizes_of`."""
+
+    def __get__(self, obj: Any, owner: Any = None) -> Any:
+        if obj is None:
+            return self
+        return sizes_of(obj)
+
+
+_SIZES = _SizesProperty()
 
 
 class _Ctx:
@@ -711,15 +1110,15 @@ def _build_root(cls: Any, key: Any, given: dict[str, Any], who: str, into: Any) 
     else:
         ctx = _Ctx(who, f"{cls.__name__}(key, {{}}, ...)")
     if not is_key(key):
-        raise TypeError(f"{who}: the key must be a PRNG key such as jax.random.key(0), got {describe(key)}.")
+        raise coded("EX303", TypeError(f"{who}: the key must be a PRNG key such as jax.random.key(0), got {describe(key)}."))
     sizes, fields, spec = _sizes_and_fields(cls)
     unknown = sorted(set(given) - sizes - fields)
     if unknown:
-        raise TypeError(
+        raise coded("EX303", TypeError(
             f"{who} got {', '.join(f'{k}=...' for k in unknown)}: not a size "
             f"({', '.join(sorted(sizes)) or 'none'}) or a field ({', '.join(sorted(fields))}) of "
             f"{cls.__name__} or of the modules in it."
-        )
+        ))
     env = Env()
     for n in sizes & set(given):
         env.dims[n] = int(given[n])
@@ -731,10 +1130,10 @@ def _build_root(cls: Any, key: Any, given: dict[str, Any], who: str, into: Any) 
         if env.deferred:
             resolve(env)
     except Mismatch as m:
-        raise ShapeError(
+        raise coded("EX305", ShapeError(
             f"{who}: `{m.path or cls.__name__}` is {describe(m.value)}, but is declared "
             f"{m.spec}.\n\n    {m.reason}"
-        ) from None
+        )) from None
     return obj
 
 
@@ -755,10 +1154,10 @@ def _build(
                 try:
                     s.match(given[f.name], join(path, f.name), env)  # binds sizes from it
                 except Mismatch as m:
-                    raise ShapeError(
+                    raise coded("EX305", ShapeError(
                         f"{ctx.who}: `{m.path}` is {describe(m.value)}, but is declared "
                         f"{m.spec}.\n\n    {m.reason}"
-                    ) from None
+                    )) from None
         elif s is None or not s.leafy or isinstance(s, StaticSpec):
             values[f.name] = _plain(f, join(path, f.name), ctx)
         if f.name in values and isinstance(values[f.name], (int, np.integer)) and not isinstance(values[f.name], bool):
@@ -796,10 +1195,10 @@ def _plain(f: Any, path: str, ctx: _Ctx) -> Any:
         return f.default
     if f.default_factory is not dataclasses.MISSING:
         return f.default_factory()
-    raise TypeError(
+    raise coded("EX302", TypeError(
         f"{ctx.who} needs {f.name}: `{_star(path)}` has no default. Pass it by name, "
         f"e.g. {ctx.example(f'{f.name}=...')}."
-    )
+    ))
 
 
 def _make(
@@ -813,11 +1212,11 @@ def _make(
     if isinstance(spec, (ArraySpec, KeySpec)):
         how = f.default if isinstance(f.default, Initializer) else None
         if how is None:
-            raise TypeError(
+            raise coded("EX304", TypeError(
                 f"{ctx.who} cannot build `{_star(path)}`: {spec} has no initializer. Give the "
                 f"field a default (a JAX initializer such as jax.nn.initializers.normal(), or a "
                 f"number), or pass it by name, e.g. {ctx.example(f'{f.name}=...')}."
-            )
+            ))
         if isinstance(spec, KeySpec):
             return jr.split(key, _shape(spec.dims, env, path, spec, ctx)) if spec.dims else key
         dtype = spec.dtype.dtype if spec.dtype.dtype is not None else spec.dtype.example
@@ -826,10 +1225,10 @@ def _make(
         return _build(spec.cls, spec, key, env, deeper, path, ctx)
     if isinstance(spec, SeqSpec) and isinstance(spec.elem, StructSpec):
         if not isinstance(count, int) or isinstance(count, bool):
-            raise TypeError(
+            raise coded("EX302", TypeError(
                 f"{ctx.who} needs {f.name}: the length of the list `{_star(path)}` of "
                 f"{spec.elem}. Pass it by name, e.g. {ctx.example(f'{f.name}=4')}."
-            )
+            ))
         items = [
             _build(spec.elem.cls, spec.elem, k, env, deeper, f"{path}[{i}]", ctx)
             for i, k in enumerate(jr.split(key, count))
@@ -841,10 +1240,10 @@ def _make(
             _build(s.cls, s, k, env, deeper, f"{path}[{i}]", ctx)  # type: ignore[attr-defined]
             for i, (s, k) in enumerate(zip(spec.elems, ks))
         )
-    raise TypeError(
+    raise coded("EX304", TypeError(
         f"{ctx.who} cannot build `{_star(path)}` ({spec}) from its annotation. Pass it by name, "
         f"e.g. {ctx.example(f'{f.name}=...')}."
-    )
+    ))
 
 
 def _shape(dims: tuple[Any, ...], env: Env, path: str, spec: Any, ctx: _Ctx) -> tuple[int, ...]:
@@ -862,10 +1261,10 @@ def _shape(dims: tuple[Any, ...], env: Env, path: str, spec: Any, ctx: _Ctx) -> 
             else:
                 names = sorted(set(getattr(getattr(d, "expr", None), "names", ())) - env.dims.keys())
             what = ", ".join(names) or str(d)
-            raise TypeError(
+            raise coded("EX301", TypeError(
                 f"{ctx.who} needs {what}: the size of `{_star(path)}` ({spec}). Pass it by "
                 f"name, e.g. {ctx.example(f'{names[0] if names else what}=64')}."
-            )
+            ))
     return tuple(out)
 
 
@@ -998,12 +1397,12 @@ def _list_index(node: Any, key: Any, path: str, label: str) -> int:
     try:
         i = operator.index(key)
     except TypeError:
-        raise TypeError(
+        raise coded("EX307", TypeError(
             f"{label}: `{path}` is a Python {type(node).__name__}: index it with a Python int "
             f"or a slice, not {describe(key) if hasattr(key, 'shape') else type(key).__name__}."
-        ) from None
+        )) from None
     if not -len(node) <= i < len(node):
-        raise IndexError(f"{label}: `{path}` has {len(node)} elements, so [{i}] is out of range.")
+        raise coded("EX307", IndexError(f"{label}: `{path}` has {len(node)} elements, so [{i}] is out of range."))
     return i % len(node)
 
 
@@ -1020,12 +1419,12 @@ def _child(node: Any, kind: str, key: Any, path: str, label: str) -> tuple[Any, 
 
     if _is_array(node):
         if kind is _ATTR:
-            raise _no_field(node, key, path, label)
+            raise coded("EX307", _no_field(node, key, path, label))
         return node[key], f"{path}[{_fmt_index(key)}]"
     fields = _record_fields(node)
     if kind is _ATTR or (isinstance(key, str) and fields is not None):
         if fields is None or key not in fields:
-            raise _no_field(node, key, path, label)
+            raise coded("EX307", _no_field(node, key, path, label))
         return getattr(node, key), join(path, key)
     p = f"{path}[{_fmt_index(key)}]"
     if isinstance(node, dict):
@@ -1036,7 +1435,7 @@ def _child(node: Any, kind: str, key: Any, path: str, label: str) -> tuple[Any, 
         return node[_list_index(node, key, path, label)], p
     if isinstance(node, Stacked) or fields is not None:  # stacked rows
         return jax.tree.map(lambda a: a[key], _rows(node)), p
-    raise TypeError(f"{label}: `{path}` is {describe(node)}; it cannot be indexed with [{_fmt_index(key)}].")
+    raise coded("EX307", TypeError(f"{label}: `{path}` is {describe(node)}; it cannot be indexed with [{_fmt_index(key)}]."))
 
 
 def _combine(old: Any, value: Any, op: Callable[[Any, Any], Any]) -> Any:
@@ -1054,7 +1453,7 @@ def _update(at: At[Any], name: str, whole: Callable[[Any], Any], indexed: Callab
     root, steps = at._root, at._steps
     label = f"{at!r}.{name}(...)"
     if not steps:
-        raise TypeError(f"{label}: give the part to change first, e.g. model.at.w.{name}(...).")
+        raise coded("EX307", TypeError(f"{label}: give the part to change first, e.g. model.at.w.{name}(...)."))
     spec = parse_owner(type(root)) if config.checked else None
     env = Env()
     try:
@@ -1063,11 +1462,11 @@ def _update(at: At[Any], name: str, whole: Callable[[Any], Any], indexed: Callab
             resolve(env)
     except Mismatch as m:
         if isinstance(m.spec, StructSpec) and isinstance(m.value, m.spec.cls):  # an invariant
-            raise ShapeError(f"{label}: at `{m.path or type(root).__name__}`, {m.reason}") from None
-        raise ShapeError(
+            raise coded("EX308", ShapeError(f"{label}: at `{m.path or type(root).__name__}`, {m.reason}")) from None
+        raise coded("EX308", ShapeError(
             f"{label}: `{m.path or type(root).__name__}` is {describe(m.value)}, but is declared "
             f"{m.spec}.\n\n    {m.reason}"
-        ) from None
+        )) from None
     return new
 
 
@@ -1098,7 +1497,7 @@ def _put(
 
     if _is_array(node):
         if kind is _ATTR:
-            raise _no_field(node, key, path, label)
+            raise coded("EX307", _no_field(node, key, path, label))
         arr = jnp.asarray(node) if not isinstance(node, jax.Array) else node
         if rest:
             return arr.at[key].set(_put(arr[key], None, rest, f"{path}[{_fmt_index(key)}]", env, whole, indexed, label))
@@ -1107,7 +1506,7 @@ def _put(
     fields = _record_fields(node)
     if kind is _ATTR or (isinstance(key, str) and fields is not None):
         if fields is None or key not in fields:
-            raise _no_field(node, key, path, label)
+            raise coded("EX307", _no_field(node, key, path, label))
         specs = spec.fields if isinstance(spec, StructSpec) and isinstance(node, spec.cls) else {}
         for n, s in specs.items():  # the sizes the rest of the struct fixes
             if n != key and s.leafy:
@@ -1121,7 +1520,7 @@ def _put(
     p = f"{path}[{_fmt_index(key)}]"
     if isinstance(node, dict):
         if key not in node:
-            raise KeyError(f"{label}: `{path}` has no key {key!r}; its keys are {', '.join(map(repr, node))}.")
+            raise coded("EX307", KeyError(f"{label}: `{path}` has no key {key!r}; its keys are {', '.join(map(repr, node))}."))
         vspec = spec.value if isinstance(spec, DictSpec) else None
         if vspec is not None:
             for k, v in node.items():
@@ -1147,10 +1546,10 @@ def _put(
         if isinstance(key, slice):
             new = _put(node[key], None, rest, p, env, whole, indexed, label) if rest else whole(node[key])
             if not isinstance(new, (list, tuple)) or len(new) != len(chosen):
-                raise ShapeError(
+                raise coded("EX308", ShapeError(
                     f"{label}: `{p}` is {len(chosen)} elements, so the new value must be a list "
                     f"of {len(chosen)}, not {describe(new) if not isinstance(new, (list, tuple)) else len(new)}."
-                )
+                ))
             for j, v in zip(chosen, new):
                 if elems[j] is not None and elems[j].leafy:
                     elems[j].match(v, f"{path}[{j}]", env)
@@ -1168,14 +1567,14 @@ def _put(
         old_leaves, old_tree = jax.tree_util.tree_flatten_with_path(old)
         new_leaves, new_tree = jax.tree_util.tree_flatten_with_path(new)
         if str(old_tree) != str(new_tree):
-            raise ShapeError(f"{label}: `{p}` is a row of a stacked list, and the new value has another structure.")
+            raise coded("EX308", ShapeError(f"{label}: `{p}` is a row of a stacked list, and the new value has another structure."))
         for (kp, a), (_, b) in zip(old_leaves, new_leaves):
             if np.shape(a) != np.shape(b) or jnp.result_type(a) != jnp.result_type(b):
-                raise ShapeError(
+                raise coded("EX308", ShapeError(
                     f"{label}: `{p}{jax.tree_util.keystr(kp)}` is {describe(b)}, but the rows of "
                     f"this stacked list are {describe(a)}."
-                )
+                ))
         merged = jax.tree.map(lambda a, b: a.at[key].set(b), arrays, new)
         return Stacked(merged) if isinstance(node, Stacked) else merged
 
-    raise TypeError(f"{label}: `{path}` is {describe(node)}; it cannot be indexed with [{_fmt_index(key)}].")
+    raise coded("EX307", TypeError(f"{label}: `{path}` is {describe(node)}; it cannot be indexed with [{_fmt_index(key)}]."))

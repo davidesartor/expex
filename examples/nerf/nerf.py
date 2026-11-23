@@ -5,9 +5,10 @@ checked against it in tests/ports/test_nerf.py. The model is the same; what
 changes is how it is written:
 
 - everything is written for one ray: S samples along it, F more drawn from its
-  coarse weights, and `.vectorize`d over rays, so there is no batch axis to
-  carry and no `[..., None, :]`: the compositing is `weights @ rgb`, the
-  CDF a `jnp.cumsum`, and finding each draw's interval a `jnp.searchsorted`
+  coarse weights. Called on a batch of rays, it maps over them, so there is no
+  batch axis to carry and no `[..., None, :]`: the compositing is
+  `weights @ rgb`, the CDF a `jnp.cumsum`, and finding each draw's interval a
+  `jnp.searchsorted`
 - the MLP is written for one point and states its sizes (`MLP[P, V, W, C]`:
   encoded point and view direction, width, width of the colour branch), so
   shapes are checked on every call and proved for all sizes:
@@ -185,7 +186,7 @@ class NeRF[P, V, W, C]:
             u = jr.uniform(jr.split(rng_1)[0], (B, F))
         else:  # evenly spaced over [0, 1), as uniform draws are
             u = jnp.broadcast_to(jnp.linspace(0.0, 1.0 - jnp.finfo(jnp.float32).eps, F), (B, F))
-        return self.render.vectorize(rays, jitter, u, randomized)
+        return self.render(rays, jitter, u, randomized)  # mapped over the B rays
 
     def render[S, F](self, ray: Ray, jitter: f32[S], u: f32[F], randomized: bool) -> tuple[Pixel, Pixel]:
         """One ray: S stratified samples through the coarse MLP, then S + F, F of them where its weights are, through the fine one."""
@@ -201,7 +202,7 @@ class NeRF[P, V, W, C]:
         """The pixel from the samples at depths z, and their weights."""
         assert P == 3 * (1 + 2 * (self.max_deg_point - self.min_deg_point)) and V == 3 * (1 + 2 * self.deg_view)
         points = ray.origin + jnp.outer(z, ray.direction)
-        rgb, sigma = mlp.vectorize(posenc.vectorize(points, self.min_deg_point, self.max_deg_point), view)
+        rgb, sigma = mlp(posenc(points, self.min_deg_point, self.max_deg_point), view)  # per point
         return composite(self.rgb_act(rgb), self.sigma_act(sigma), z, ray.direction, self.white_bkgd)
 
     def loss[B](self, rays: Batch[Ray, B], pixels: f32[B, RGB], rng_0: Key, rng_1: Key) -> f32:

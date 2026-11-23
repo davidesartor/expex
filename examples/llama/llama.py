@@ -9,7 +9,8 @@ written:
   checked on every call and proved for all sizes: `python -m expex examples/llama/llama.py`
 - heads are contracted by axis name (`expex.einsum(q, cache.k, to=(G, R, T, S))`),
   with no einsum strings and no reshape/transpose chains
-- per-token layers (norms, MLP) are written for one token and `.vectorize`d
+- per-token layers (norms, MLP) are written for one token; called on a
+  sequence, they map over it
 - one code path for training and generation: a forward pass is a pass over an
   empty KV cache; generation is a plain loop carrying the layers' caches, and
   the loop over layers is one `lax.scan`
@@ -72,8 +73,8 @@ class Attention[D, G, R, K]:
     def __call__[T, S](self, x: f32[T, D], at: Int[T], cache: Cache[G, S, K]) -> tuple[f32[T, D], Cache[G, S, K]]:
         """T tokens at positions `at`, each attending to the cached positions up to its own."""
         assert K % 2 == 0 and T <= S  # K: for the rotary embedding
-        q: f32[G, R, T, K] = rope.vectorize(expex.einsum(x, self.wq, to=(G, R, T, K)), at)
-        k = rope.vectorize(expex.einsum(x, self.wk, to=(G, T, K)), at)
+        q: f32[G, R, T, K] = rope(expex.einsum(x, self.wq, to=(G, R, T, K)), at)  # mapped over G, R
+        k = rope(expex.einsum(x, self.wk, to=(G, T, K)), at)
         cache = cache.write(k, expex.einsum(x, self.wv, to=(G, T, K)), at[0])
         visible = jnp.arange(S) <= at[:, None]  # causal, and only positions written so far
         scores: f32[G, R, T, S] = jnp.where(visible, expex.einsum(q, cache.k, to=(G, R, T, S)) / jnp.sqrt(K), -jnp.inf)
@@ -103,9 +104,9 @@ class Block[D, F, G, R, K]:
 
     def __call__[T, S](self, x: f32[T, D], at: Int[T], cache: Cache[G, S, K]) -> tuple[f32[T, D], Cache[G, S, K]]:
         assert T <= S
-        y, cache = self.attn(self.attn_norm.vectorize(x), at, cache)
+        y, cache = self.attn(self.attn_norm(x), at, cache)
         x = x + y
-        return x + self.mlp.vectorize(self.mlp_norm.vectorize(x)), cache
+        return x + self.mlp(self.mlp_norm(x)), cache
 
 
 @expex.struct
@@ -136,14 +137,14 @@ class Llama[V, D, F, G, R, K]:
         for layer, cache in zip(self.layers, caches):  # identical blocks: one lax.scan
             x, cache = layer(x, at, cache)
             new.append(cache)
-        return self.norm.vectorize(x), new
+        return self.norm(x), new
 
     def loss[T](self, tokens: Int[T]) -> f32:
         assert T >= 2
         logp = jax.nn.log_softmax(self(tokens[:-1]))
         return -jnp.take_along_axis(logp, tokens[1:, None], axis=1).mean()
 
-    @expex.fn(jit=True, vectorize=True)
+    @expex.fn(jit=True)
     def generate[T](self, prompt: Int[T], n: int) -> Int[T + n]:
         """Greedy decoding: the prompt in one pass, then one token at a time with the caches."""
         assert n >= 1
@@ -164,7 +165,7 @@ if __name__ == "__main__":
 
     @expex.fn(jit=True, donate="auto")
     def step[B, T](model: Llama, batch: Int[B, T]) -> tuple[Llama, f32]:
-        loss, grads = jax.value_and_grad(lambda m: m.loss.vectorize(batch).mean())(model)
+        loss, grads = jax.value_and_grad(lambda m: m.loss(batch).mean())(model)
         return jax.tree.map(lambda p, g: p - 0.5 * g, model, grads), loss
 
     for i in range(5):

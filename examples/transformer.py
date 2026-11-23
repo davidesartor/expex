@@ -51,7 +51,7 @@ class Attention[D]:
 
     def __call__[T, H, K](self, x: f32[T, D]) -> f32[T, D]:
         q, k, v = self.split(x @ self.wq), self.split(x @ self.wk), self.split(x @ self.wv)
-        out: f32[H, T, K] = Attention.causal.vectorize(q, k, v)  # over heads
+        out: f32[H, T, K] = Attention.causal(q, k, v)  # mapped over heads
         return expex.rearrange(out, to=(T, D)) @ self.wo  # H, K are merged back into D
 
 
@@ -72,8 +72,8 @@ class Block[D, F]:
     mlp: MLP[D, F]
 
     def __call__[T](self, x: f32[T, D]) -> f32[T, D]:
-        x = x + self.attn(self.norm1.vectorize(x))
-        return x + self.mlp.vectorize(self.norm2.vectorize(x))
+        x = x + self.attn(self.norm1(x))  # norm1 per token: mapped over T
+        return x + self.mlp(self.norm2(x))
 
 
 @expex.struct
@@ -87,7 +87,7 @@ class Transformer[D, F]:
         x = self.embed[tokens]
         for block in self.blocks:  # identical blocks: one lax.scan
             x = block(x)
-        return self.norm.vectorize(x) @ self.unembed
+        return self.norm(x) @ self.unembed
 
     def loss[T](self, tokens: Int[T]) -> f32:
         assert T >= 2
@@ -101,7 +101,8 @@ if __name__ == "__main__":
 
     @jax.jit
     def step(m: Transformer, batch):
-        value, grads = jax.value_and_grad(lambda m: m.loss.vectorize(batch).mean())(m)
+        # batch is [16, 24]: loss takes one sequence, so the call maps over the rows
+        value, grads = jax.value_and_grad(lambda m: m.loss(batch).mean())(m)
         return value, jax.tree.map(lambda p, g: p - 0.1 * g, m, grads)
 
     for i in range(5):

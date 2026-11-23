@@ -370,12 +370,10 @@ def broken[T, D](x: f32[T, D], w: f32[D, D]) -> f32[T, D]:
 
 @pytest.fixture(scope="module")
 def buggy(tmp_path_factory):
-    """The example transformer with a bug: the MLP called without .vectorize, and not mapped by itself."""
+    """The example transformer with a bug: the keys are not split into heads (the README's error diagram)."""
     src = (ROOT / "examples" / "transformer.py").read_text()
-    src = src.replace("x + self.mlp.vectorize(self.norm2.vectorize(x))", "x + self.mlp(self.norm2.vectorize(x))")
-    mlp = "    def __call__(self, x: f32[D]) -> f32[D]:\n        return jax.nn.gelu"
-    assert src.count(mlp) == 1
-    src = src.replace(mlp, "    @expex.fn(vectorize=False)\n" + mlp)
+    assert src.count("self.split(x @ self.wk)") == 1
+    src = src.replace("self.split(x @ self.wk)", "x @ self.wk")
     path = tmp_path_factory.mktemp("buggy") / "buggy_transformer.py"
     path.write_text(src)
     return load("diagram_buggy", path)
@@ -383,27 +381,28 @@ def buggy(tmp_path_factory):
 
 def test_error_diagram(buggy):
     model = buggy.Transformer(jr.key(0), Vocab=50, D=32, F=64, blocks=3, heads=4)
-    with pytest.raises(expex.ShapeError, match=r"MLP.__call__\(\): argument `x`") as e:
+    with pytest.raises(expex.ShapeError, match=r"Attention.causal\(\): argument `k`") as e:
         model(jr.randint(jr.key(1), (24,), 0, 50))
     assert "e.diagram" not in str(e.value)  # the message is unchanged; the hint is a note
     assert e.value.__notes__[-1] == '(see e.diagram.save("error.html"))'
     d = e.value.diagram
     assert isinstance(d, Diagram) and "_todo" in vars(d)  # built only when used
-    assert d.failed == node(d, "✗ MLP.__call__")[0]
-    assert node(d, "✗ MLP.__call__")[2] == "✗ MLP.__call__\nreceived f32[24, 32]\ndeclared x: f32[D]"
-    assert box_of(d, "✗ MLP.__call__") == "Block.__call__"  # opened to show the failing call
+    fail = "✗ Attention.causal"
+    assert d.failed == node(d, fail)[0]
+    assert node(d, fail)[2] == "✗ Attention.causal · vectorized\nreceived f32[24, 32]\ndeclared k: f32[T, K]"
+    assert box_of(d, fail) == "Attention.__call__"  # opened, inside the opened Block, to show the failing call
     names = {n[0]: n[2].split("\n")[0] for n in d.nodes}
     assert sorted(names[n] for n in d.feeds) == [
-        "+", "Attention.__call__", "LayerNorm.__call__ · vectorized", "LayerNorm.__call__ · vectorized", "index", "tokens: i32[24]"
-    ]  # fmt: skip
+        "Attention.split", "Attention.split", "LayerNorm.__call__ · vectorized", "index",
+        "matmul", "matmul", "matmul", "tokens: i32[24]",
+    ]  # q and v split into heads, k not  # fmt: skip
     assert labels(d, "out") == []  # the trace stopped: nothing returned
     root = check_svg(d)
-    assert drawn(d, "✗ MLP.__call__") == (["✗ MLP", "received 24 × 32", "declared x: f32[D]"], "f-errf k-err")
+    assert drawn(d, fail) == (["✗ Attention.causal", "received 24 × 32", "declared k: f32[T, K]"], "f-errf k-err")
     red = [el for el in root if el.tag == NS + "path" and el.get("class") == "k-err"]
     assert len(red) == sum(1 for u, v, _ in d.edges if u in d.feeds and (v in d.feeds or v == d.failed))
-    assert titles(d) == ["Block  ✗ fails inside"]
-    assert "✗ received f32[24, 32], declared x: f32[D]" in d.text
-    assert "path:  tokens: i32[24] → index → LayerNorm.__call__ · vectorized → Attention.__call__ → + → LayerNorm.__call__ · vectorized → ✗ MLP.__call__" in d.text
+    assert titles(d) == ["Block  ✗ fails inside", "Attention  ✗ fails inside"]
+    assert "✗ received f32[24, 32], declared k: f32[T, K]" in d.text
     assert expex.diagram.explain(e.value) is d
     assert _fn.CALL_HOOK.get() is None
 

@@ -15,6 +15,7 @@ import jax
 import numpy as np
 
 from ..annotations.dims import describe, show
+from ..annotations.errors import coded
 from ..function import BoundFn, Fn, unwrap
 from .trace import keyed, resolve, with_key
 
@@ -76,7 +77,7 @@ def shapes(f: Callable[..., Any], *args: Any, **kwargs: Any) -> ShapeTrace:
         src_lines, start = inspect.getsourcelines(raw)
         code = raw.__code__
     except (OSError, TypeError, AttributeError):
-        raise TypeError("shapes() needs a Python function whose source is available") from None
+        raise coded("EX705", TypeError("shapes() needs a Python function whose source is available")) from None
     fname, end = code.co_filename, start + len(src_lines)
     seen: dict[int, dict[str, list[str]]] = {}
     frames: dict[int, tuple[int, dict[str, int]]] = {}

@@ -257,6 +257,8 @@ def test_shapes_json(tmp_path):
                 "    shift[T, D](x: f32[T, D]) -> f32[T, D]\n"
                 f"    defined at {file}:14\n"
                 "confirmed at sizes D=2, T=3.",
+                "code": "EX102",
+                "href": "https://github.com/davidesartor/expex/blob/main/docs/errors.md#ex102",
             }
         ],
     }

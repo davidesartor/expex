@@ -26,6 +26,7 @@ import jax
 import jax.random as jr
 
 from ..annotations.dims import DConst, DExpr, DName, Env
+from ..annotations.errors import coded, strip_see
 from ..annotations.spec import ArraySpec, NoneSpec, SeqSpec, StructSpec, UnionSpec, fixed_sizes, join, parse_owner
 from .. import function
 from ..function import Fn, unwrap
@@ -95,7 +96,7 @@ class Summary:
             tip = lambda s: f' title="{html.escape(s)}"' if s else ""
             ptip = f"{c[3]}" + (f"\n{r.weight} × {r.params:,} = {r.params * r.weight:,}" if r.weight > 1 else "") + (f"\n{share:.1%} of parameters" if share else "")  # fmt: skip
             return (
-                f'<tr data-i="{i}" data-p="{"" if r.parent < 0 else r.parent}" data-params="{r.params * r.weight}" '
+                f'<tr data-i="{i}" data-p="{"" if r.parent < 0 else r.parent}" data-path="{html.escape(r.path if i != "" else "")}" data-params="{r.params * r.weight}" '
                 f'data-flops="{r.flops_value if r.flops_value is not None else -1}"><td class="m" '
                 f'style="--d:{r.depth}" title="{html.escape(r.path)}">{pages.toggle(kids)}{name}</td><td class="c">{html.escape(c[0])}'
                 f'<span class="x">{html.escape(c[1])}</span></td><td class="n bar" style="--s:{share:.4f}"{tip(ptip)}>'
@@ -122,14 +123,20 @@ class Summary:
         pathlib.Path(path).write_text(pages.document(f"{self.name} summary", self._repr_html_()), encoding="utf-8")
 
 
-def summary(model: Any, /, **sizes: int) -> Summary:
+def summary(model: Any, config: Any = None, /, **sizes: int) -> Summary:
     """A table of a model's modules: parameters, bytes and FLOPs, as numbers and formulas.
 
     ``model`` is an ``@expex.struct`` instance, or a struct class with the sizes
     building it needs (``summary(Transformer, Vocab=50, D=32, F=64, blocks=4)``,
     built under ``jax.eval_shape``, so nothing is allocated). Other keywords
     (``T=128``) are sizes of the ``__call__`` methods, used for FLOP counts.
+    ``config``: the same in a config object (``summary(Transformer, cfg)``);
+    entries the summary does not use are ignored, and keywords override it.
     """
+    if config is not None:
+        from ..modules import model_config
+
+        sizes = model_config(model, config, sizes, "expex.summary")
     if isinstance(model, type):
         spec = parse_owner(model)
         accepts = {p.__name__ for p in getattr(model, "__type_params__", ())} | _all_fields(spec)
@@ -142,7 +149,7 @@ def summary(model: Any, /, **sizes: int) -> Summary:
     cls = type(model)
     spec = parse_owner(cls)
     if not isinstance(spec, StructSpec):
-        raise TypeError(f"expex.summary: {cls.__name__} is not a @expex.struct with array fields")
+        raise coded("EX705", TypeError(f"expex.summary: {cls.__name__} is not a @expex.struct with array fields"))
     env = Env()
     spec.match(model, cls.__name__, env)
     known = {k: int(v) for k, v in env.dims.items() if isinstance(v, int) and k.isidentifier()}
@@ -162,7 +169,7 @@ def summary(model: Any, /, **sizes: int) -> Summary:
         s.notes.append(f"FLOP formulas of {', '.join(s.fallback)} are in the call's sizes only: static fields differ from the class defaults")  # fmt: skip
     used = set().union(*(r.flops.names() for r in [*rows, total] if r.flops is not None))
     if unknown := set(sizes) - used:
-        raise TypeError(f"expex.summary: unknown size {', '.join(sorted(unknown))} (the calls use {', '.join(sorted(used)) or 'none'})")  # fmt: skip
+        raise coded("EX706", TypeError(f"expex.summary: unknown size {', '.join(sorted(unknown))} (the calls use {', '.join(sorted(used)) or 'none'})"))  # fmt: skip
     order = [p.__name__ for p in getattr(cls, "__type_params__", ())]
     calls = sorted((used | set(sizes)) - set(known) - {"L"} - set(order))  # T first, as expex.cost does
     order = list(dict.fromkeys([*calls, *order, *sorted(known.keys() - {"L"}), "L"]))
@@ -215,7 +222,7 @@ class _Walk:
                 self._own[cls] = cost(cls.__call__).flops
             except Exception as e:
                 self._own[cls] = None
-                self.notes.append(f"{cls.__name__}.__call__: no cost estimate ({type(e).__name__}: {e})")
+                self.notes.append(f"{cls.__name__}.__call__: no cost estimate ({type(e).__name__}: {strip_see(str(e))})")
         try:
             bound = cost(obj.__call__).flops  # only the call's own sizes are left
         except Exception:

@@ -9,7 +9,8 @@ written:
 - the selective scan is a plain `for` loop over time (staged as `lax.scan`),
   and so is the loop over layers (identical blocks: one `lax.scan`)
 - sizes are used by name in the body: `xz[:, :E]`, `jnp.pad(u, ((K - 1, 0), ...))`
-- no einops strings, no `jax.vmap(layer)` for per-token layers: `.vectorize`
+- no einops strings, no `jax.vmap(layer)` for per-token layers: a norm written
+  for one token, called on a sequence, maps over it
 """
 
 import math
@@ -118,7 +119,7 @@ class Block[D, E, N, R, K]:
     mixer: Mixer[D, E, N, R, K]
 
     def __call__[T](self, h: f32[T, D]) -> f32[T, D]:
-        return h + self.mixer(self.norm.vectorize(h))
+        return h + self.mixer(self.norm(h))
 
     def step(self, h: f32[D], state: State[E, N, K]) -> tuple[f32[D], State[E, N, K]]:
         y, state = self.mixer.step(self.norm(h), state)
@@ -146,7 +147,7 @@ class Mamba[V, P, D, E, N, R, K]:
         h = self.embedding[tokens]
         for layer in self.layers:  # identical blocks: one lax.scan
             h = layer(h)
-        return self.norm_f.vectorize(h) @ self.lm_head.T
+        return self.norm_f(h) @ self.lm_head.T
 
     def loss[T](self, tokens: Int[T]) -> f32:
         assert T >= 2

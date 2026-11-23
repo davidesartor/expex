@@ -36,7 +36,7 @@ def replay(game, keys, actions):
         state = state.step.vectorize(action)
         return state, state
 
-    first = game.new.vectorize(keys)
+    first = game.new(keys)
     _, rest = jax.lax.scan(step, first, actions)
     return jax.tree.map(lambda a, b: jnp.concatenate([a[None], b]), first, rest)
 
@@ -101,7 +101,7 @@ def benchmark(pgx, name: str, batch: int = 1024, steps: int = 100, rounds: int =
         return jax.lax.fori_loop(0, steps, body, state)
 
     def port(key):
-        state = game.new.vectorize(jr.split(key, batch))
+        state = game.new(jr.split(key, batch))
 
         def body(t, state):
             return state.step.vectorize(pick(jr.fold_in(key, t), state.legal_action_mask))

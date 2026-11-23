@@ -1,9 +1,8 @@
 """mctx vs examples/mctx: batched MuZero and Gumbel MuZero searches on a small tabular MDP.
 
 The same programs as examples/mctx/compare.py's `benchmark`: the original runs
-with run_original.py's batched model functions (imported under the name `mctx`
-through compare.py's `original_mctx`, since the port's module is `mctx` too),
-the port with its own `recurrent_fn`, from the same roots and keys. No speed
+with run_original.py's batched model functions (mctx imported through
+compare.py's `original_mctx`), the port (examples/mctx/search.py) with its own `recurrent_fn`, from the same roots and keys. No speed
 claim exists yet.
 """
 
@@ -29,7 +28,6 @@ def setup(cfg: dict) -> list[Measure]:
     path = str(use_original("mctx"))
     import sys
 
-    sys.path.remove(path)  # imported only inside compare.original_mctx: the port's module is `mctx` as well
     use_example("mctx")
     compare = load_module("mctx_compare", EXAMPLES / "mctx" / "compare.py")
     ro = sys.modules["run_original"]  # examples/mctx/run_original.py, imported by compare.py
@@ -56,7 +54,7 @@ def setup(cfg: dict) -> list[Measure]:
                 return f(params, key, ro.root_fn(params, starts), ro.recurrent_fn, sims, invalid_actions=invalid)
 
         def port(mdp, key, policy=policy):
-            return compare.POLICIES[policy](mdp, key, mdp.root.vectorize(starts), compare.recurrent_fn, sims, invalid)
+            return compare.POLICIES[policy](mdp, key, mdp.root(starts), compare.recurrent_fn, sims, invalid)
 
         measures.append(
             Measure(

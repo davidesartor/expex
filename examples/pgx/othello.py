@@ -13,7 +13,8 @@ written for one game with plain Python:
 * a direction is a pair (dr, dc) and `shift` works out the edges from it,
   so there are no mask tables;
 * sizes by name (`jnp.arange(Cells) // Side`), and a batch of games is
-  `Othello.new.vectorize(keys)` / `state.step.vectorize(actions)`.
+  `Othello.new(keys)` (mapped over the keys), stepped by
+  `state.step.vectorize(actions)` (mapping over `self` is explicit).
 
 The board is kept flat, as in Pgx: on CPU, XLA runs the shifts of a
 `[games, 64]` array about three times faster than those of a `[games, 8, 8]` one.
@@ -154,7 +155,7 @@ def legal_moves(mine: Bool[Cells], theirs: Bool[Cells]) -> Bool[Actions]:
 def random_games(key: Key, games: int, moves: int) -> tuple[Batch[Othello, games], f32[games, Players]]:
     """`games` games after `moves` uniformly random legal moves each, and each player's total reward."""
     key, start = jr.split(key)
-    state = Othello.new.vectorize(jr.split(start, games))
+    state = Othello.new(jr.split(start, games))
     returns = jnp.zeros((games, Players))
     for _ in range(moves):
         key, pick = jr.split(key)

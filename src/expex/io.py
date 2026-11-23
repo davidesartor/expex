@@ -20,7 +20,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from .annotations.dims import Env, describe, resolve
-from .annotations.errors import Mismatch, ShapeError
+from .annotations.errors import Mismatch, ShapeError, coded
 from .annotations.spec import (
     ArraySpec, DictSpec, NoneSpec, SeqSpec, Spec, StaticSpec, StructSpec, TupleSpec, UnionSpec,
     _field_defaults, fields, join, parse_owner, rebuild,
@@ -52,7 +52,7 @@ def save(obj: Any, path: Any) -> None:
         elif isinstance(spec, DictSpec):
             meta["keys"][p] = list(value)
         elif not isinstance(spec, StructSpec):
-            raise TypeError(f"expex.save: cannot save `{p}` (annotated {spec}).")
+            raise coded("EX501", TypeError(f"expex.save: cannot save `{p}` (annotated {spec})."))
     arrays[_META] = np.array(json.dumps(meta))
     np.savez(path, **arrays)  # type: ignore[arg-type]
 
@@ -98,7 +98,7 @@ def load(cls_or_template: Any, path: Any, *, strict: bool = True, **sizes: int) 
             if (t is None) if t is not _MISSING else (p in static and static[p] is None):
                 return None
             return build(next(o for o in spec.options if not isinstance(o, NoneSpec)), t, p)
-        raise TypeError(f"expex.load: cannot load `{p}` (annotated {spec}).")
+        raise coded("EX501", TypeError(f"expex.load: cannot load `{p}` (annotated {spec})."))
 
     obj = build(spec, template if template is not None else _MISSING, "")
     extra = sorted(set(arrays) - used)
@@ -106,7 +106,7 @@ def load(cls_or_template: Any, path: Any, *, strict: bool = True, **sizes: int) 
         lines = [f"    missing from the file: {', '.join(missing)}"] if missing else []
         lines += [f"    in the file but not in {cls.__name__}: {', '.join(extra)}"] if extra and strict else []
         hint = "\n\n    Pass strict=False to ignore the extra keys." if extra and strict and not missing else ""
-        raise ShapeError(f"expex.load({cls.__name__}, {str(path)!r}): the keys do not match.\n\n" + "\n".join(lines) + hint)
+        raise coded("EX502", ShapeError(f"expex.load({cls.__name__}, {str(path)!r}): the keys do not match.\n\n" + "\n".join(lines) + hint))
     _check(spec, obj, sizes, f"expex.load({cls.__name__}, {str(path)!r})")
     return spec.walk(obj, "", lambda s, v, p: jnp.asarray(v))
 
@@ -127,7 +127,7 @@ def _check(spec: StructSpec, obj: Any, sizes: dict[str, int], where: str) -> Non
     known: set[str] = set()
     spec.names(known)
     for k in sorted(set(sizes) - known):
-        raise TypeError(f"{where}: {spec.cls.__name__} has no size `{k}` (its sizes: {', '.join(sorted(known))}).")
+        raise coded("EX504", TypeError(f"{where}: {spec.cls.__name__} has no size `{k}` (its sizes: {', '.join(sorted(known))})."))
     env = Env()
     for k, v in sizes.items():
         env.dims[k] = int(v)
@@ -140,13 +140,13 @@ def _check(spec: StructSpec, obj: Any, sizes: dict[str, int], where: str) -> Non
         resolve(env)
     except Mismatch as m:
         found = "" if isinstance(m.spec, StructSpec) else f", file has {describe(m.value)}"
-        raise ShapeError(f"{where}:\n\n    {m.path}: declared {m.spec}{found}\n\n    {m.reason}") from None
+        raise coded("EX503", ShapeError(f"{where}:\n\n    {m.path}: declared {m.spec}{found}\n\n    {m.reason}")) from None
 
 
 def _owner_spec(cls: type) -> StructSpec:
     spec = parse_owner(cls)
     if not isinstance(spec, StructSpec):
-        raise TypeError(f"{cls.__name__} has no array fields: nothing to save or load.")
+        raise coded("EX501", TypeError(f"{cls.__name__} has no array fields: nothing to save or load."))
     return spec
 
 
@@ -162,11 +162,11 @@ def _static(cls: type, name: str, p: str, given: Any, saved: dict[str, Any]) -> 
         return _decode(saved[p])
     if name in _field_defaults(cls):
         return _MISSING  # rebuild() skips it and fills in the default
-    raise TypeError(
+    raise coded("EX505", TypeError(
         f"expex.load: the static field `{p}` ({cls.__name__}.{name}) is not in the file (only "
         f"numbers, strings, None and tuples/lists of those are saved) and has no default. "
         f"Load into a template instead: expex.load(model, path)."
-    )
+    ))
 
 
 def _plain(v: Any) -> bool:

@@ -45,6 +45,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from ..annotations.errors import coded
 from ..annotations.spec import fn_fixed_sizes
 from .trace import Target, resolve, source_of, sub_jaxprs
 
@@ -222,6 +223,11 @@ class Cost:
 
     __repr__ = __str__
 
+    def _repr_html_(self) -> str:
+        from .display import cost_html
+
+        return cost_html(self)
+
 
 def si(v: float | Fraction, unit: str = "") -> str:
     """``3.24 GFLOP``, ``25.2 M``, ``64 B``: three significant digits and an SI prefix."""
@@ -271,7 +277,7 @@ def _user_eqns(jaxpr: Any) -> Iterator[Any]:
                 yield from _user_eqns(sub)
 
 
-def cost(target: Any, /, **sizes: Any) -> Cost:
+def cost(target: Any, config: Any = None, /, **sizes: Any) -> Cost:
     """Estimate the FLOPs (and, for a method, the parameter count) of an ``@fn``.
 
     ``target`` is an ``@fn``, an unbound struct method (``Model.__call__``: the
@@ -279,7 +285,13 @@ def cost(target: Any, /, **sizes: Any) -> Cost:
     (``model.__call__``: the instance's sizes and parameters). Keywords set
     static parameters (``heads=4``), the length ``L`` of lists of modules (also
     by the list's field name: ``blocks=12``), and sizes (``T=1024``). The counts are estimates: see the module docstring.
+    ``config`` gives the same in a config object, as ``Model(key, cfg)`` takes it
+    (entries the cost does not use are ignored; keywords override it).
     """
+    if config is not None:
+        from ..modules import call_config
+
+        target, sizes = call_config(target, config, sizes, "expex.cost")
     given = dict(sizes)
     s = resolve(target, sizes, "estimate the cost of")
     f, sizes, static_kw, notes = s.f, s.sizes, s.static_kw, s.notes
@@ -296,7 +308,7 @@ def cost(target: Any, /, **sizes: Any) -> Cost:
     known = fl.names() | (params.names() if params else set()) | (largest[1].names() if largest else set())
     for k in given:
         if k not in static_kw and k not in known | f.input_names | aliases | {"L"}:
-            raise TypeError(f"{f.name}: unknown size or parameter `{k}`")
+            raise coded("EX706", TypeError(f"{f.name}: unknown size or parameter `{k}`"))
     owner = getattr(f, "_owner_cls", None)
     order = [t.__name__ for src in (f.raw, owner) for t in getattr(src, "__type_params__", ())]
     order = [n for n in dict.fromkeys([*order, *sorted(known - {"L"}), "L"]) if n in known and n not in values]  # fmt: skip

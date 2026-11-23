@@ -18,7 +18,7 @@ from typing import Any
 import jax.numpy as jnp
 
 from ..annotations.dims import DConst, DName, DVar, _same, describe
-from ..annotations.errors import ShapeError
+from ..annotations.errors import ShapeError, coded
 from ..annotations.types import Dim
 
 #: Keyword arguments that take axes.
@@ -89,9 +89,9 @@ def size_(name: Any, call: Any = None) -> Any:
     if n is None:
         return name  # not a size name after all (e.g. rebound in an enclosing scope)
     if call is None and not CALLS.stack:
-        raise ShapeError(
+        raise coded("EX407", ShapeError(
             f"the size {n} is only known inside an @fn call."
-        )
+        ))
     env, fn = call or CALLS.stack[-1]
     if n.startswith("*"):
         if n[1:] in env.vars:
@@ -102,11 +102,11 @@ def size_(name: Any, call: Any = None) -> Any:
             return v
         if isinstance(name, type) and issubclass(name, Dim) and name.size is not None:
             return name.size  # a fixed size (class Rows(Dim, size=6)) is known everywhere
-    raise ShapeError(
+    raise coded("EX407", ShapeError(
         f"{getattr(fn, 'name', '?')}(): the size {n.lstrip('*')} is not known in this call: only sizes that appear in "
         f"the arguments, or are computed from them in an annotation, are known inside "
         f"the body."
-    )
+    ))
 
 
 def named_(
@@ -163,18 +163,18 @@ def resolve(name: str, arr: Any, site: str, var: str | None, fixed: int | None =
     # 2. the sizes
     where = f"{var or 'the array'}: {describe(arr)}"
     if name.startswith("*"):
-        raise ShapeError(
+        raise coded("EX408", ShapeError(
             f"{site}: cannot tell where {name} is in `{where}`. Annotate it "
             f"(`{var or 'y'}: f32[{name}, ...] = ...`)."
-        )
+        ))
     size = _size_of(name, env, fn)
     if size is None:
         size = fixed  # class Rows(Dim, size=6)
     if size is None:
-        raise ShapeError(
+        raise coded("EX408", ShapeError(
             f"{site}: axis {name} is not bound in this call, so `{where}` cannot be "
             f"searched for it. Is {name} a dimension of the signature?"
-        )
+        ))
     found = [i for i, s in enumerate(shape) if s is size or _same(s, size)]
     key = (site, name, len(shape))
     if len(found) == 1:
@@ -184,13 +184,13 @@ def resolve(name: str, arr: Any, site: str, var: str | None, fixed: int | None =
     if seen is not None and len(found) > 1 and seen in found:
         return seen
     if not found:
-        raise ShapeError(f"{site}: `{where}` has no axis of size {name} = {size}.")
-    raise ShapeError(
+        raise coded("EX408", ShapeError(f"{site}: `{where}` has no axis of size {name} = {size}."))
+    raise coded("EX408", ShapeError(
         f"{site}: `{where}` has several axes of size {name} = {size} "
         f"(axes {', '.join(map(str, found))}), so the name does not say which one. "
         f"Annotate the value (`{var or 'y'}: f32[...] = ...`), with a different name "
         f"for each axis."
-    )
+    ))
 
 
 def fmt(dims: tuple[Any, ...]) -> str:
@@ -201,10 +201,10 @@ def _from_dims(name: str, dims: tuple[Any, ...], var_index: int | None, rank: in
     star = name.startswith("*")
     base = name[1:] if star else name
     if sum(isinstance(d, DName) and d.name == base for d in dims) > 1:
-        raise ShapeError(
+        raise coded("EX408", ShapeError(
             f"{name} names more than one axis of `{fmt(dims)}`, so it cannot pick one. "
             f"Give the axes different names, e.g. f32[T, S] with S for the second."
-        )
+        ))
     for i, d in enumerate(dims):
         if star and isinstance(d, DVar) and d.name == base:
             n = len(env.vars.get(base, ())) if env is not None else rank - (len(dims) - 1)
@@ -234,16 +234,16 @@ def einsum_(operands: tuple[Any, ...], variables: tuple[str | None, ...], to: An
     from .ops import CALLS
 
     if call is None and not CALLS.stack:
-        raise ShapeError("expex.einsum() finds axes by name, so it only works inside an @fn.")
+        raise coded("EX409", ShapeError("expex.einsum() finds axes by name, so it only works inside an @fn."))
     env, fn = call or CALLS.stack[-1]
     outs = _names(to if isinstance(to, (tuple, list)) else (to,), env)
     twice = sorted({n for n in outs if outs.count(n) > 1})
     if twice:
-        raise ShapeError(
+        raise coded("EX409", ShapeError(
             f"{site}: {', '.join(twice)} appears more than once in `to`. Two axes need two "
             f"names: annotate a copy of the operand with another one, e.g. "
             f"`h2: f32[T, E] = h` for `to=(D, E)`."
-        )
+        ))
     letters: dict[str, str] = {}
     sizes: dict[str, Any] = {}
     specs = []
@@ -251,16 +251,16 @@ def einsum_(operands: tuple[Any, ...], variables: tuple[str | None, ...], to: An
         names = _operand_names(x, var, env, fn, site)
         for n, s in zip(names, jnp.shape(x)):
             if n in sizes and not (sizes[n] is s or _same(sizes[n], s)):
-                raise ShapeError(
+                raise coded("EX409", ShapeError(
                     f"{site}: axis {n} has size {sizes[n]} in one operand and {s} in "
                     f"`{var or 'another'}: {describe(x)}`."
-                )
+                ))
             sizes.setdefault(n, s)
             letters.setdefault(n, chr(ord("a") + len(letters)))
         specs.append("".join(letters[n] for n in names))
     missing = [n for n in outs if n not in letters]
     if missing:
-        raise ShapeError(f"{site}: `to` names {', '.join(missing)}, which no operand has.")
+        raise coded("EX409", ShapeError(f"{site}: `to` names {', '.join(missing)}, which no operand has."))
     return _named_result(jnp.einsum(",".join(specs) + "->" + "".join(letters[n] for n in outs), *operands), outs, env)
 
 
@@ -283,7 +283,7 @@ def _names(items: Any, env: Any) -> list[str]:
     for v in items:
         n = axis_name(v)
         if n is None:
-            raise TypeError(f"expex.einsum(to=...) takes size names (B, T, ...), not {v!r}")
+            raise coded("EX409", TypeError(f"expex.einsum(to=...) takes size names (B, T, ...), not {v!r}"))
         if n.startswith("*"):
             out += [f"{n}{i}" for i in range(len(env.vars.get(n[1:], ())))]
         else:
@@ -330,11 +330,11 @@ def _operand_names(x: Any, var: str | None, env: Any, fn: Any, site: str) -> lis
         hits = [n for n, v in known.items() if v is s or _same(v, s)]
         if len(hits) != 1:
             what = "no size of this call" if not hits else f"{' and '.join(hits)} alike"
-            raise ShapeError(
+            raise coded("EX408", ShapeError(
                 f"{site}: axis {i} of `{var or 'an operand'}: {describe(x)}` has size {s}, "
                 f"which matches {what}. Annotate the operand to name its axes: "
                 f"`{var or 'y'}: f32[...] = ...`."
-            )
+            ))
         out.append(hits[0])
     return out
 
@@ -356,7 +356,7 @@ def rearrange_(x: Any, var: str | None, to: Any, site: str, call: Any = None) ->
     from .ops import CALLS
 
     if call is None and not CALLS.stack:
-        raise ShapeError("expex.rearrange() finds axes by name, so it only works inside an @fn.")
+        raise coded("EX409", ShapeError("expex.rearrange() finds axes by name, so it only works inside an @fn."))
     env, fn = call or CALLS.stack[-1]
     src = _operand_names(x, var, env, fn, site)
     tgt = _names(to if isinstance(to, (tuple, list)) else (to,), env)
@@ -365,7 +365,7 @@ def rearrange_(x: Any, var: str | None, to: Any, site: str, call: Any = None) ->
         if n not in size:
             v = _size_of(n, env, fn)
             if v is None:
-                raise ShapeError(f"{site}: the size {n} in `to` is not known in this call.")
+                raise coded("EX407", ShapeError(f"{site}: the size {n} in `to` is not known in this call."))
             size[n] = v
     new, gone = [n for n in tgt if n not in src], [n for n in src if n not in tgt]
     # the finest axes: source axes, with the one(s) being split replaced by their parts
@@ -378,10 +378,10 @@ def rearrange_(x: Any, var: str | None, to: Any, site: str, call: Any = None) ->
     elif not new and not gone:
         fine, target = src, tgt  # a transpose
     else:
-        raise ShapeError(
+        raise coded("EX409", ShapeError(
             f"{site}: cannot rearrange [{', '.join(src)}] to [{', '.join(tgt)}]: one axis may be "
             f"split into several new ones, or several merged into one new one, per call."
-        )
+        ))
     y = jnp.reshape(x, tuple(size[n] for n in fine))
     y = jnp.transpose(y, tuple(fine.index(n) for n in target))
     return _named_result(jnp.reshape(y, tuple(size[n] for n in tgt)), tgt, env)

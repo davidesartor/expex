@@ -14,6 +14,11 @@ keeps only what is its own: its markup, its extra styles and its script.
   ``data-p`` for the parent), collapsible with ``button.tg`` and sortable by
   headers with ``data-k`` (rows sort within their parent by ``data-<k>``).
 - :func:`data`: a value as JSON that is safe inside ``<script>``.
+
+Light or dark follows ``prefers-color-scheme``; ``<html data-theme="light">`` or
+``"dark"`` overrides it (the toggles of ``expex.inspect`` and the diagram page).
+Fragments that ``expex.inspect`` puts in one page mark the modules they show
+with ``data-path`` (``blocks[3].attn``), so that a click selects the module.
 """
 
 import html
@@ -34,16 +39,26 @@ def uid(prefix: str) -> str:
 
 
 def tokens(scope: str, light: str = "", dark: str = "") -> str:
-    """The palette on ``scope`` (``:root`` or ``#id``), plus a tool's own ``light`` / ``dark`` properties."""
-    return f"{scope}{{{_LIGHT};{light}}}@media (prefers-color-scheme:dark){{{scope}{{{_DARK};{dark}}}}}"
+    """The palette on ``scope`` (``:root`` or ``#id``), plus a tool's own ``light`` / ``dark`` properties.
+
+    Dark follows ``prefers-color-scheme``, unless the page's ``<html data-theme="light|dark">``
+    says otherwise (the toggle of ``expex.inspect`` and of the diagram page sets it).
+    """
+    on = lambda when: f"{when}{scope}" if scope == ":root" else f"{when} {scope}"  # noqa: E731
+    return (f"{scope}{{{_LIGHT};{light}}}@media (prefers-color-scheme:dark){{{on(':root:not([data-theme=light])')}"
+            f"{{{_DARK};{dark}}}}}{on(':root[data-theme=dark]')}{{{_DARK};{dark}}}")  # fmt: skip
+
+
+#: ``color-scheme`` (form controls, scroll bars) following the same switch as :func:`tokens`.
+SCHEME = ":root{color-scheme:light dark}:root[data-theme=light]{color-scheme:light}:root[data-theme=dark]{color-scheme:dark}"
 
 
 def document(title: str, body: str, style: str = "") -> str:
     """A standalone page around ``body``; ``style`` is added to its stylesheet."""
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" "
-        f"content=\"width=device-width, initial-scale=1\"><title>{html.escape(title)}</title><style>"
-        f"body{{margin:0;padding:16px;background:Canvas;color:CanvasText;color-scheme:light dark}}{style}"
+        f"content=\"width=device-width, initial-scale=1\"><title>{html.escape(title)}</title><style>{SCHEME}"
+        f"body{{margin:0;padding:16px;background:Canvas;color:CanvasText}}{style}"
         f"</style></head><body>{body}</body></html>"
     )
 

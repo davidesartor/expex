@@ -97,7 +97,7 @@ if __name__ == "__main__":
 
     section("4. Vectorising from the signature")
     batch = jr.normal(jr.key(2), (32, 20, 3))
-    print("rnn.vectorize on a batch:", rnn.vectorize(p, batch).shape)
+    print("rnn on a batch, mapped over its leading axis:", rnn(p, batch).shape)
 
     section("5. Implicit random keys")
 

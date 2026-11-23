@@ -14,7 +14,7 @@ from jax import lax
 from jax.core import Tracer
 
 from .. import keys
-from ..annotations.errors import StageError
+from ..annotations.errors import StageError, coded, strip_see
 from .flow import (
     LOG,
     UNDEF,
@@ -103,10 +103,10 @@ class rows:
         self.chunk = chunk
         leaves = jax.tree.leaves(tree)
         if not leaves:
-            raise ValueError("rows() needs a pytree with at least one array")
+            raise coded("EX211", ValueError("rows() needs a pytree with at least one array"))
         sizes = {int(jnp.shape(x)[0]) for x in leaves}
         if len(sizes) != 1:
-            raise ValueError(f"rows(): leading axes differ: {sorted(sizes)}")
+            raise coded("EX211", ValueError(f"rows(): leading axes differ: {sorted(sizes)}"))
         self.tree = tree
         self.n = sizes.pop()
 
@@ -131,7 +131,7 @@ def stack(seq: Any) -> Any:
         return seq.array
     seq = list(seq)
     if not seq:
-        raise ValueError("stack() of an empty list")
+        raise coded("EX211", ValueError("stack() of an empty list"))
     return jax.tree.map(lambda *xs: jnp.stack(xs), *seq)
 
 
@@ -163,7 +163,7 @@ def range_(*args: Any) -> Any:
         n = (hi - lo) if step == 1 else -(-(hi - lo) // step)
         return _Iter(n, (), lambda x, i: lo + _weaken(i) * step, lambda: range(lo, hi, step))
     if isinstance(step, Tracer):
-        raise StageError("range() with a traced step is not supported; make the step a Python int.")
+        raise coded("EX208", StageError("range() with a traced step is not supported; make the step a Python int."))
     n = jnp.maximum(0, -(-(jnp.asarray(hi) - lo) // step))
     return _Iter(n, (), lambda x, i: lo + _weaken(i) * step, lambda: range(lo, hi, step))
 
@@ -228,7 +228,7 @@ def for_(
         try:
             return _lower_for(it, body_fn, state, names, carried, live, site, k)
         except _CannotLower as e:
-            LOG[site] = f"for -> unrolled ({e})"
+            LOG[site] = f"for -> unrolled ({strip_see(str(e))})"
         except StageError:
             raise
         except Exception as e:  # e.g. the loop index is used as a Python int
@@ -385,12 +385,12 @@ def _fori(
     """A loop whose trip count is traced: ``lax.while_loop`` with a counter."""
     for i, v in enumerate(state):
         if isinstance(v, (list, Stacked)):
-            raise StageError(
+            raise coded("EX205", StageError(
                 f"`{names[i]}.append(...)` runs in the `for` at {site}, whose number of "
                 f"iterations is traced, so the list's length would depend on data.\n"
                 f"    Preallocate an array and fill it with {names[i]}.at[i].set(...), or "
                 f"make the trip count Static."
-            )
+            ))
     need = [i for i, v in enumerate(state) if v is UNDEF and names[i] in live]
     if need:
         zeros = _probe(
@@ -414,16 +414,16 @@ def _fori(
                 continue
             if state[j] is UNDEF:
                 if names[j] in live and v is not UNDEF:
-                    raise StageError(
+                    raise coded("EX206", StageError(
                         f"`{names[j]}` is first assigned inside the `for` at {site}, whose "
                         f"number of iterations is traced, and used after it. Give it a value "
                         f"before the loop."
-                    )
+                    ))
             elif not _same_static(v, state[j]):
-                raise StageError(
+                raise coded("EX207", StageError(
                     f"`{names[j]}` ({_desc(state[j])}) changes inside the traced-length `for` "
                     f"at {site}; only arrays can change in a traced loop."
-                )
+                ))
         return i + 1, tuple(out[j] for j in dyn)
 
     LOG[site] = "for -> lax.while_loop (traced number of iterations)"

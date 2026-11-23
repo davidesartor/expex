@@ -9,6 +9,8 @@ import ast
 import operator
 from typing import Any, Collection, Mapping
 
+from .errors import coded
+
 _BIN = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
@@ -35,15 +37,15 @@ class ExprError(ValueError):
 def _validate(node: ast.AST, src: str, names: set[str], allow_compare: bool) -> None:
     if isinstance(node, ast.Constant):
         if type(node.value) is not int:
-            raise ExprError(f"only integer literals are allowed in {src!r}")
+            raise coded("EX403", ExprError(f"only integer literals are allowed in {src!r}"))
     elif isinstance(node, ast.Name):
         if node.id not in _FUNCS:
             names.add(node.id)
     elif isinstance(node, ast.BinOp):
         if isinstance(node.op, ast.Div):
-            raise ExprError(f"use `//` instead of `/` in {src!r}")
+            raise coded("EX403", ExprError(f"use `//` instead of `/` in {src!r}"))
         if type(node.op) not in _BIN:
-            raise ExprError(f"unsupported operator in {src!r}")
+            raise coded("EX403", ExprError(f"unsupported operator in {src!r}"))
         _validate(node.left, src, names, False)
         _validate(node.right, src, names, False)
     elif isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
@@ -58,11 +60,11 @@ def _validate(node: ast.AST, src: str, names: set[str], allow_compare: bool) -> 
             _validate(a, src, names, False)
     elif isinstance(node, ast.Compare) and allow_compare:
         if len(node.ops) != 1 or type(node.ops[0]) not in _CMP:
-            raise ExprError(f"unsupported comparison in {src!r}")
+            raise coded("EX403", ExprError(f"unsupported comparison in {src!r}"))
         _validate(node.left, src, names, False)
         _validate(node.comparators[0], src, names, False)
     else:
-        raise ExprError(f"unsupported syntax in dimension expression {src!r}")
+        raise coded("EX403", ExprError(f"unsupported syntax in dimension expression {src!r}"))
 
 
 def _eval(node: ast.AST, env: Mapping[str, Any]) -> Any:
@@ -94,11 +96,11 @@ class Expr:
         try:
             tree = ast.parse(self.src, mode="eval").body
         except SyntaxError as e:
-            raise ExprError(f"cannot parse dimension expression {src!r}") from e
+            raise coded("EX403", ExprError(f"cannot parse dimension expression {src!r}")) from e
         names: set[str] = set()
         _validate(tree, self.src, names, constraint)
         if constraint and not isinstance(tree, ast.Compare):
-            raise ExprError(f"constraint {src!r} must be a comparison, e.g. 'T >= 2'")
+            raise coded("EX403", ExprError(f"constraint {src!r} must be a comparison, e.g. 'T >= 2'"))
         self._tree = tree
         self.names = frozenset(names)
         self.is_constraint = constraint
