@@ -11,6 +11,7 @@ inconclusive for symbolic sizes) the prover falls back to a few concrete
 sizes and says so: that is a spot check, not a proof.
 """
 
+import ast
 import importlib
 import itertools
 import math
@@ -25,6 +26,7 @@ import jax
 from jax import export
 
 from ..annotations.errors import ShapeError, StageError
+from ..annotations.expr import Expr
 from ..annotations.spec import Unsynthesizable
 from ..function import REGISTRY, BoundFn, Fn, unwrap
 from . import trace
@@ -218,10 +220,15 @@ def _prove_fn(f: Fn[Any, Any], examples: dict[str, Any] | None) -> Report:
     dropped: list[str] = []
 
     worst = Report(f, PROVED, cases=len(cases))
+    skipped = 0
     for combo, rank in cases:
         fixed = dict(zip(fixed_names, combo))
         var_rank = dict(zip(var_names, rank))
         found = trace.statics(f, fixed)
+        found.update(_pinned(f, found))
+        if not _admissible(f, found):  # e.g. min_deg=2, max_deg=1 against `assert min_deg <= max_deg`
+            skipped += 1
+            continue
         scope, dropped = trace.constraints(f, found)
         r = _prove_case(f, fixed, abstract, var_rank, scope, found)
         label = _case_label(fixed, var_rank)
@@ -232,12 +239,42 @@ def _prove_fn(f: Fn[Any, Any], examples: dict[str, Any] | None) -> Report:
             worst = r
             if r.status == FAILED:
                 break
+    if skipped == len(cases):
+        return Report(f, UNCHECKED, "no combination of the values tried satisfies the leading asserts.")
+    worst.cases = len(cases) - skipped
     if dropped and worst.status == PROVED:
         worst.notes.append(
             "constraints not expressible symbolically were only checked at run time: "
             + ", ".join(f"`{d}`" for d in dropped)
         )
     return worst
+
+
+def _pinned(f: Fn[Any, Any], statics: dict[str, int]) -> dict[str, int]:
+    """Sizes a leading assert fixes from static ints: ``{"P": 63}`` for ``assert P == 3 * (1 + 2 * self.deg)``."""
+    out: dict[str, int] = {}
+    for w in [*f.where, *f.assumed]:
+        tree = w._tree
+        if not (isinstance(tree, ast.Compare) and isinstance(tree.ops[0], ast.Eq)):
+            continue
+        for name, other in ((tree.left, tree.comparators[0]), (tree.comparators[0], tree.left)):
+            if isinstance(name, ast.Name) and name.id not in statics and name.id not in out:
+                value = Expr(ast.unparse(other))
+                try:
+                    if value.names <= statics.keys():
+                        out[name.id] = int(value(statics))
+                        break
+                except ArithmeticError:  # e.g. a division by zero: the trace reports it
+                    pass
+    return out
+
+
+def _admissible(f: Fn[Any, Any], statics: dict[str, int]) -> bool:
+    """Do the static ints satisfy the leading asserts that mention only them?"""
+    try:
+        return all(bool(w(statics)) for w in [*f.where, *f.assumed] if w.names <= statics.keys())
+    except Exception:
+        return True  # cannot tell here: the trace will
 
 
 def _case_label(fixed: dict[str, Any], var_rank: dict[str, int]) -> str:

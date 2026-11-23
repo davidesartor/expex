@@ -234,9 +234,12 @@ def resolve(env: Env) -> None:
                         f"axis {axis} should be {d} = {expected} (with {binds}), but is {actual}.",
                     )  # fmt: skip
                 progress = True
-            elif len(unbound) == 1 and not is_symbolic(actual):
+            elif len(unbound) == 1:
                 name = unbound[0]
-                solved = _solve(d.expr, name, int(actual), env.dims)
+                solved = _solve(d.expr, name, actual, env.dims)
+                if solved is None and is_symbolic(actual):  # `W + V` = `W + 27`: V is 27; else wait
+                    rest.append(item)
+                    continue
                 if solved is None:
                     raise Mismatch(
                         path, spec, value,
@@ -259,8 +262,11 @@ def resolve(env: Env) -> None:
     env.deferred = []
 
 
-def _solve(expr: Expr, name: str, target: int, dims: dict[str, Any]) -> int | None:
-    """Solve ``expr(name) == target`` assuming ``expr`` is linear in ``name``."""
+def _solve(expr: Expr, name: str, target: Any, dims: dict[str, Any]) -> int | None:
+    """Solve ``expr(name) == target`` assuming ``expr`` is linear in ``name``.
+
+    ``target`` and the other sizes may be symbolic, as long as the solution is a number.
+    """
     try:
         f0 = expr({**dims, name: 0})
         f1 = expr({**dims, name: 1})
@@ -268,7 +274,7 @@ def _solve(expr: Expr, name: str, target: int, dims: dict[str, Any]) -> int | No
         if a == 0 or (target - f0) % a:
             return None
         cand = (target - f0) // a
-        if cand < 0 or expr({**dims, name: cand}) != target:
+        if not isinstance(cand, (int, np.integer)) or cand < 0 or expr({**dims, name: cand}) != target:
             return None
         return int(cand)
     except Exception:

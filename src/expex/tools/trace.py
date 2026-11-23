@@ -73,7 +73,7 @@ class Sizes:
         var_rank: dict[str, int],
         preset: dict[str, int] | None = None,
         list_length: int = 2,
-        multiples: dict[str, int] | None = None,
+        multiples: dict[str, int | str] | None = None,
     ):
         self.scope = scope
         self.sizes = sizes
@@ -100,7 +100,10 @@ class Sizes:
     def dim(self, name: str) -> Any:
         if name not in self.dims:
             m = self.multiples.get(name) if self.scope is not None else None
-            self.dims[name] = m * self._sym(f"{name}_div{m}") if m else self._sym(name)
+            if isinstance(m, str):  # H % P == 0: traced as P·H_divP
+                self.dims[name] = self.dim(m) * self._sym(f"{name}_div{m}")
+            else:
+                self.dims[name] = m * self._sym(f"{name}_div{m}") if m else self._sym(name)
         return self.dims[name]
 
     def fresh(self) -> Any:
@@ -245,11 +248,13 @@ def constraints(f: Fn[Any, Any], statics: dict[str, int]) -> tuple[list[str], li
     """
     good, dropped = [], []
     inputs = {n for n in f.input_names if not n.startswith("*")} | statics.keys()
+    made = multiples(f, statics)
     for w in [*f.where, *f.assumed]:
         if not w.names <= inputs:
             continue
-        if w.names <= statics.keys() or divisibility(w, statics):
-            continue  # no free sizes: checked directly when the function is called
+        d = divisibility(w, statics, inputs)
+        if w.names <= statics.keys() or d and (isinstance(d[1], int) or made.get(d[0]) == d[1]):
+            continue  # no free sizes, or a multiple by construction: checked directly when the function is called
         j = to_jax_constraint(w, statics)
         try:
             if j is None:
@@ -261,16 +266,32 @@ def constraints(f: Fn[Any, Any], statics: dict[str, int]) -> tuple[list[str], li
     return good, dropped
 
 
-def multiples(f: Fn[Any, Any], statics: dict[str, int]) -> dict[str, int]:
+def multiples(f: Fn[Any, Any], statics: dict[str, int]) -> dict[str, int | str]:
     """Sizes the constraints say are multiples: ``{"K": 2}`` for ``assert K % 2 == 0``.
 
-    Traced as ``2·K_div2``, so that ``K // 2 * 2`` simplifies to ``K``.
+    Traced as ``2·K_div2``, so that ``K // 2 * 2`` simplifies to ``K``. A multiple
+    of another size (``assert H % P == 0``) is ``{"H": "P"}``, traced as ``P·H_divP``.
+    Only one such size per name, and none mixed with numbers or in a cycle: each
+    of those would trace fewer sizes than the constraints allow.
     """
     inputs = {n for n in f.input_names if not n.startswith("*")}
-    out: dict[str, int] = {}
+    out: dict[str, int | str] = {}
     for w in [*f.where, *f.assumed]:
-        if (d := divisibility(w, statics)) is not None and d[0] in inputs:
-            out[d[0]] = math.lcm(out.get(d[0], 1), d[1])
+        if (d := divisibility(w, statics, inputs)) is None or d[0] not in inputs:
+            continue
+        name, m = d
+        if isinstance(m, int):
+            if not isinstance(out.get(name), str):
+                out[name] = math.lcm(int(out.get(name, 1)), m)
+            continue
+        if name in out or m not in inputs:
+            continue
+        seen, k = {name}, m
+        while isinstance(k, str) and k not in seen:  # P % H == 0 too would be a cycle
+            seen.add(k)
+            k = out.get(k)
+        if not isinstance(k, str):
+            out[name] = m
     return out
 
 

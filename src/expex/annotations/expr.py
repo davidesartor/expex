@@ -7,7 +7,7 @@ overload the same arithmetic operators.
 
 import ast
 import operator
-from typing import Any, Mapping
+from typing import Any, Collection, Mapping
 
 _BIN = {
     ast.Add: operator.add,
@@ -173,8 +173,13 @@ def to_jax_constraint(expr: Expr, consts: Mapping[str, int] | None = None) -> st
     return None
 
 
-def divisibility(expr: Expr, consts: Mapping[str, int] | None = None) -> tuple[str, int] | None:
-    """``("K", 2)`` for the constraint ``K % 2 == 0`` (the modulus may be a name in ``consts``), else None."""
+def divisibility(
+    expr: Expr, consts: Mapping[str, int] | None = None, sizes: Collection[str] = ()
+) -> tuple[str, int | str] | None:
+    """``("K", 2)`` for the constraint ``K % 2 == 0`` (the modulus may be a name in ``consts``), else None.
+
+    ``("H", "P")`` for ``H % P == 0`` with ``P`` one of ``sizes``: a multiple of another size.
+    """
     tree, consts = expr._tree, consts or {}
     if not (isinstance(tree, ast.Compare) and isinstance(tree.ops[0], ast.Eq)):
         return None
@@ -186,6 +191,8 @@ def divisibility(expr: Expr, consts: Mapping[str, int] | None = None) -> tuple[s
     if not (isinstance(left.op, ast.Mod) and isinstance(left.left, ast.Name)) or left.left.id in consts:
         return None
     m = left.right
+    if isinstance(m, ast.Name) and m.id in sizes and m.id not in consts and m.id != left.left.id:
+        return (left.left.id, m.id)
     k = m.value if isinstance(m, ast.Constant) else consts.get(m.id) if isinstance(m, ast.Name) else None
     return (left.left.id, k) if isinstance(k, int) and k > 1 else None
 

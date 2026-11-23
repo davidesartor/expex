@@ -767,7 +767,8 @@ def static_type(ann: Any, _seen: tuple[type, ...] = ()) -> bool:
         return True
     if origin is typing.Annotated:
         return static_type(args[0], _seen)
-    if ann is typing.Callable or origin in (typing.Callable, __import__("collections.abc").abc.Callable):
+    abc_callable = __import__("collections.abc").abc.Callable
+    if ann is typing.Callable or ann is abc_callable or origin in (typing.Callable, abc_callable):
         return True
     if origin is type or ann is type:
         return True
