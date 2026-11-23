@@ -6,6 +6,7 @@ import copy
 import dataclasses
 import functools
 import inspect
+import types
 import os
 import weakref
 from typing import (
@@ -209,9 +210,11 @@ class Fn(Generic[P, R]):
             where = [where]
         self.where = [Expr(w, constraint=True) for w in where]
 
+        derived = self.defs
+
         def derive(d: Any) -> Any:
-            if isinstance(d, DName) and d.name in self.defs:
-                return DExpr(self.defs[d.name], d.name)
+            if isinstance(d, DName) and d.name in derived:
+                return DExpr(derived[d.name], d.name)
             return d
 
         anns = _annotations(raw)
@@ -379,8 +382,8 @@ class Fn(Generic[P, R]):
     ) -> Any:
         __tracebackhide__ = True
         if self.random:
-            if key is None:
-                key = _rng.fresh(f"{self.name}()")
+            if key is None and "key" in self.params:
+                key = self._own_key(args, kwargs)
             if not isinstance(key, _BatchTracer) and any(
                 isinstance(x, _BatchTracer) for x in jax.tree.leaves((args, kwargs))
             ):
@@ -390,9 +393,23 @@ class Fn(Generic[P, R]):
                     f"    - use {self.name}.lift(...), which gives each element its own key\n"
                     f"    - or split a key yourself and pass the keys: {self.name}(..., key=keys)"
                 )
+            if key is None:
+                key = _rng.fresh(f"{self.name}()")
             with _rng.child(key):
                 return self._run_checked(args, kwargs, env, force)
         return self._run_checked(args, kwargs, env, force)
+
+    def _own_key(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+        """For a random function with its own ``key`` parameter: derive the implicit keys from it."""
+        try:
+            k = self._sig.bind(*args, **kwargs).arguments.get("key")
+        except TypeError:
+            return None
+        if k is None:
+            return None
+        if getattr(getattr(k, "dtype", None), "name", "").startswith("key<"):
+            return jax.random.fold_in(k, 0x7478)
+        return jax.random.fold_in(jax.random.wrap_key_data(k), 0x7478)
 
     def _run_checked(
         self, args: tuple[Any, ...], kwargs: dict[str, Any], env: Env | None, force: bool
@@ -411,6 +428,7 @@ class Fn(Generic[P, R]):
             return self._impl(*args, **kwargs)  # let Python raise its own error
         for name in self.static_refs:
             v = bound[name] if name in bound else self.params[name].default
+            v = _concrete_int(v)
             if isinstance(v, Tracer):
                 raise StageError(
                     f"{self.name}(): `{name}` sets a size, so it must be known when the "
@@ -423,7 +441,7 @@ class Fn(Generic[P, R]):
         if self.field_refs:
             obj = bound.get(next(iter(self.params)))
             for name in self.field_refs:
-                v = getattr(obj, name, None)
+                v = _concrete_int(getattr(obj, name, None))
                 if isinstance(v, (int, np.integer)) and not isinstance(v, bool):
                     env.dims[name] = int(v)
                     env.origin[name] = f"`self.{name}`"
@@ -665,6 +683,9 @@ class BoundFn(Generic[P, R]):
 
 def unwrap(f: Any) -> Any:
     """The ``Fn`` (or ``BoundFn``) under wrappers such as ``jax.jit``, else ``f`` itself."""
+    if isinstance(f, types.MethodType):  # e.g. a jitted method, bound to an instance
+        inner = unwrap(f.__func__)
+        return inner.__get__(f.__self__) if isinstance(inner, Fn) else f
     g = f
     for _ in range(16):
         if isinstance(g, (Fn, BoundFn)):
@@ -673,6 +694,14 @@ def unwrap(f: Any) -> Any:
         if g is None:
             break
     return f
+
+
+def _concrete_int(v: Any) -> Any:
+    """A concrete 0-d integer array as a Python int; anything else unchanged."""
+    if not isinstance(v, Tracer) and getattr(v, "shape", None) == () and hasattr(v, "dtype"):
+        if np.dtype(v.dtype).kind in "iu":
+            return int(v)
+    return v
 
 
 def _field_names(cls: Any) -> set[str]:
@@ -746,7 +775,7 @@ def fn(
         "checked": "use `with tx.config(checked=False):`",
     }
     for k, v in dims.items():
-        if not isinstance(v, str):
+        if k in moved or not isinstance(v, str):
             hint = moved.get(k, "derived sizes are strings, e.g. U=\"T + 1\"")
             raise TypeError(f"@tx.fn got {k}={v!r}: {hint}.")
 
@@ -754,6 +783,7 @@ def fn(
         flags: dict[str, bool] = {}
         if isinstance(raw, Fn):
             flags = {"random": raw.random, "auto_lift": raw.auto_lift}
+            REGISTRY.discard(raw)
             raw = raw.raw
         out = Fn(raw, prove=prove, convert=convert, examples=examples, where=where, defs=dims)
         vars(out).update(flags)
@@ -767,7 +797,21 @@ def fn(
 def _flagged(f: Any, flag: str) -> Any:
     if isinstance(f, (staticmethod, classmethod)):
         return type(f)(_flagged(f.__func__, flag))
-    g = copy.copy(f) if isinstance(f, Fn) else fn(f)
+    if not isinstance(f, Fn) and hasattr(f, "__wrapped__"):
+        deco = "@tx.random" if flag == "random" else "@tx.lift"
+        raise TypeError(
+            f"{deco} must go under @jax.jit / @jax.checkpoint (inside it would be "
+            f"compiled once and repeat): put it directly on the @tx.fn function, or use "
+            f"@tx.jit, which handles random functions."
+        )
+    if isinstance(f, Fn):
+        g = copy.copy(f)
+        g.params = {k: Param(p.name, p.spec, p.kind, p.default) for k, p in f.params.items()}
+        g._declared = set(f._declared)
+        g.examples = dict(f.examples)
+        REGISTRY.discard(f)
+    else:
+        g = fn(f)
     setattr(g, flag, True)
     REGISTRY.add(g)
     return g
@@ -788,6 +832,46 @@ def lift(f: Callable[P, R], /) -> Fn[P, R]:
     function is wrapped with :func:`fn` first.
     """
     return _flagged(f, "auto_lift")
+
+
+def jit(f: Callable[P, R] | None = None, /, **options: Any) -> Any:
+    """``jax.jit``, with the static arguments read from the signature.
+
+    ::
+
+        @tx.jit
+        def tile[N, K](x: f32[N], n: int) -> f32[K]: ...    # n is static
+
+    Parameters annotated with plain Python types (``int``, ``bool``, ``str``,
+    tuples, callables, enums, ...) and ``Static[...]`` are static; arrays and
+    ``float`` / ``complex`` numbers are traced, so a new learning rate does not
+    recompile. A ``@tx.random`` function draws a fresh key outside the compiled
+    code on every call, unless ``key=`` is given. Other options go to ``jax.jit``.
+    A plain function is wrapped with :func:`fn` first.
+    """
+    if f is None:
+        return lambda g: jit(g, **options)
+    if isinstance(f, (staticmethod, classmethod)):
+        return type(f)(jit(f.__func__, **options))
+    g = f if isinstance(f, Fn) else fn(f)
+    static = [
+        n for n, p in g.params.items()
+        if isinstance(p.spec, StaticSpec) and (p.spec.explicit or p.spec.inner not in (float, complex))
+    ]  # fmt: skip
+    given = options.pop("static_argnames", ())
+    static += [given] if isinstance(given, str) else list(given)
+    compiled = jax.jit(g, static_argnames=tuple(dict.fromkeys(static)), **options)
+    if not g.random:
+        return compiled
+
+    @functools.wraps(compiled)
+    def call(*args: Any, **kwargs: Any) -> Any:
+        __tracebackhide__ = True
+        if "key" not in kwargs and "key" not in g.params:
+            kwargs["key"] = _rng.fresh(f"{g.name}()")
+        return compiled(*args, **kwargs)
+
+    return call
 
 
 def random(f: Callable[P, R], /) -> Fn[P, R]:

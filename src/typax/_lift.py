@@ -51,10 +51,13 @@ def lift(f: Fn[Any, Any], args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
     n = len(bshape)
     prepared: list[Any] = []
     levels: list[set[int]] = []
-    if f.random:  # one key per example
+    if f.random and "key" not in f.params:  # one key per example
         if key is None:
             key = _rng.fresh(f"{f.name}.lift()")
-        prepared.append(jr.split(key, bshape))
+        if KeySpec.batch_shape(key):  # already one key per example
+            prepared.append(jnp.broadcast_to(key, bshape))
+        else:
+            prepared.append(jr.split(key, bshape))
         levels.append(set(range(n)))
     for (spec, v, path), b in zip(leaves, batches):
         if isinstance(spec, KeySpec) and not b:
@@ -73,7 +76,7 @@ def lift(f: Fn[Any, Any], args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
 
     def core_fn(*lv: Any) -> Any:
         it = iter(lv)
-        k = next(it) if f.random else None
+        k = next(it) if f.random and "key" not in f.params else None
         new = f._walk(ba.arguments, lambda s, x, p: next(it))
         b2 = inspect.BoundArguments(f._sig, new)  # type: ignore[arg-type]
         return f._run(b2.args, b2.kwargs, key=k)

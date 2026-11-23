@@ -10,7 +10,7 @@ import typax as tx
 from typax import Bool, Float, Key, fn
 
 
-@jax.jit
+@tx.jit
 @fn
 def mask_covariance[*B, N](cov: Float[*B, N, N], mask: Bool[*B, N]) -> Float[*B, N, N]:
     """Zero the masked-out rows/columns, an identity block keeps the factorization valid."""
@@ -28,7 +28,7 @@ def safe_sqrt(x: Float) -> Float:
     return 0.0
 
 
-@functools.partial(jax.jit, static_argnames="shape")
+@tx.jit
 @fn
 def latin_hypercube_sample(key: Key, shape: tuple[int, ...]):
     """Sample shape[0] unit-cube points, stratified over the flattened trailing dims."""
@@ -43,7 +43,7 @@ def latin_hypercube_sample(key: Key, shape: tuple[int, ...]):
     return x.reshape(shape)
 
 
-@jax.jit
+@tx.jit
 @fn
 def rescale(x, low, high):
     """Map unit-cube points to the box [low, high]."""

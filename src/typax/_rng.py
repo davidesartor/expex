@@ -22,6 +22,7 @@ import threading
 from typing import Any, Iterator
 
 import jax.random as jr
+from jax.core import Tracer
 
 from ._errors import StageError
 
@@ -41,13 +42,15 @@ def tracing() -> bool:
 class KeyCtx:
     """A key plus a counter. The key is derived lazily from ``(base, salt)``."""
 
-    __slots__ = ("_base", "_salt", "_key", "n")
+    __slots__ = ("_base", "_salt", "_key", "n", "outside")
 
     def __init__(self, base: Any, salt: Any = None):
         self._base = base
         self._salt = salt
         self._key = base if salt is None else None
         self.n = 0
+        #: Opened outside any JAX transformation (its key is a plain value).
+        self.outside = not tracing()
 
     @property
     def key(self) -> Any:
@@ -90,6 +93,14 @@ def fresh(what: str = "typax.key()") -> Any:
     """A new key from the active context, or from the global key at top level."""
     ctx = current()
     if ctx is not None:
+        if ctx.outside and tracing() and not isinstance(ctx.key, Tracer):
+            raise StageError(
+                f"{what} needs a key, but the key in scope was set outside this "
+                f"jit/vmap/grad, so inside it would be a constant: a compiled function "
+                f"would draw the same numbers on every call.\n"
+                f"    - pass the key to a @tx.random function:   f(x, key=key)\n"
+                f"    - or open the scope inside the transformed function:   with tx.rng(key): ..."
+            )
         return ctx.next()
     if tracing():
         raise StageError(

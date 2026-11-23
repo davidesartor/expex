@@ -32,7 +32,7 @@ import textwrap
 import types
 from typing import Any, Callable, Iterable
 
-from . import _runtime
+from . import _axes, _runtime
 
 FLOW = "__typax_flow__"
 RET = "__bn_ret__"
@@ -436,10 +436,14 @@ class _Exprs(ast.NodeTransformer):
         site: Callable[[ast.AST], ast.expr],
         first_param: str | None = None,
         builtins_ok: set[str] | frozenset[str] = frozenset(),
+        axis_names: set[str] | frozenset[str] = frozenset(),
     ):
         self.site = site
         self.first_param = first_param
         self.builtins_ok = builtins_ok
+        self.axis_names = axis_names
+        #: Calls rewritten to take axes by name.
+        self.named = 0
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
         return node  # nested functions are left alone
@@ -466,7 +470,29 @@ class _Exprs(ast.NodeTransformer):
         ):
             # builtins that need a concrete value: staged versions handle traced ones
             node.func = ast.copy_location(_flow_attr(node.func.id + "_"), node.func)
+        elif self.axis_names and _named_axes_call(node, self.axis_names):
+            return self._named(node)
         return node
+
+    def _named(self, node: ast.Call) -> ast.expr:
+        """``x.sum(T)`` -> ``named_(x, "sum", (T,), {}, site, "x")``."""
+        self.named += 1
+        if isinstance(node.func, ast.Attribute) and node.func.attr in _axes.AXIS_METHODS:
+            target: ast.expr = node.func.value
+            attr: ast.expr = ast.Constant(node.func.attr)
+            var = target.id if isinstance(target, ast.Name) else None
+        else:
+            target, attr = node.func, ast.Constant(None)
+            first = node.args[0] if node.args else None
+            var = first.id if isinstance(first, ast.Name) else None
+        kwargs = ast.Dict(
+            keys=[ast.Constant(k.arg) for k in node.keywords],
+            values=[k.value for k in node.keywords],
+        )
+        args = ast.Tuple(elts=list(node.args), ctx=ast.Load())
+        return ast.copy_location(
+            _call("named_", target, attr, args, kwargs, self.site(node), ast.Constant(var)), node
+        )
 
     def visit_Compare(self, node: ast.Compare) -> Any:
         self.generic_visit(node)
@@ -972,6 +998,45 @@ _INTERESTING = (ast.If, ast.While, ast.For, ast.IfExp, ast.BoolOp)
 _MANGLED = re.compile(r"(?<![\w.])__[A-Za-z0-9]\w*(?<!__)\b|\.__[A-Za-z0-9]\w*(?<!__)\b")
 
 
+def _axis_names(raw: Any, fdef: ast.FunctionDef) -> set[str]:
+    """Names that stand for axes in ``raw``: type parameters and ``Dim`` classes."""
+    out = {tp.__name__ for tp in getattr(raw, "__type_params__", ())}
+    code = raw.__code__
+    for name, cell in zip(code.co_freevars, raw.__closure__ or ()):
+        try:
+            if _axes.axis_name(cell.cell_contents) is not None:  # e.g. a class's type parameter
+                out.add(name)
+        except ValueError:  # an empty cell
+            pass
+    for name in code.co_names:
+        if _axes.axis_name(raw.__globals__.get(name)) is not None:
+            out.add(name)
+    return out
+
+
+def _named_axes_call(node: ast.Call, names: set[str] | frozenset[str] | None) -> bool:
+    """Does the call pass an axis by name? (``names=None``: any bare name might be one.)"""
+    if any(isinstance(a, ast.Starred) for a in node.args) or any(k.arg is None for k in node.keywords):
+        return False
+
+    def is_axis(e: ast.expr) -> bool:
+        if isinstance(e, ast.Name):
+            return names is None or e.id in names
+        if isinstance(e, ast.Tuple) and e.elts:
+            return all(isinstance(x, ast.Constant) or is_axis(x) for x in e.elts) and any(
+                isinstance(x, ast.Name) for x in e.elts
+            )
+        return False
+
+    if any(k.arg in _axes.AXIS_KEYWORDS and is_axis(k.value) for k in node.keywords):
+        return True
+    return (
+        isinstance(node.func, ast.Attribute)
+        and node.func.attr in _axes.AXIS_METHODS
+        and any(is_axis(a) for a in node.args)
+    )
+
+
 def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
     """Return a control-flow-converted copy of ``raw``, or raise :class:`NotConverted`."""
     if not isinstance(raw, types.FunctionType):
@@ -994,6 +1059,7 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
         or (isinstance(m, ast.UnaryOp) and isinstance(m.op, ast.Not))
         or _is_local_annotation(m)
         or _is_rewritable(m)
+        or (isinstance(m, ast.Call) and _named_axes_call(m, None))
         for m in _walk_all(fdef.body)
     ):
         raise NotConverted("no control flow to convert")
@@ -1063,8 +1129,9 @@ def _rewrite(tree: ast.Module, fdef: ast.FunctionDef, raw: Any) -> tuple[_Conver
     conv.rewrite_inplace(fdef.body)
     conv.rewrite_raises(fdef.body)
     n_locals = conv.rewrite_annotations(fdef.body)
-    exprs = _Exprs(conv.site, conv.first_param, conv.builtins_ok)
+    exprs = _Exprs(conv.site, conv.first_param, conv.builtins_ok, _axis_names(raw, fdef))
     fdef.body = [exprs.visit(s) for s in fdef.body]
+    n_locals += exprs.named  # axes by name need the call's sizes, as checked locals do
     fdef.body = conv.lower_jumps(fdef.body)
     if any(
         isinstance(s, ast.If) and (_returns_via_ifs(s.body) or _returns_via_ifs(s.orelse))

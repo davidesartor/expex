@@ -1,4 +1,3 @@
-import functools
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -12,7 +11,7 @@ from . import gp, rkhs, utils
 from .rkhs import RBFMixture
 
 
-@jax.jit
+@tx.jit
 @fn
 def upper_confidence_bound(mu, sigma, beta):
     return -mu + jnp.sqrt(beta) * sigma
@@ -107,7 +106,7 @@ def q_log_expected_improvement[Q, S](
     return jax.nn.logsumexp(log_max, axis=-1) - jnp.log(len(eps))
 
 
-@functools.partial(jax.jit, static_argnames="n")
+@tx.jit
 @fn(K="n", where="n <= N")
 def boltzmann_select[N, K](
     key: Key, values: Float[N], n: int, eta: float = 2.0
@@ -133,10 +132,7 @@ def _perturb(key, z, lo, hi, sigma):
     return (z + sigma * (hi - lo) * jr.normal(key, z.shape)).clip(lo, hi)
 
 
-@functools.partial(
-    jax.jit,
-    static_argnames=("batch_size", "multi_starts", "n_probes", "probe_chunk", "solve_chunk", "n_mc", "n_best"),
-)
+@tx.jit
 @fn(Q="batch_size")
 def optimize_expected_improvement[N, O, M, D, Q](
     key: Key,

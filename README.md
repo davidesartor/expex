@@ -1,6 +1,8 @@
 # typax
 
-Shape-typed JAX in plain Python. Put the shapes in the signature:
+Shape-typed JAX in plain Python. The idea: be explicit about the shapes of
+arrays, and of collections of arrays, and the library does the rest by reading
+your annotations. Put the shapes in the signature:
 
 ```python
 import jax
@@ -28,12 +30,13 @@ python -m typax examples/transformer.py        # prove a small transformer's sha
 | | |
 |---|---|
 | [Checked calls](#checked-calls) | errors that name the axis and where its size came from |
+| [Axes by name](#axes-by-name) | `x.sum(T)`, `softmax(x, axis=T)`, `x.transpose(B, D, T)` |
 | [Proofs](#proofs-without-data) | `tx.prove(f)`: the shapes hold for every size |
 | [Plain Python control flow](#plain-python-on-traced-values) | `if` → `lax.cond`, `for` → `lax.scan` / `vmap`, `while` → `lax.while_loop` |
 | [Vectorising](#vectorising) | `f.lift(...)` and `@tx.lift` map over extra leading axes |
 | [Modules](#modules) | `@tx.struct`: typed, immutable classes that JAX can trace |
 | [Random keys](#random-keys) | `@tx.random` and `tx.key()`, no key threading |
-| [Compiling and gradients](#compiling-and-gradients) | `jax.jit`, `jax.grad`, `jax.checkpoint`, unchanged |
+| [Compiling and gradients](#compiling-and-gradients) | `@tx.jit` reads static arguments from the signature; `jax.grad`, `jax.checkpoint` unchanged |
 | [Debugging](#debugging) | where a NaN appeared, shapes line by line, memory, timing |
 
 ## Checked calls
@@ -74,6 +77,33 @@ def split_heads[T, D, H, K](x: f32[T, D], heads: int) -> f32[H, T, K]:
 
 split_heads(jnp.ones((5, 8)), heads=2).shape     # (2, 5, 4)
 ```
+
+## Axes by name
+
+The sizes in the signature are names, and inside the function they name axes:
+
+```python
+@fn
+def pool[B, T, D](x: f32[B, T, D]) -> f32[B, D]:
+    return x.mean(T)
+
+@fn
+def summarise[B, T, D](x: f32[B, T, D]) -> f32[D, B]:
+    h = jnp.tanh(x)
+    return h.max(T).transpose(D, B)      # h is unannotated: found by size
+
+pool(jnp.ones((2, 3, 4))).shape          # (2, 4)
+summarise(jnp.ones((2, 3, 4))).shape     # (4, 2)
+print(tx.prove(summarise))               # proved for all sizes
+```
+
+An axis name works as a positional argument of array methods (`sum`, `mean`,
+`max`, `argmax`, `transpose`, `swapaxes`, ...) and as `axis=` / `axes=` of any
+function (`jax.nn.softmax(x, axis=T)`). `Dim` classes and variadics (`*B`) are
+names too. The position comes from the array's annotation when it has one, a
+parameter or an annotated local (`h: f32[B, T, D] = ...`), and otherwise from
+its sizes. When two axes have the same size and nothing says which is which,
+the call is an error asking for an annotation.
 
 ## Proofs without data
 
@@ -267,25 +297,32 @@ would be frozen into the compiled function.
 
 ## Compiling and gradients
 
-Nothing to learn: these are JAX's own functions.
+`@tx.jit` is `jax.jit` with the static arguments read from the signature:
+plain Python types (`int`, `str`, tuples, callables, enums) and `Static[...]`
+are static; arrays and `float` numbers are traced, so a new learning rate does
+not recompile.
 
 ```python
-import functools
-
-@functools.partial(jax.jit, static_argnames="n")
+@tx.jit
 @fn(K="N * n")
-def repeat[N, K](x: f32[N], n: int) -> f32[K]:
-    return jnp.tile(x, n)
+def repeat[N, K](x: f32[N], n: int, scale: float) -> f32[K]:
+    return jnp.tile(x, n) * scale
 
-repeat(jnp.ones(3), 4).shape                            # (12,)
-jax.jit(dropout)(jnp.ones(6), key=jr.key(2))            # random functions take key=
+repeat(jnp.ones(3), 4, 0.5).shape                       # (12,)
+noisy = tx.jit(dropout)                                 # a fresh key on every call
+noisy(jnp.ones(6)), noisy(jnp.ones(6), key=jr.key(2))
+```
+
+Everything else is JAX's own. `jax.jit(f, static_argnames=...)` works as usual
+(a random function then takes `key=`), and so do `jax.grad`, `jax.vmap` and
+`jax.checkpoint`:
+
+```python
 layer = jax.checkpoint(Block.__call__)                   # remat a layer
 jax.grad(lambda m, x: layer(m, x).sum())(Block(jr.key(0), 16), jnp.ones((4, 16)))
 ```
 
-Arguments that set a size or a shape, or that are functions, are static as in
-any `jax.jit` (`static_argnames`); typed numbers such as `rate: float` can be
-traced. `tx.compile_cache(path)` keeps compiled programs on disk across runs.
+`tx.compile_cache(path)` keeps compiled programs on disk across runs.
 
 ## Debugging
 

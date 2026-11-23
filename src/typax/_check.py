@@ -145,7 +145,7 @@ class _Ctx:
             elif isinstance(d, DVar):
                 out.extend(self.var(d.name))
             elif isinstance(d, DEllipsis):
-                out.append(self.fresh())
+                out.extend(self.fresh() for _ in range(self.var_rank.get("...", 1)))
             elif isinstance(d, DExpr):
                 v = d.expr({n: self.dim(n) for n in d.expr.names})
                 if isinstance(v, (int, np.integer)) and v < 0:
@@ -194,6 +194,8 @@ def _auto_examples(ann: Any) -> list[Any]:
         return [False, True]
     if ann is int:
         return [1, 2]
+    if ann in (float, complex):
+        return [ann(0.5)]  # a number sets no size, so one value is enough
     if isinstance(ann, type) and issubclass(ann, enum.Enum):
         return list(ann)
     origin = typing.get_origin(ann)

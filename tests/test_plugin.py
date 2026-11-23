@@ -18,8 +18,8 @@ MODULE = textwrap.dedent(
         return x[:, 1:]
 
     @fn
-    def needs_example[B](x: f32[B], scale: float) -> f32[B]:
-        return x * scale
+    def needs_example[B](x: f32[B], mode: str) -> f32[B]:
+        return x if mode == "a" else -x
 
     @fn(prove=False)
     def opted_out[B](x: f32[B]) -> f32[B]:
@@ -36,7 +36,7 @@ def test_plugin(pytester):
     result.stdout.fnmatch_lines(
         [
             "*returned     f32?B, T - 1?*",
-            "*Static parameter `scale` has no default*",
+            "*Static parameter `mode` has no default*",
         ]
     )
 

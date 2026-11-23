@@ -209,3 +209,56 @@ def test_methods_can_name_their_own_class():
     with pytest.raises(ShapeError, match=r"declared  return.c: f32\[\*B, K\]"):
         p.bad()
     assert tx.prove(Poly.zeros).status == "proved"
+
+
+def test_tx_jit_reads_static_arguments_from_the_signature():
+    calls = []
+
+    @tx.jit
+    @fn(K="N * n")
+    def tile[N, K](x: f32[N], n: int, lr: float, mode: str = "a") -> f32[K]:
+        calls.append(1)
+        return jnp.tile(x, n) * lr
+
+    assert tile(jnp.ones(3), 2, 0.1).shape == (6,)
+    tile(jnp.ones(3), 2, 0.5)  # a float is traced: no retrace
+    assert len(calls) == 1
+    tile(jnp.ones(3), 3, 0.5)  # an int is static
+    assert len(calls) == 2
+    assert tx.prove(tile).ok
+
+    @tx.jit
+    def scaled[N](x: f32[N], k: Static[float]) -> f32[N]:  # Static[...] forces static
+        calls.append(2)
+        return x * k
+
+    scaled(jnp.ones(2), 1.0)
+    scaled(jnp.ones(2), 2.0)
+    assert calls.count(2) == 2
+
+
+def test_tx_jit_gives_random_functions_a_fresh_key():
+    @tx.jit
+    @tx.random
+    @fn
+    def noise[D](x: f32[D]) -> f32[D]:
+        return x + jr.normal(tx.key(), x.shape)
+
+    assert not jnp.allclose(noise(jnp.zeros(2)), noise(jnp.zeros(2)))
+    assert jnp.allclose(noise(jnp.zeros(2), key=jr.key(0)), noise(jnp.zeros(2), key=jr.key(0)))
+
+
+def test_tx_jit_on_struct_methods():
+    @tx.struct
+    class Lin[I, O]:
+        w: f32[O, I]
+
+        @tx.jit
+        def __call__(self, x: f32[I], scale: int = 1) -> f32[O]:
+            return self.w @ x * scale
+
+    m = Lin(jnp.ones((2, 3)))
+    assert m(jnp.ones(3), 2).tolist() == [6.0, 6.0]
+    with pytest.raises(ShapeError):
+        m(jnp.ones(4))
+    assert tx.prove(Lin.__call__).ok

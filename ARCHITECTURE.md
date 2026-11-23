@@ -1,8 +1,8 @@
 # How typax is put together
 
 Everything starts from `@tx.fn` (`_fn.py`); `@tx.lift` and `@tx.random` set flags
-on the same `Fn` object, so they stack in any order. Compiling, gradients and
-remat are JAX's own (`jax.jit`, `jax.grad`, `jax.checkpoint`). Each module has one job:
+on the same `Fn` object, so they stack in any order. `@tx.jit` is `jax.jit` with
+`static_argnames` read from the signature. Gradients and remat are JAX's own. Each module has one job:
 
 | Module | Job |
 |---|---|
@@ -10,7 +10,8 @@ remat are JAX's own (`jax.jit`, `jax.grad`, `jax.checkpoint`). Each module has o
 | `_dims.py` | Dimensions (`B`, `T + 1`, `*Rest`), binding sizes during a call (`Env`), printing values as `f32[3, 4]`. |
 | `_spec.py` | Turning annotations into specs and matching values against them, structs included. |
 | `_expr.py` | Size arithmetic and constraints (`"T + 1"`, `"D % heads == 0"`). |
-| `_fn.py` | `@tx.fn`, `@tx.lift`, `@tx.random`: binds arguments, checks them and the result, runs the body. |
+| `_fn.py` | `@tx.fn`, `@tx.lift`, `@tx.random`, `@tx.jit`: binds arguments, checks them and the result, runs the body. |
+| `_axes.py` | Axes by name: `x.sum(T)`, `axis=T`, resolved from annotations or sizes. |
 | `_lift.py` | `f.lift(...)`: mapping over extra leading axes. |
 | `_messages.py` | Error messages, hints and the notes added to exceptions. |
 | `_struct.py` | `@tx.struct`: modules registered as pytrees whose methods are `@fn`s. |

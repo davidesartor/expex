@@ -55,7 +55,7 @@ API stays as aliases (`rkhs.inner(f1, f2)`, `rkhs.distance(...)`,
 | `GaussianProcess.fit(...)` building a NamedTuple | `GaussianProcess(key, f, y, ...)`: a module whose constructor fits it; the result is checked against its annotations |
 | Free functions over mixtures with `[..., None, :]` indexing for any leading axes | Methods written for one mixture, lifted over the rest |
 | Sanitised double `where` for every piecewise function (`rbf`, the log-EI branches, `safe_sqrt`, the periodic series) | A plain `if` on one element, then `lift`; the gradient is NaN-free without sanitising inputs |
-| `eqx.filter_jit` to keep functions and tuples out of the trace | `jax.jit` with `static_argnames` for sizes, shapes and functions; a struct's non-array fields are static automatically |
+| `eqx.filter_jit` to keep functions and tuples out of the trace | `@tx.jit`: the annotations say what is static (`n: int`, `shape: tuple[int, ...]`, `profile: Profile`); a struct's non-array fields are static too |
 | `jax.lax.map(f, xs, batch_size=k)` and `jax.vmap(solve)(starts)` | `for x in tx.rows(xs, chunk=k): out.append(f(x))` |
 | `eqx.error_if(x, cond, msg)` | `assert not cond, msg` |
 | `logits.at[i].set(jnp.inf)` | `logits[i] = jnp.inf` |

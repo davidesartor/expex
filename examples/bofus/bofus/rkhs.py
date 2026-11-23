@@ -1,4 +1,3 @@
-import functools
 
 import numpy as np
 import jax
@@ -34,7 +33,7 @@ class RBFMixture[M, D]:
         return jnp.sum(self.a * jnp.exp(log_rbf(x - self.x, self.l, periodic)))
 
     @staticmethod
-    @functools.partial(jax.jit, static_argnames="shape")
+    @tx.jit
     @fn
     def sample[*B, K, E](
         key: Key,

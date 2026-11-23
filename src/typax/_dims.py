@@ -93,6 +93,10 @@ class DExpr:
 _ANY = DAny()
 
 
+class DimError(TypeError):
+    """An annotation's size is malformed (as opposed to: not an array annotation)."""
+
+
 def parse_dim(item: Any, subst: dict[Any, Any]) -> Any:
     if item in subst if _hashable(item) else False:
         return subst[item]
@@ -129,11 +133,11 @@ def parse_dim(item: Any, subst: dict[Any, Any]) -> Any:
             return DConst(item.size, item.__name__)
         return DName(item.__name__)
     if isinstance(item, str):
-        raise TypeError(
+        raise DimError(
             f"{item!r}: sizes are type parameters, not strings. Declare it in the "
             f"signature (def f[T](...)), and a derived size with @tx.fn(U=\"T + 1\")."
         )
-    raise TypeError(
+    raise DimError(
         f"{item!r} is not a valid dimension. Use a type parameter, Literal[n], "
         f"a Dim subclass, Any or `...`."
     )
@@ -166,9 +170,11 @@ def _parse_dims(items: tuple[Any, ...], subst: dict[Any, Any]) -> tuple[tuple[An
 class Env:
     """Dimension bindings for one call."""
 
-    __slots__ = ("dims", "origin", "vars", "deferred")
+    __slots__ = ("dims", "origin", "vars", "deferred", "locals")
 
     def __init__(self) -> None:
+        #: Annotations of local variables seen so far, for axes by name.
+        self.locals: dict[str, Any] = {}
         self.dims: dict[str, Any] = {}
         self.origin: dict[str, str] = {}
         self.vars: dict[str, tuple[Any, ...]] = {}

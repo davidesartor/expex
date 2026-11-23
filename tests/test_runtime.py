@@ -352,7 +352,7 @@ def test_static():
     # numbers may be scalar arrays, so jax.jit can trace them
     assert f(jnp.ones(3), jnp.int32(2)).tolist() == [2.0, 2.0, 2.0]
     assert jax.jit(f)(jnp.ones(3), 2).tolist() == [2.0, 2.0, 2.0]
-    with pytest.raises(ShapeError, match="expected int, got f32"):
+    with pytest.raises(ShapeError, match="expected an integer scalar for `int`, got f32"):
         f(jnp.ones(3), jnp.float32(2))
 
     @fn

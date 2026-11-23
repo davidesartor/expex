@@ -1,4 +1,3 @@
-import functools
 from typing import Literal
 
 import jax
@@ -16,7 +15,7 @@ from .rkhs import Periodic, RBFMixture
 type Two = Literal[2]
 
 
-@jax.jit
+@tx.jit
 @fn
 def factorize[N](
     K: Float[N, N], y: Float[N]
@@ -45,7 +44,7 @@ def factorize[N](
     return K_chol, Ki_1, Ki_r, b, nu
 
 
-@jax.jit
+@tx.jit
 @fn
 def loglikelihood[N](K: Float[N, N], y: Float[N], nu: Float | None = None) -> Float:
     """REML likelihood: trend integrated out under a flat prior, scale nu concentrated unless given."""
@@ -65,7 +64,7 @@ def _take(tree, index):
     return jax.tree.map(lambda z: z[index], tree)
 
 
-@functools.partial(jax.jit, static_argnames="periodic")
+@tx.jit
 @fn
 def pairwise_squared_distance[N1, N2, O, M, D](
     l0: Float[D] | None,
@@ -88,7 +87,7 @@ def pairwise_squared_distance[N1, N2, O, M, D](
     return d2
 
 
-@functools.partial(jax.jit, static_argnames=("profile", "periodic", "restarts"))
+@tx.jit
 @fn
 def _fit[N, O, M, D](
     key: Key,
@@ -242,7 +241,7 @@ class GaussianProcess[N, O, M, D]:
         cov = cov + jnp.outer(Kbq, Kbq) / self.Ki_1.sum()
         return mean, self.nu * cov
 
-    @jax.jit
+    @tx.jit
     @fn
     def predict_marginal[Q](self, f: Batch[RBFMixture[M, D], Q, O]) -> tuple[Float[Q], Float[Q]]:
         """Posterior location and squared scale of each function on its own."""

@@ -106,8 +106,8 @@ def test_call_sites_are_proved_too():
 
 def test_static_needs_default_or_examples():
     @fn
-    def a[B, D](x: f32[B, D], n: float) -> f32[B, D]:
-        return x * n
+    def a[B, D](x: f32[B, D], n: str) -> f32[B, D]:
+        return x if n == "a" else -x
 
     @fn
     def b[B, D](x: f32[B, D], n: Static[int] = 2) -> f32[B, D]:
@@ -121,8 +121,8 @@ def test_static_needs_default_or_examples():
     assert r.status == "unchecked" and 'examples={"n": [...]}' in r.detail
     assert status(b) == "proved"
     assert prove(c).cases == 2 and status(c) == "proved"
-    assert status(a, n=[2.0]) == "proved"
-    assert a.check(n=2.0).status == "proved"
+    assert status(a, n=["b"]) == "proved"
+    assert a.check(n="a").status == "proved"
 
 
 def test_plain_python_parameters_are_static_and_get_automatic_examples():

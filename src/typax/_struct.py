@@ -28,9 +28,10 @@ import inspect
 from typing import Any, Callable, TypeVar, overload
 
 import jax
+from jax.core import Tracer
 
 from ._dims import Env, resolve
-from ._errors import Mismatch, ShapeError
+from ._errors import Mismatch, ShapeError, StageError
 from ._fn import Fn, fn, unwrap
 from ._spec import _class_annotations, parse_owner, rebuild, static_type
 
@@ -61,7 +62,7 @@ def struct(cls: Any = None, /, *, where: str | list[str] | tuple[str, ...] = ())
     def build(original: Any) -> Any:
         cls: Any = original
         custom_init = "__init__" in vars(cls)  # dataclass() keeps a hand-written __init__
-        params = getattr(cls, "__dataclass_params__", None)
+        params = vars(cls).get("__dataclass_params__")  # not a parent's
         if not (isinstance(cls, type) and params is not None and params.frozen):
             cls = dataclasses.dataclass(frozen=True)(cls)
         anns = _class_annotations(cls)
@@ -95,11 +96,11 @@ def struct(cls: Any = None, /, *, where: str | list[str] | tuple[str, ...] = ())
             method.__set_name__(cls, name)
             setattr(cls, name, wrapper(method) if wrapper else method)
 
-        if isinstance(vars(cls).get("__call__"), Fn) and "lift" not in vars(cls):
+        if isinstance(unwrap(getattr(cls, "__call__", None)), Fn) and "lift" not in vars(cls):
 
             def lift(self: Any, *args: Any, **kwargs: Any) -> Any:
                 """Call the module on inputs with extra leading batch axes."""
-                method: Any = vars(type(self))["__call__"]
+                method: Any = unwrap(type(self).__call__)
                 return method.__get__(self).lift(*args, **kwargs)
 
             cls.lift = lift
@@ -121,12 +122,23 @@ def _register(cls: Any, data: tuple[str, ...], meta: tuple[str, ...]) -> None:
     """Register ``cls`` as a pytree that is rebuilt without calling ``__init__``."""
     from jax.tree_util import GetAttrKey
 
+    def static(obj: Any) -> tuple[Any, ...]:
+        out = tuple(getattr(obj, n) for n in meta)
+        for n, v in zip(meta, out):
+            if any(isinstance(x, Tracer) for x in jax.tree.leaves(v)):
+                raise StageError(
+                    f"{cls.__name__}.{n} is a static field (its annotation is a plain Python "
+                    f"type), but it holds a traced value. Pass a Python value, or annotate "
+                    f"the field with a dtype (f32, i32, ...) to make it an array."
+                )
+        return out
+
     def flatten_with_keys(obj: Any) -> Any:
         children = [(GetAttrKey(n), getattr(obj, n)) for n in data]
-        return children, tuple(getattr(obj, n) for n in meta)
+        return children, static(obj)
 
     def flatten(obj: Any) -> Any:
-        return [getattr(obj, n) for n in data], tuple(getattr(obj, n) for n in meta)
+        return [getattr(obj, n) for n in data], static(obj)
 
     def unflatten(aux: tuple[Any, ...], children: Any) -> Any:
         obj = object.__new__(cls)

@@ -57,6 +57,7 @@ def local_(value: Any, ann: Callable[[], Any], name: str, site: str) -> Any:
         return value
     env, fn = CALLS.stack[-1]
     fn._check_local(spec, value, name, site, env)
+    env.locals[name] = spec
     return value
 
 

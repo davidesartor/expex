@@ -22,6 +22,7 @@ import numpy as np
 from jax.core import Tracer
 
 from ._dims import (
+    DimError,
     DEllipsis,
     _SCALARS,
     DConst,
@@ -97,6 +98,8 @@ def _dims_names(dims: tuple[Any, ...], into: set[str]) -> None:
             into.add("*" + d.name)
         elif isinstance(d, DExpr):
             into.update(d.expr.names)
+        elif isinstance(d, DEllipsis):
+            into.add("*...")  # lets the prover try it at several ranks
 
 
 class ArraySpec(Spec):
@@ -203,8 +206,13 @@ class KeySpec(Spec):
         return KeySpec(tuple(f(d) for d in self.dims), self.var_index)
 
 
-_LENIENT = {int: (int, np.integer), float: (int, float, np.integer, np.floating)}
-_SCALAR_KINDS = {bool: "b", int: "biu", float: "biuf", complex: "biufc"}
+_LENIENT = {
+    int: (int, np.integer),
+    float: (int, float, np.integer, np.floating),
+    complex: (int, float, complex, np.integer, np.floating, np.complexfloating),
+}
+_KIND_NAMES = {bool: "a boolean", int: "an integer", float: "a real", complex: "a numeric"}
+_SCALAR_KINDS = {bool: "b", int: "iu", float: "iuf", complex: "iufc"}
 
 
 def _ann_name(ann: Any) -> str:
@@ -218,8 +226,10 @@ class StaticSpec(Spec):
     so that ``jax.jit`` may trace them. Anything else must be concrete.
     """
 
-    def __init__(self, inner: Any):
+    def __init__(self, inner: Any, explicit: bool = False):
         self.inner = inner
+        #: Written as ``Static[...]``: static even where a plain number would be traced.
+        self.explicit = explicit
 
     def __str__(self) -> str:
         return _ann_name(self.inner)
@@ -227,9 +237,11 @@ class StaticSpec(Spec):
     def match(self, value: Any, path: str, env: Env) -> None:
         inner = self.inner
         kinds = _SCALAR_KINDS.get(inner) if type(inner) is type else None
-        if kinds is not None and getattr(value, "shape", None) == () and hasattr(value, "dtype"):
-            if np.dtype(value.dtype).kind in kinds:
+        if kinds is not None and hasattr(value, "dtype") and hasattr(value, "shape"):
+            if value.shape == () and np.dtype(value.dtype).kind in kinds:
                 return
+            what = "a scalar" if value.shape != () else f"{_KIND_NAMES[inner]} scalar"
+            raise Mismatch(path, self, value, f"expected {what} for `{inner.__name__}`, got {describe(value)}.")
         if any(isinstance(x, Tracer) for x in jax.tree.leaves(value)):
             root = path.split(".")[0].split("[")[0]
             m = Mismatch(
@@ -240,12 +252,22 @@ class StaticSpec(Spec):
             )  # fmt: skip
             m.stage = True  # type: ignore[attr-defined]
             raise m
+        if typing.get_origin(inner) is typing.Literal:
+            if not any(value == a and type(value) is type(a) for a in typing.get_args(inner)):
+                raise Mismatch(path, self, value, f"expected one of {list(typing.get_args(inner))}, got {value!r}.")
+            return
+        if isinstance(inner, type) and type(inner) is not type:  # enums, ABCs, ...
+            try:
+                ok_type = isinstance(value, inner)
+            except TypeError:  # e.g. a Protocol that is not runtime-checkable
+                return
+            if not ok_type:
+                raise Mismatch(path, self, value, f"expected {inner.__name__}, got {type(value).__name__}.")
+            return
         if type(inner) is type:
             ok = _LENIENT.get(inner, inner)
             if not isinstance(value, ok) or (inner is not bool and type(value) is bool and inner in _LENIENT):
                 hint = ""
-                if hasattr(value, "shape") and inner in _LENIENT:
-                    hint = f" A `{inner.__name__}` takes a Python number or a scalar array."
                 raise Mismatch(
                     path, self, value,
                     f"expected {inner.__name__}, got {describe(value) if hasattr(value, 'shape') else type(value).__name__}.{hint}",
@@ -784,6 +806,8 @@ def parse_owner(cls: type) -> Spec:
     for n in names:
         try:
             fields[n] = parse(anns.get(n, inspect.Parameter.empty), inner, (cls,))
+        except DimError as e:
+            raise DimError(f"{cls.__name__}.{n}: {e}") from None
         except TypeError:
             fields[n] = OpaqueSpec(anns.get(n))
     if any(s.leafy for s in fields.values()):
@@ -807,7 +831,7 @@ def parse(ann: Any, subst: dict[Any, Any] | None = None, _stack: tuple[type, ...
         dims, var = _parse_dims(ann.items, subst)
         return KeySpec(dims, var)
     if isinstance(ann, StaticAnn):
-        return StaticSpec(ann.inner)
+        return StaticSpec(ann.inner, explicit=True)
     if isinstance(ann, BatchAnn):
         lead, _ = _parse_dims(ann.items, subst)
         return _prepend(parse(ann.inner, subst, _stack), lead)
@@ -822,7 +846,7 @@ def parse(ann: Any, subst: dict[Any, Any] | None = None, _stack: tuple[type, ...
         if any(isinstance(a, StaticAnn) for a in args):
             # `Static[int] | None`: the whole value is static
             plain = tuple(a.inner if isinstance(a, StaticAnn) else a for a in args)
-            return StaticSpec(typing.Union[plain])  # type: ignore[arg-type]
+            return StaticSpec(typing.Union[plain], explicit=True)  # type: ignore[arg-type]
         opts = tuple(parse(a, subst, _stack) for a in args)
         if not any(o.leafy for o in opts if not isinstance(o, NoneSpec)):
             return OpaqueSpec(ann)
@@ -865,6 +889,8 @@ def parse(ann: Any, subst: dict[Any, Any] | None = None, _stack: tuple[type, ...
             for n in names:
                 try:
                     fields[n] = parse(anns.get(n, inspect.Parameter.empty), inner, _stack + (cls,))
+                except DimError as e:
+                    raise DimError(f"{cls.__name__}.{n}: {e}") from None
                 except TypeError:
                     fields[n] = OpaqueSpec(anns.get(n))
             if any(s.leafy for s in fields.values()):
