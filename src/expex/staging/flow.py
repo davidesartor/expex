@@ -103,9 +103,9 @@ def _desc(v: Any) -> str:
 
     if v is UNDEF:
         return "undefined"
-    if _is_arr(v) or type(v) in _NUM:
+    if _is_arr(v) or type(v) in _NUM or isinstance(v, jax.ShapeDtypeStruct):
         return describe(v)
-    if _dyn(v):
+    if _dyn(v) or (jax.tree.leaves(v) and all(isinstance(x, jax.ShapeDtypeStruct) for x in jax.tree.leaves(v))):
         return f"{type(v).__name__} of arrays"
     return f"{type(v).__name__} {v!r}"[:60]
 
@@ -140,65 +140,61 @@ def _cond(
     names: tuple[str, ...],
     site: str,
 ) -> tuple[Any, ...]:
-    """``lax.cond`` over branches returning tuples that may mix arrays and other values."""
-    plan: dict[int, Any] = {}
+    """``lax.cond`` over branches returning tuples that may mix arrays and other values.
+
+    Each branch is traced once, to a jaxpr closed over the values it uses. The
+    two are then reconciled (a dtype both can take, a zero placeholder for a
+    variable only one branch assigns) and run by one ``lax.cond``, which only
+    replays the jaxprs.
+    """
     recs: list[list[tuple[str, Any]]] = []
-    res: Any = ()
-    for attempt in range(3):
-        recs = []
+    jaxprs: list[Any] = []
+    for fn in fns:
+        metas: list[tuple[str, Any]] = []
 
-        def wrap(fn: Callable[[], tuple[Any, ...]]) -> Callable[[], tuple[Any, ...]]:
-            def w() -> tuple[Any, ...]:
-                with _staged():
-                    out = fn()
-                metas: list[tuple[str, Any]] = []
-                dyn: list[Any] = []
-                for i, v in enumerate(out):
-                    p = plan.get(i)
-                    if isinstance(p, dict):
-                        # assigned in the other branch only: a placeholder here, so
-                        # that the variable exists whichever branch ran
-                        if _dyn(v):  # same (strongly typed) dtypes as the placeholder
-                            v = jax.tree.map(lambda a, s: _cast(a, s.dtype, False), v, p["fill"])
-                        else:
-                            v = jax.tree.map(lambda s: jnp.zeros(s.shape, s.dtype), p["fill"])
-                        metas.append(("dyn", v))
-                        dyn.append(v)
-                    elif _dyn(v):
-                        if p is not None:
-                            leaves, tree = jax.tree.flatten(v)
-                            tree_: Any = tree
-                            v = tree_.unflatten([_cast(x, d, w) for x, (d, w) in zip(leaves, p)])
-                        metas.append(("dyn", v))
-                        dyn.append(v)
-                    else:
-                        metas.append(("static", v))
-                recs.append(metas)
-                return tuple(dyn)
+        def traced(fn: Callable[[], tuple[Any, ...]] = fn, metas: list[tuple[str, Any]] = metas) -> list[Any]:
+            with _staged():
+                out = fn()
+            metas.extend(("dyn", None) if _dyn(v) else ("static", v) for v in out)
+            return [v for v in out if _dyn(v)]
 
-            return w
+        closed, shapes = jax.make_jaxpr(traced, return_shape=True)()
+        it = iter(shapes)
+        recs.append([("dyn", next(it)) if kind == "dyn" else (kind, v) for kind, v in metas])
+        jaxprs.append(closed)
+    plan = _plan(recs, names, site)
 
-        err: TypeError | None = None
-        try:
-            res = lax.cond(pred, wrap(fns[0]), wrap(fns[1]))
-        except TypeError as e:
-            if len(recs) < 2:
-                raise
-            err = e
-        new_plan = _plan(recs, names, site)
-        new_plan = {i: p for i, p in new_plan.items() if not isinstance(plan.get(i), dict)}
-        if new_plan and attempt < 2:
-            plan = {**plan, **new_plan}
-            continue
-        if err is not None:
-            err.add_note(f"expex: in the `if` at {site}; variables it assigns: {', '.join(names)}")
-            raise err
-        break
+    def replay(k: int) -> Callable[[], tuple[Any, ...]]:
+        def run() -> tuple[Any, ...]:
+            values = iter(jax.core.eval_jaxpr(jaxprs[k].jaxpr, jaxprs[k].consts))
+            out: list[Any] = []
+            for i, (kind, v) in enumerate(recs[k]):
+                p = plan.get(i)
+                if kind != "dyn" and not isinstance(p, dict):
+                    continue
+                if kind != "dyn":  # assigned in the other branch only: a placeholder here
+                    out.append(jax.tree.map(lambda s: jnp.zeros(s.shape, s.dtype), p["fill"]))  # type: ignore[index]
+                    continue
+                leaves, tree = jax.tree.flatten(v)
+                xs = [next(values) for _ in leaves]
+                if isinstance(p, dict):
+                    xs = [_cast(x, s.dtype, False) for x, s in zip(xs, jax.tree.leaves(p["fill"]))]
+                elif p is not None:
+                    xs = [_cast(x, d, w) for x, (d, w) in zip(xs, p)]
+                out.append(jax.tree.unflatten(tree, xs))
+            return tuple(out)
 
+        return run
+
+    try:
+        res = lax.cond(pred, replay(0), replay(1))
+    except TypeError as e:
+        e.add_note(f"expex: in the `if` at {site}; variables it assigns: {', '.join(names)}")
+        raise
     it = iter(res)
     out: list[Any] = []
     for i, (m0, m1) in enumerate(zip(recs[0], recs[1])):
-        if m0[0] == "dyn":
+        if m0[0] == "dyn" or m1[0] == "dyn":
             out.append(next(it))
         elif _same_static(m0[1], m1[1]):
             out.append(m0[1])
@@ -253,10 +249,16 @@ def _plan(recs: list[list[tuple[str, Any]]], names: tuple[str, ...], site: str) 
                     )
                 d0, d1 = jnp.result_type(v0), jnp.result_type(v1)
                 change = change or d0 != d1 or _weak(v0) != _weak(v1)
-                casts.append((jnp.result_type(v0, v1), _weak(v0) and _weak(v1)))
+                casts.append((jnp.result_type(_promotes_as(v0), _promotes_as(v1)), _weak(v0) and _weak(v1)))
             if change:
                 plan[i] = casts
     return plan
+
+
+def _promotes_as(v: Any) -> Any:
+    """What ``v`` promotes like: its dtype, or the Python type of its kind if weakly typed."""
+    d = jnp.result_type(v)
+    return {"b": bool, "i": int, "u": int, "f": float, "c": complex}.get(d.kind, d) if _weak(v) else d
 
 
 def _shapes(tree: Any) -> Any:

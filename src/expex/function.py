@@ -751,13 +751,21 @@ class Fn(Generic[P, R]):
 
 
 class BoundFn(Generic[P, R]):
-    """An ``@fn`` method bound to an instance."""
+    """An ``@fn`` method bound to an instance (or a compiled one: ``fn`` is then its ``jax.jit``)."""
+
+    __slots__ = ("fn", "obj")
 
     def __init__(self, fn: Fn[Any, R], obj: Any):
         self.fn = fn
         self.obj = obj
-        self.__wrapped__ = fn.raw.__get__(obj)  # type: ignore[attr-defined]
-        self.__signature__ = fn._sig.replace(parameters=list(fn._sig.parameters.values())[1:])
+
+    @property
+    def __wrapped__(self) -> Any:
+        return self.fn.raw.__get__(self.obj)  # type: ignore[attr-defined]
+
+    @property
+    def __signature__(self) -> inspect.Signature:
+        return self.fn._sig.replace(parameters=list(self.fn._sig.parameters.values())[1:])
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
         __tracebackhide__ = True
@@ -779,6 +787,9 @@ def unwrap(f: Any) -> Any:
     if isinstance(f, types.MethodType):  # e.g. a jitted method, bound to an instance
         inner = unwrap(f.__func__)
         return inner.__get__(f.__self__) if isinstance(inner, Fn) else f
+    if isinstance(f, BoundFn) and not isinstance(f.fn, Fn):  # a compiled method
+        inner = unwrap(f.fn)
+        return inner.__get__(f.obj) if isinstance(inner, Fn) else f
     g = f
     for _ in range(16):
         if isinstance(g, (Fn, BoundFn)):
