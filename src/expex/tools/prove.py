@@ -338,8 +338,7 @@ class Reports(list):  # type: ignore[type-arg]
     def __str__(self) -> str:
         return format_reports(self)
 
-    def __repr__(self) -> str:
-        return format_reports(self)
+    __repr__ = __str__
 
 
 def format_reports(reports: list[Report], verbose: bool = False) -> str:

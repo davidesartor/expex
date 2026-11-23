@@ -219,11 +219,15 @@ class Cost:
     __repr__ = __str__
 
 
+def si(v: float | Fraction, unit: str = "") -> str:
+    """``3.24 GFLOP``, ``25.2 M``, ``64 B``: three significant digits and an SI prefix."""
+    x = float(v)
+    scale, prefix = next((s, p) for s, p in ((1e12, "T"), (1e9, "G"), (1e6, "M"), (1e3, "k"), (1.0, "")) if abs(x) >= s or not p)  # fmt: skip
+    return f"{x / scale:.3g} {prefix}{unit}".rstrip()
+
+
 def _num(p: Poly, unit: str) -> str:
-    if (v := p.value) is None:
-        return ""
-    scale, prefix = next((s, x) for s, x in ((1e12, "T"), (1e9, "G"), (1e6, "M"), (1e3, "k"), (0, "")) if abs(v) >= s)  # fmt: skip
-    return f"   = {float(v) / (scale or 1):.3g} {prefix}{unit}".rstrip()
+    return "" if (v := p.value) is None else f"   = {si(v, unit)}"
 
 
 def arrays(tree: Any) -> list[Any]:

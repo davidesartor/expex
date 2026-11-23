@@ -324,7 +324,7 @@ class Watch:
             )  # fmt: skip
             parents.append(i)
         head = "".join(f'<th class="{c}"' + (f' data-k="{k}"' if k else "") + f">{t}</th>" for t, c, k in _COLS)
-        return pages.table(pages.uid("txw"), _CSS, (
+        return pages.table(pages.uid("txw"), _CSS, light=_LIGHT, dark=_DARK, markup=(
             f'<div class="hd"><b>{html.escape(self._title())}</b></div><div class="sc"><table><thead><tr>'
             '<th colspan="3"></th><th colspan="6" class="gh">output</th><th colspan="7" class="gh g">d loss / d output</th>'
             f"</tr><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody></table></div>"
@@ -337,8 +337,9 @@ class Watch:
         return path
 
 
-_CSS = """#ID{--fl:rgba(220,38,38,.11);--fx:#b42318}@media (prefers-color-scheme:dark){#ID{--fl:rgba(248,81,73,.16);--fx:#ff7b72}}
-#ID td{vertical-align:top}#ID tr.flag td{background:var(--fl)}#ID tr.flag .m{box-shadow:inset 3px 0 var(--fx)}
+#: Flagged rows, light and dark.
+_LIGHT, _DARK = "--fl:rgba(220,38,38,.11);--fx:#b42318", "--fl:rgba(248,81,73,.16);--fx:#ff7b72"
+_CSS = """#ID td{vertical-align:top}#ID tr.flag td{background:var(--fl)}#ID tr.flag .m{box-shadow:inset 3px 0 var(--fx)}
 #ID .m,#ID .c{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;white-space:nowrap}
 #ID th,#ID td{padding:3px 7px}#ID .f{color:var(--fx);font-size:12px;white-space:normal}
 #ID .f span{display:inline-block;white-space:nowrap;border:1px solid;border-radius:9px;padding:0 6px;margin:0 4px 2px 0}#ID .gh{text-align:center;border-bottom:0}

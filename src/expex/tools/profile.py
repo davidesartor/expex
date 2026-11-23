@@ -30,7 +30,7 @@ from typing import Any
 import numpy as np
 
 from . import pages
-from .cost import Poly, _num, _numel, cost, flops
+from .cost import Poly, _numel, cost, flops, si
 from .trace import _HERE, resolve, sub_jaxprs
 
 type Key = tuple[str, str, int]  # (file, qualified name, first line): one section
@@ -87,7 +87,7 @@ class Profile:
         return self.number(p).sample() / t if (t := self.number(of).sample()) else 0.0
 
     def _cell(self, p: Poly, unit: str) -> tuple[str, str]:
-        return p.format(self.sizes), _num(self.number(p), unit).replace("   = ", "")
+        return p.format(self.sizes), "" if (v := self.number(p).value) is None else si(v, unit)
 
     def _sizes(self) -> str:
         return ", ".join([n for n in self.sizes if n not in self.given] + [f"{k}={v}" for k, v in self.given.items()])

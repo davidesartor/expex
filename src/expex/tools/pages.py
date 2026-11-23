@@ -76,9 +76,9 @@ const h=e.target.closest("th[data-k]");if(!h)return;if(key===h.dataset.k){if(dir
 root.querySelectorAll("th[data-k]").forEach(t=>t.dataset.dir=t.dataset.k===key?dir:"");order()})})();"""
 
 
-def table(scope: str, style: str, markup: str) -> str:
+def table(scope: str, style: str, markup: str, light: str = "", dark: str = "") -> str:
     """A tree table fragment: ``markup`` (header and table) in ``<div id=scope>``, with its styles and script."""
-    css = (tokens("#ID") + TABLE_CSS + style).replace("#ID", "#" + scope)
+    css = (tokens("#ID", light, dark) + TABLE_CSS + style).replace("#ID", "#" + scope)
     return (f'<div class="txs" id="{scope}"><style>{css}</style>{markup}'
             f'<script>{TABLE_JS.replace("ID", json.dumps(scope))}</script></div>')  # fmt: skip
 

@@ -10,8 +10,8 @@ and the jaxpr comes back with the paths of those lists. The prover drives the
 same pieces itself (:func:`choices`, :func:`statics`, :func:`constraints`,
 :func:`attempt`) to try several cases and concrete sizes.
 
-The debugging tools trace on real arguments instead: :func:`concrete` gives
-the callable and arguments to trace (``Static`` arguments closed over), and
+The debugging tools trace on real arguments instead: :func:`keyed` gives the
+callable and arguments to trace (``Static`` arguments closed over), and
 :func:`make_jaxpr` traces it. The rest of the module walks jaxprs.
 """
 
@@ -408,42 +408,37 @@ def resolve(target: Any, sizes: dict[str, Any] | None = None, what: str = "trace
 # ------------------------------------------------------------------ on real arguments
 
 
-def concrete(
-    f: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]
-) -> tuple[Callable[..., Any], tuple[Any, ...], dict[str, Any]]:
-    """The un-jitted callable behind ``f`` and the arguments to trace it with.
-
-    ``Static`` arguments of an ``@fn`` are closed over, so that tracing the
-    result does not turn them into traced values.
-    """
-    f = unwrap(f)
-    if isinstance(f, BoundFn):
-        fn, args = f.fn, (f.obj, *args)
-    elif isinstance(f, Fn):
-        fn = f
-    else:
-        return f, args, kwargs
-    try:
-        bound = fn._sig.bind(*args, **kwargs)
-    except TypeError:
-        return (lambda *a, **k: fn._run(a, k)), args, kwargs
-    static = {n: bound.arguments[n] for n in fn.static_names if n in bound.arguments}
-    if isinstance(f, BoundFn):
-        static[next(iter(fn.params))] = f.obj
-    dyn = {n: v for n, v in bound.arguments.items() if n not in static}
-
-    def run(dyn_args: dict[str, Any]) -> Any:
-        ba = inspect.BoundArguments(fn._sig, {n: (static[n] if n in static else dyn_args[n]) for n in bound.arguments})  # type: ignore[arg-type]
-        return fn._run(ba.args, ba.kwargs)
-
-    return run, (dyn,), {}
-
-
 def keyed(
     f: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]
 ) -> tuple[Callable[..., Any], tuple[Any, ...], dict[str, Any]]:
-    """As :func:`concrete`, with the callable taking the random key first: ``run(key, *args, **kwargs)``."""
-    g, args, kwargs = concrete(f, args, kwargs)
+    """The un-jitted callable behind ``f``, taking a random key first, and the arguments to trace it with.
+
+    ``run(key, *args, **kwargs)`` runs ``f`` with ``expex.key()`` drawing from
+    ``key``. ``Static`` arguments of an ``@fn`` are closed over, so that tracing
+    does not turn them into traced values.
+    """
+    f = unwrap(f)
+    fn: Any = f.fn if isinstance(f, BoundFn) else f
+    g: Callable[..., Any] = f
+    if isinstance(fn, Fn):
+        if isinstance(f, BoundFn):
+            args = (f.obj, *args)
+        try:
+            bound = fn._sig.bind(*args, **kwargs)
+        except TypeError:
+            g = lambda *a, **k: fn._run(a, k)  # noqa: E731
+        else:
+            static = {n: bound.arguments[n] for n in fn.static_names if n in bound.arguments}
+            if isinstance(f, BoundFn):
+                static[next(iter(fn.params))] = f.obj
+            names = list(bound.arguments)
+            args, kwargs = ({n: v for n, v in bound.arguments.items() if n not in static},), {}
+
+            def with_static(dyn: dict[str, Any]) -> Any:
+                ba = inspect.BoundArguments(fn._sig, {n: (static[n] if n in static else dyn[n]) for n in names})  # type: ignore[arg-type]
+                return fn._run(ba.args, ba.kwargs)
+
+            g = with_static
 
     def run(key: Any, *a: Any, **k: Any) -> Any:
         with keys.rng(key):

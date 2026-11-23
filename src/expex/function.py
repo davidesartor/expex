@@ -134,6 +134,15 @@ def _enclosing_class(raw: Callable[..., Any]) -> type | None:
     return obj if isinstance(obj, type) else None
 
 
+def _scope(raw: Callable[..., Any], localns: dict[str, Any], owner: type | None = None) -> dict[str, Any]:
+    """The names annotations are evaluated with: where ``raw`` was defined, its (and its class's) type parameters."""
+    out = {**localns, **{p.__name__: p for p in getattr(raw, "__type_params__", ())}}
+    if owner is not None:
+        out.update({p.__name__: p for p in getattr(owner, "__type_params__", ())})
+        out[owner.__name__] = owner
+    return out
+
+
 def _annotations(raw: Callable[..., Any], localns: dict[str, Any]) -> dict[str, Any]:
     try:
         anns = inspect.get_annotations(raw, eval_str=True)
@@ -146,7 +155,7 @@ def _annotations(raw: Callable[..., Any], localns: dict[str, Any]) -> dict[str, 
     # Or it does arithmetic on sizes, f32[T + 1], which is evaluated symbolically.
     out: dict[str, Any] = {}
     glb = getattr(raw, "__globals__", {})
-    loc = {**localns, **{p.__name__: p for p in getattr(raw, "__type_params__", ())}}
+    loc = _scope(raw, localns)
     params = list(sym.signature(raw).parameters)
     for k, v in sym.texts(raw).items():
         if isinstance(v, str):
@@ -244,7 +253,7 @@ class Fn(Generic[P, R]):
         if self._pending and not (names and names[0] in ("self", "cls")):
             # not a method, so no class sizes to wait for: report a misspelt size now
             glb = getattr(raw, "__globals__", {})
-            scope = {**self._localns, **{p.__name__: p for p in getattr(raw, "__type_params__", ())}}
+            scope = _scope(raw, self._localns)
             raw_texts = sym.texts(raw)
             for k in self._pending:
                 self._unknown_in(k, raw_texts.get(k), glb, scope, names)
@@ -372,10 +381,7 @@ class Fn(Generic[P, R]):
             owner = _enclosing_class(self.raw)
         self._owner_cls = owner
         if self._pending:
-            scope = {**self._localns, **{p.__name__: p for p in getattr(self.raw, "__type_params__", ())}}
-            if owner is not None:
-                scope.update({p.__name__: p for p in getattr(owner, "__type_params__", ())})
-                scope[owner.__name__] = owner
+            scope = _scope(self.raw, self._localns, owner)
             glb = getattr(self.raw, "__globals__", {})
             for k, text in sym.texts(self.raw).items():
                 if k not in self._pending:

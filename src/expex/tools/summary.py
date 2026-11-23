@@ -30,7 +30,7 @@ from ..annotations.spec import ArraySpec, NoneSpec, SeqSpec, StructSpec, UnionSp
 from ..function import Fn, unwrap
 from ..modules import _all_fields
 from . import pages
-from .cost import Poly, arrays, cost
+from .cost import Poly, arrays, cost, si
 
 
 @dataclass
@@ -63,9 +63,9 @@ class Summary:
 
     def _cells(self, r: Row) -> list[str]:
         fmt = lambda p: "" if p is None else p.format(self.order)
-        flops = "" if r.flops_value is None else _si(r.flops_value)
+        flops = "" if r.flops_value is None else si(r.flops_value)
         return [r.label, f"× {r.count}" if r.count > 1 else "", f"{r.params:,}", fmt(r.formula),
-                _bytes(r.nbytes), flops, fmt(r.flops)]  # fmt: skip
+                si(r.nbytes, "B"), flops, fmt(r.flops)]  # fmt: skip
 
     def __str__(self) -> str:
         head = ["module", "class", "", "params", "formula", "bytes", "flops", "flops formula"]
@@ -276,17 +276,6 @@ def _pair(own: Any, used: Any, out: dict[str, Poly]) -> None:
     elif isinstance(own, (SeqSpec, UnionSpec)) and type(used) is type(own):
         for a, b in zip(getattr(own, "options", [getattr(own, "elem", None)]), getattr(used, "options", [getattr(used, "elem", None)])):  # fmt: skip
             _pair(a, b, out)
-
-
-def _si(v: float) -> str:
-    for s, p in ((1e12, "T"), (1e9, "G"), (1e6, "M"), (1e3, "k")):
-        if abs(v) >= s:
-            return f"{v / s:.3g} {p}"
-    return f"{v:,}"
-
-
-def _bytes(v: int) -> str:
-    return _si(v) + "B" if v >= 1000 else f"{v} B"
 
 
 _CSS = """@container (max-width:720px){#ID .f{display:none}#ID th,#ID td{padding:3px 6px}}@container (max-width:480px){#ID .b{display:none}#ID .c{white-space:normal}#ID .m{padding-left:calc(2px + var(--d)*10px)}}"""
