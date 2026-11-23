@@ -136,7 +136,7 @@ def vectorize(f: Fn[Any, Any], args: tuple[Any, ...], kwargs: dict[str, Any], au
         return f._run(b2.args, b2.kwargs, key=k)
 
     g: Callable[..., Any] = core_fn
-    if n > 1 and all(not lv or len(lv) == n for lv in levels):
+    if n > 1 and any(levels) and all(not lv or len(lv) == n for lv in levels):
         # every argument has all the batch axes or none: map over them as one
         # axis, so that each op inside sees one batch axis (see _flat_dot)
         g = _collapsed(core_fn, bshape, [bool(lv) for lv in levels])
