@@ -119,16 +119,16 @@ class Llama[V, D, F, G, R, K]:
 
     def __call__[T](self, tokens: Int[T]) -> f32[T, V]:
         """Logits at every position: the causal forward pass, over an empty cache."""
-        logits, _ = self.extend(tokens, 0, self.empty(T))
-        return logits
+        h, _ = self.extend(tokens, 0, self.empty(T))
+        return h @ self.unembed
 
     def empty(self, S: int) -> list[Cache[G, S, K]]:
         return [Cache(jnp.zeros((G, S, K)), jnp.zeros((G, S, K))) for _ in self.layers]
 
     def extend[T, S](
         self, tokens: Int[T], start: Int, caches: list[Cache[G, S, K]]
-    ) -> tuple[f32[T, V], list[Cache[G, S, K]]]:
-        """Logits of T tokens at positions start, ..., start + T - 1, with every layer's cache."""
+    ) -> tuple[f32[T, D], list[Cache[G, S, K]]]:
+        """Final hidden states of T tokens at positions start, ..., start + T - 1, with every layer's cache."""
         assert T <= S
         at = start + jnp.arange(T)
         x = self.embed[tokens]
@@ -136,7 +136,7 @@ class Llama[V, D, F, G, R, K]:
         for layer, cache in zip(self.layers, caches):  # identical blocks: one lax.scan
             x, cache = layer(x, at, cache)
             new.append(cache)
-        return self.norm.vectorize(x) @ self.unembed, new
+        return self.norm.vectorize(x), new
 
     def loss[T](self, tokens: Int[T]) -> f32:
         assert T >= 2
@@ -147,12 +147,12 @@ class Llama[V, D, F, G, R, K]:
     def generate[T](self, prompt: Int[T], n: int) -> Int[T + n]:
         """Greedy decoding: the prompt in one pass, then one token at a time with the caches."""
         assert n >= 1
-        logits, caches = self.extend(prompt, 0, self.empty(T + n - 1))
-        token = logits[-1].argmax()
+        h, caches = self.extend(prompt, 0, self.empty(T + n - 1))
+        token = (h[-1] @ self.unembed).argmax()  # logits at the last position only
         out = [token]
         for i in range(n - 1):
-            logits, caches = self.extend(token[None], T + i, caches)
-            token = logits[0].argmax()
+            h, caches = self.extend(token[None], T + i, caches)
+            token = (h[0] @ self.unembed).argmax()
             out.append(token)
         return jnp.concatenate([prompt, jnp.asarray(out)])
 

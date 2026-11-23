@@ -40,12 +40,12 @@ def test_cached_steps_match_the_full_pass():
     model = llama.Llama.init(jr.key(0), V=50, D=32, F=48, G=2, R=3, K=8, layers=2)
     tokens = jr.randint(jr.key(1), (10,), 0, 50)
     full = model(tokens)
-    logits, caches = model.extend(tokens[:4], 0, model.empty(10))
-    steps = [logits]
+    h, caches = model.extend(tokens[:4], 0, model.empty(10))  # a prompt, then one token at a time
+    steps = [h]
     for t in range(4, 10):
-        logits, caches = model.extend(tokens[t : t + 1], t, caches)
-        steps.append(logits)
-    assert jnp.abs(jnp.concatenate(steps) - full).max() < 1e-5
+        h, caches = model.extend(tokens[t : t + 1], t, caches)
+        steps.append(h)
+    assert jnp.abs(jnp.concatenate(steps) @ model.unembed - full).max() < 1e-5
 
 
 def test_every_shape_is_proved():
