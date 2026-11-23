@@ -5,21 +5,9 @@ checked on every call, provable for all sizes, and usable for vectorising.
 """
 
 from . import debug
-from .staging.axes import einsum, rearrange
-from .tools.prove import Report, prove
-from .consts import eps, huge, tiny
-from .tools.cost import cost
 from ._diagram import Diagram, diagram
-from .tools.diff import Diff, diff
-from .tools.summary import Summary, summary
-from .io import load, save
-from .sharding import device_put, shard, shardings
 from .annotations.dims import show
 from .annotations.errors import ShapeError, StageError
-from .function import Fn, compile_cache, config, fn, jit, vectorize, random, remat
-from .staging.loops import rows, stack
-from .keys import key, rng, seed
-from .modules import struct
 from .annotations.types import (
     Arr,
     Batch,
@@ -47,6 +35,19 @@ from .annotations.types import (
     u32,
     u64,
 )  # fmt: skip
+from .consts import eps, huge, tiny
+from .decorators import fn, jit, random, remat, vectorize
+from .function import Fn, compile_cache, config
+from .io import load, save
+from .keys import key, rng, seed
+from .modules import struct
+from .sharding import device_put, shard, shardings
+from .staging.axes import einsum, rearrange
+from .staging.loops import rows, stack
+from .tools.cost import cost
+from .tools.diff import Diff, diff
+from .tools.prove import Report, prove
+from .tools.summary import Summary, summary
 
 __all__ = [
     # decorate

@@ -42,6 +42,18 @@ def inside[N](x: i32[N]) -> Bool[N]:
     return 0 <= x < 3
 
 
+@expex.fn
+def on_board(r: i32) -> Bool:
+    return 0 <= r < 8
+
+
+def test_a_chained_comparison_alone_is_converted():
+    # with nothing else to convert, the function ran as plain Python: under
+    # jit / vmap `0 <= r < 8` asked for the truth value of a tracer
+    assert jax.jit(on_board)(3) and not jax.jit(on_board)(8)
+    assert jax.vmap(on_board)(jnp.array([-1, 0, 7, 8])).tolist() == [False, True, True, False]
+
+
 def test_chained_comparison_of_concrete_arrays_is_elementwise():
     # traced, the chain was combined elementwise; eager calls raised
     # "The truth value of an array with more than one element is ambiguous"

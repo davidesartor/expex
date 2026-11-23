@@ -62,8 +62,8 @@ import numpy as np
 from jax.custom_batching import custom_vmap
 
 from .. import function
-from . import pages
 from ..annotations.dims import fmt_dim, short_dtype
+from . import pages
 
 @dataclass
 class Row:

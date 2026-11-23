@@ -16,7 +16,7 @@ written for one game with plain Python:
   `Othello.new.vectorize(keys)` / `state.step.vectorize(actions)`.
 
 The board is kept flat, as in Pgx: on CPU, XLA runs the shifts of a
-`[games, 64]` array several times faster than those of a `[games, 8, 8]` one.
+`[games, 64]` array about three times faster than those of a `[games, 8, 8]` one.
 
     python examples/pgx/othello.py            # play random games, print one
     python -m expex examples/pgx/othello.py   # prove the shapes

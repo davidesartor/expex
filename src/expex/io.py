@@ -68,13 +68,8 @@ def load(cls_or_template: Any, path: Any, *, strict: bool = True, **sizes: int) 
     template = None if isinstance(cls_or_template, type) else cls_or_template
     cls = type(template) if template is not None else cls_or_template
     spec = _owner_spec(cls)
-    with np.load(path, allow_pickle=False) as f:
-        arrays = {k: f[k] for k in f.files if k != _META}
-        meta = json.loads(str(f[_META])) if _META in f.files else {}
+    arrays, meta = read(path)
     static, lengths, keys = (meta.get(k, {}) for k in ("static", "lengths", "keys"))
-    for k, name in meta.get("dtypes", {}).items():
-        if k in arrays:
-            arrays[k] = arrays[k].view(jnp.dtype(name))
     used: set[str] = set()
     missing: list[str] = []
 
@@ -114,6 +109,17 @@ def load(cls_or_template: Any, path: Any, *, strict: bool = True, **sizes: int) 
         raise ShapeError(f"expex.load({cls.__name__}, {str(path)!r}): the keys do not match.\n\n" + "\n".join(lines) + hint)
     _check(spec, obj, sizes, f"expex.load({cls.__name__}, {str(path)!r})")
     return spec.walk(obj, "", lambda s, v, p: jnp.asarray(v))
+
+
+def read(source: Any) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    """The arrays of a file written by :func:`save` (bfloat16 and co. restored), and its metadata."""
+    with np.load(source, allow_pickle=False) as f:
+        arrays = {k: f[k] for k in f.files if k != _META}
+        meta = json.loads(str(f[_META])) if _META in f.files else {}
+    for k, name in meta.get("dtypes", {}).items():
+        if k in arrays:
+            arrays[k] = arrays[k].view(jnp.dtype(name))
+    return arrays, meta
 
 
 def _check(spec: StructSpec, obj: Any, sizes: dict[str, int], where: str) -> None:

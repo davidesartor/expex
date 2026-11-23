@@ -27,9 +27,10 @@ import jax
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
 from .annotations.dims import DConst, DName
-from .function import BoundFn, Fn, fn, unwrap
-from .annotations.spec import ArraySpec, KeySpec, Spec, StaticSpec, _struct_fields, parse, parse_owner
+from .annotations.spec import ArraySpec, KeySpec, Spec, _struct_fields, parse, parse_owner
 from .annotations.types import ArrayAnn, DType
+from .decorators import fn, static_argnames
+from .function import BoundFn, Fn, unwrap
 
 
 def shardings(tree: Any, mesh: Mesh, /, *, annotation: Any = None, **names: Any) -> Any:
@@ -79,10 +80,7 @@ def shard(f: Callable[..., Any], mesh: Mesh, /, **names: Any) -> Callable[..., A
     if isinstance(g, BoundFn):
         return functools.partial(shard(g.fn, mesh, **names), g.obj)
     g = g if isinstance(g, Fn) else fn(f)
-    static = tuple(
-        n for n, p in g.params.items()
-        if isinstance(p.spec, StaticSpec) and (p.spec.explicit or p.spec.inner not in (float, complex))
-    )  # fmt: skip
+    static = tuple(static_argnames(g))
 
     def body(*args: Any, **kwargs: Any) -> Any:
         out = g(*args, **kwargs)

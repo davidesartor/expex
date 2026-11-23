@@ -137,6 +137,8 @@ def evaluate(text: str, glb: dict[str, Any], scope: dict[str, Any], params: Any 
 
     Raises if a name is unknown (e.g. a class that is not defined yet).
     """
+    if not isinstance(text, str):
+        return text  # evaluated already: a forward reference that Python can now resolve
     try:
         out = eval(text, glb, scope)  # noqa: S307 - as typing.get_type_hints
         # an annotation written in quotes, read from its text: quoted twice

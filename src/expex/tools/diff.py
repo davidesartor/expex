@@ -6,7 +6,7 @@
     print(d)                                         # 3 changed, 1 added, 120 unchanged ...
     d.save("diff.html")                              # an interactive report
 
-Fields are named by the keys :func:`expex.save <expex._io.save>` writes
+Fields are named by the keys :func:`expex.save <expex.io.save>` writes
 (``layers[2].mixer.x_proj``): a model is saved to memory and read back like a
 file, so models and files compare the same way. Arrays are compared by shape,
 dtype and values; the plain static fields that ``save`` keeps (numbers,
@@ -15,20 +15,18 @@ strings, ...) by equality. Other pytrees are named by ``jax.tree_util.keystr``.
 
 import html
 import io
-import json
 import math
 import os
 from dataclasses import dataclass
 from typing import Any
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 
-from . import pages
 from ..annotations.dims import describe
-from ..io import _META, _decode, save
 from ..annotations.spec import StructSpec, parse_owner
+from ..io import _decode, read, save
+from . import pages
 
 _STRUCTURAL = ("removed", "added", "reshaped", "static")
 
@@ -152,11 +150,8 @@ def _read(x: Any) -> tuple[str, dict[str, Any]]:
         source.seek(0)
     else:
         source = x
-    with np.load(source, allow_pickle=False) as f:
-        out: dict[str, Any] = {k: f[k] for k in f.files if k != _META}
-        meta = json.loads(str(f[_META])) if _META in f.files else {}
-    for k, name in meta.get("dtypes", {}).items():
-        out[k] = out[k].view(jnp.dtype(name))
+    arrays, meta = read(source)
+    out: dict[str, Any] = dict(arrays)
     out.update({k: _decode(v) for k, v in meta.get("static", {}).items()})
     name = meta.get("class", "?")
     return (f"{os.path.basename(x)} ({name})" if isinstance(x, (str, os.PathLike)) else name), out

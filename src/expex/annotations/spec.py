@@ -42,21 +42,6 @@ from .sym import evaluate, texts
 from .types import ArrayAnn, BatchAnn, DType, KeyAnn, StaticAnn
 
 # --------------------------------------------------------------------------
-# Dimensions
-# --------------------------------------------------------------------------
-
-
-# --------------------------------------------------------------------------
-# Environment
-# --------------------------------------------------------------------------
-
-
-# --------------------------------------------------------------------------
-# Values
-# --------------------------------------------------------------------------
-
-
-# --------------------------------------------------------------------------
 # Specs
 # --------------------------------------------------------------------------
 
@@ -122,7 +107,8 @@ class ArraySpec(Spec):
         return None if self.var_index is not None else len(self.dims)
 
     def match(self, value: Any, path: str, env: Env) -> None:
-        t = type(value)
+        symbolic = bool(jax.export.is_symbolic_dim(value))  # a size, under the prover: an int at run time
+        t = int if symbolic else type(value)
         if t in _SCALARS:
             if t not in self.dtype.weak:
                 raise Mismatch(
@@ -246,6 +232,8 @@ class StaticSpec(Spec):
                 return
             what = "a scalar" if value.shape != () else f"{_KIND_NAMES[inner]} scalar"
             raise Mismatch(path, self, value, f"expected {what} for `{inner.__name__}`, got {describe(value)}.")
+        if inner is int and jax.export.is_symbolic_dim(value):
+            return  # a size, symbolic under the prover: `self.empty(T)` for `def empty(self, S: int)`
         if any(isinstance(x, Tracer) for x in jax.tree.leaves(value)):
             root = path.split(".")[0].split("[")[0]
             m = Mismatch(

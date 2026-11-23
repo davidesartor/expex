@@ -5,9 +5,9 @@
 
 For Connect Four and Othello, `games` games (batched with `jax.vmap`, as Pgx is
 meant to be used) start from fixed keys. Every step picks, per game, a random
-legal action; in every fourth game, with probability 5% it picks among all
-columns (Connect Four) or all empty squares and pass (Othello) instead, so
-that Pgx's illegal-action penalty is exercised too. Games that have ended keep
+legal action; in every fourth game, with probability 5% it picks a full
+column (Connect Four, once there is one) or any empty square or pass
+(Othello) instead, so that Pgx's illegal-action penalty is exercised too. Games that have ended keep
 receiving actions, which Pgx must ignore. Saved: the keys, the actions and,
 after `init` and every step, all of Pgx's public state plus the board.
 """
@@ -23,15 +23,16 @@ import numpy as np
 # Pgx imports its SVG visualizer (and svgwrite) at import time; the games do not need it.
 sys.modules["svgwrite"] = types.ModuleType("svgwrite")
 
-STEPS = {"connect_four": 48, "othello": 80}  # longer than any game, to cover the post-game steps
+STEPS = {"connect_four": 48, "othello": 80}  # long enough for the games to end, and steps after the end
 FIELDS = ("current_player", "observation", "rewards", "terminated", "truncated", "legal_action_mask", "step_count")
 EXPLORE = 0.05
 
 
 def playable(name: str, state) -> jax.Array:
-    """Actions that are not obviously pointless: any column, or an empty square or pass."""
+    """Actions to try now and then: a full column (or any, if none is), or an empty square or pass."""
     if name == "connect_four":
-        return jnp.ones_like(state.legal_action_mask)
+        full = ~state.legal_action_mask
+        return full | ~full.any(-1, keepdims=True)
     return jnp.concatenate([state._x.board == 0, jnp.ones_like(state._x.board[..., :1], bool)], -1)
 
 

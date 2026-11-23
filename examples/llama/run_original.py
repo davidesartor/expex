@@ -49,7 +49,8 @@ class Tokens:
     def __call__(self, rows, *, padding, truncation, max_length, return_tensors):
         pad = max_length - len(rows[0])
         ids = jnp.asarray([[CONFIG.token_id_pad] * pad + list(r) for r in rows])
-        return types.SimpleNamespace(input_ids=ids, attention_mask=jnp.broadcast_to(jnp.arange(max_length) >= pad, ids.shape))
+        mask = jnp.broadcast_to(jnp.arange(max_length) >= pad, ids.shape)
+        return types.SimpleNamespace(input_ids=ids, attention_mask=mask)
 
     def batch_decode(self, seq, skip_special_tokens):
         return seq

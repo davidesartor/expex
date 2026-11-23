@@ -131,9 +131,6 @@ def _no_mutation(obj: Any, what: str) -> None:
         )
 
 
-_AT = {"Add": "add", "Sub": "subtract", "Mult": "multiply", "Div": "divide", "Pow": "power"}
-
-
 _IOP = {
     "Add": operator.iadd, "Sub": operator.isub, "Mult": operator.imul, "Div": operator.itruediv,
     "FloorDiv": operator.ifloordiv, "Mod": operator.imod, "Pow": operator.ipow,

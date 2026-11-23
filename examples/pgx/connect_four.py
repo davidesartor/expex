@@ -13,6 +13,10 @@ player identical (checked in compare.py), and writes one game as one
 * `if self.terminated:` / `if won:` instead of `lax.cond(..., lambda: ...)`;
 * a batch of games is `ConnectFour.new.vectorize(keys)` / `state.step.vectorize(actions)`.
 
+The walk only looks at the lines through the new stone, so on CPU a batch of
+games steps about 1.3x faster than with Pgx's table, but its eight `while`
+loops take longer to compile (compare.py prints both).
+
     python examples/pgx/connect_four.py            # play random games, print one
     python -m expex examples/pgx/connect_four.py   # prove the shapes
 """

@@ -53,9 +53,10 @@ from .annotations.dims import DConst, DExpr, DName, Env, describe, resolve
 from .annotations.errors import Mismatch, ShapeError, StageError
 from .annotations.spec import (
     ArraySpec, KeySpec, NoneSpec, SeqSpec, Spec, StructSpec, UnionSpec,
-    _class_annotations, parse, parse_owner, rebuild, static_type,
+    _class_annotations, join, parse, parse_owner, rebuild, static_type,
 )  # fmt: skip
-from .function import Fn, fn, unwrap
+from .decorators import fn
+from .function import Fn, unwrap
 
 T = TypeVar("T", bound=type)
 
@@ -391,7 +392,7 @@ def _build(cls: Any, spec: Any, key: Any, env: Env, given: dict[str, Any], path:
             values[f.name] = given[f.name]
             if s is not None and s.leafy:
                 try:
-                    s.match(given[f.name], f"{path}.{f.name}", env)  # binds sizes from it
+                    s.match(given[f.name], join(path, f.name), env)  # binds sizes from it
                 except Mismatch as m:
                     raise ShapeError(f"{path}.init(): {m.path}: {m.reason}") from None
         elif s is None or not s.leafy:
@@ -402,7 +403,7 @@ def _build(cls: Any, spec: Any, key: Any, env: Env, given: dict[str, Any], path:
     for k, f in zip(keys, fields):
         if f.name not in values:
             deeper = {n: v for n, v in given.items() if n not in fields_here}
-            values[f.name] = _make(specs[f.name], f, k, env, given.get(f.name), f"{path}.{f.name}", deeper)
+            values[f.name] = _make(specs[f.name], f, k, env, given.get(f.name), join(path, f.name), deeper)
     for name, v in values.items():
         object.__setattr__(obj, name, v)
     return obj

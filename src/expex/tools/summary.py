@@ -23,15 +23,14 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import jax
-import jax.numpy as jnp
 import jax.random as jr
 
-from . import pages
-from .cost import Poly, arrays, cost
 from ..annotations.dims import DConst, DExpr, DName, Env
+from ..annotations.spec import ArraySpec, NoneSpec, SeqSpec, StructSpec, UnionSpec, join, parse_owner
 from ..function import Fn, unwrap
 from ..modules import _all_fields
-from ..annotations.spec import ArraySpec, NoneSpec, SeqSpec, StructSpec, UnionSpec, join, parse_owner
+from . import pages
+from .cost import Poly, arrays, cost
 
 
 @dataclass

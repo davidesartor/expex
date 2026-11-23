@@ -25,22 +25,16 @@ function definitions, and generators / async functions.
 import ast
 import copy
 import inspect
-import re
 import textwrap
 import types
 from typing import Any, Callable, Iterable
 
-from . import axes, runtime
+from . import analysis, axes, runtime
 
 FLOW = "__expex_flow__"
 RET = "__bn_ret__"
 RETF = "__bn_returned__"
 
-_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
-_COMPS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
-_LOOPS = (ast.For, ast.AsyncFor, ast.While)
-_UNTOUCHED = (ast.Try, ast.TryStar, ast.With, ast.AsyncWith)  # never converted, nor their contents
-_JUMPS = (ast.Break, ast.Continue, ast.Return)
 SKIP = "__bn_skip__"
 
 
@@ -51,156 +45,11 @@ class NotConverted(Exception):
 # ------------------------------------------------------------------ analysis
 
 
-def _walk_scope(node: ast.AST, into_loops: bool = True) -> Iterable[ast.AST]:
-    """Walk ``node`` without entering nested function/class scopes."""
-    stack = [node]
-    first = True
-    while stack:
-        n = stack.pop()
-        yield n
-        if not first and isinstance(n, _SCOPES):
-            continue
-        if not first and not into_loops and isinstance(n, _LOOPS):
-            continue
-        first = False
-        stack.extend(ast.iter_child_nodes(n))
-
-
-def _walk_all(nodes: Iterable[ast.AST], into_loops: bool = True) -> Iterable[ast.AST]:
-    for n in nodes:
-        if isinstance(n, _SCOPES) or (not into_loops and isinstance(n, _LOOPS)):
-            yield n
-            continue
-        yield from _walk_scope(n, into_loops)
-
-
-def _assigned(nodes: Iterable[ast.AST]) -> set[str]:
-    """Names bound by ``nodes`` in the enclosing function's scope."""
-    out: set[str] = set()
-
-    def visit(n: ast.AST) -> None:
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            out.add(n.name)
-            return
-        if isinstance(n, ast.Lambda) or isinstance(n, _COMPS):
-            return
-        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
-            out.add(n.id)
-        elif isinstance(n, (ast.Import, ast.ImportFrom)):
-            for a in n.names:
-                out.add((a.asname or a.name).split(".")[0])
-        elif isinstance(n, ast.ExceptHandler) and n.name:
-            out.add(n.name)
-        elif isinstance(n, (ast.MatchAs, ast.MatchStar)) and n.name:
-            out.add(n.name)
-        elif isinstance(n, ast.MatchMapping) and n.rest:
-            out.add(n.rest)
-        for c in ast.iter_child_nodes(n):
-            visit(c)
-
-    for n in nodes:
-        visit(n)
-    return out
-
-
-def _reads(nodes: Iterable[ast.AST]) -> set[str]:
-    """Names read anywhere in ``nodes``, including inside nested scopes."""
-    out: set[str] = set()
-    for n in nodes:
-        for m in ast.walk(n):
-            if isinstance(m, ast.Name) and not isinstance(m.ctx, ast.Store):
-                out.add(m.id)
-    return out
-
-
-def _has(nodes: Iterable[ast.AST], kinds: tuple[type, ...], into_loops: bool = True) -> bool:
-    return any(isinstance(m, kinds) for m in _walk_all(nodes, into_loops))
-
-
-def _has_return(nodes: Iterable[ast.AST]) -> bool:
-    return _has(nodes, (ast.Return,))
-
-
-def _has_jump(nodes: Iterable[ast.AST]) -> bool:
-    """``break`` / ``continue`` that belong to an enclosing loop."""
-    return _has(nodes, (ast.Break, ast.Continue), into_loops=False)
-
-
-_DECL = (ast.Global, ast.Nonlocal, ast.Delete, ast.Yield, ast.YieldFrom, ast.Await)
-
-
 def _rebuild_if(s: ast.If, then: list[ast.stmt], other: list[ast.stmt]) -> ast.If:
     new = ast.copy_location(ast.If(test=s.test, body=then or [ast.Pass()], orelse=other), s)
     if hasattr(s, "_bn_site"):
         new._bn_site = s._bn_site  # type: ignore[attr-defined]
     return new
-
-
-def _always(stmts: list[ast.stmt], kinds: tuple[type, ...]) -> bool:
-    """Does this block always end in one of ``kinds`` (looking through ``if`` / ``else``)?"""
-    return any(
-        isinstance(s, kinds)
-        or (isinstance(s, ast.If) and _always(s.body, kinds) and _always(s.orelse, kinds))
-        for s in stmts
-    )
-
-
-def _count_via_ifs(stmts: list[ast.stmt]) -> int:
-    """How many ``break`` / ``continue`` / ``return`` are reachable through ``if`` only."""
-    n = 0
-    for s in stmts:
-        if isinstance(s, (ast.Break, ast.Continue, ast.Return)):
-            n += 1
-        elif isinstance(s, ast.If):
-            n += _count_via_ifs(s.body) + _count_via_ifs(s.orelse)
-    return n
-
-
-def _returns_via_ifs(stmts: list[ast.stmt]) -> bool:
-    """Is there a ``return`` reachable through ``if`` statements only?"""
-    return any(
-        isinstance(s, ast.Return)
-        or (isinstance(s, ast.If) and (_returns_via_ifs(s.body) or _returns_via_ifs(s.orelse)))
-        for s in stmts
-    )
-
-
-def _free_names(scope: ast.AST) -> set[str]:
-    """Names a nested function / lambda / generator takes from the enclosing scope."""
-    bound: set[str] = set()
-    used: set[str] = set()
-    declared: set[str] = set()
-    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-        a = scope.args
-        for arg in a.posonlyargs + a.args + a.kwonlyargs + [x for x in (a.vararg, a.kwarg) if x]:
-            bound.add(arg.arg)
-        # defaults and decorators are evaluated outside, so they count as uses
-        outer = list(a.defaults) + [d for d in a.kw_defaults if d is not None]
-        outer += list(getattr(scope, "decorator_list", []))
-        for default in outer:
-            node: ast.AST = default
-            used |= {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
-        body: list[ast.AST] = list(scope.body) if isinstance(scope.body, list) else [scope.body]
-    elif isinstance(scope, ast.ClassDef):
-        return {n.id for n in ast.walk(scope) if isinstance(n, ast.Name)}
-    else:  # generator expression: targets are its own
-        body = [scope]
-        for gen in scope.generators:  # type: ignore[attr-defined]
-            bound |= set(_target_names(gen.target) or ())
-    for node in body:
-        for sub in ast.walk(node):
-            if isinstance(sub, ast.Name):
-                if isinstance(sub.ctx, ast.Store):
-                    bound.add(sub.id)
-                used.add(sub.id)
-            elif isinstance(sub, (ast.Nonlocal, ast.Global)):
-                declared |= set(sub.names)
-            elif isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                bound.add(sub.name)
-            elif isinstance(sub, ast.arg):
-                # parameters of functions nested deeper: bound there, not free here
-                bound.add(sub.arg)
-    return (used - bound) | declared
 
 
 def _index_expr(node: ast.expr) -> ast.expr:
@@ -215,124 +64,6 @@ def _index_expr(node: ast.expr) -> ast.expr:
     if isinstance(node, ast.Tuple):
         return ast.Tuple(elts=[_index_expr(e) for e in node.elts], ctx=ast.Load())
     return node
-
-
-def _is_rewritable(m: ast.AST) -> bool:
-    """Statements/calls worth converting even without control flow around them."""
-    if isinstance(m, ast.Assert):
-        return True
-    if isinstance(m, (ast.Assign, ast.AugAssign)):
-        targets = m.targets if isinstance(m, ast.Assign) else [m.target]
-        return any(
-            isinstance(t, (ast.Subscript, ast.Attribute)) and isinstance(t.value, ast.Name)
-            for t in targets
-        )
-    return (
-        isinstance(m, ast.Call)
-        and isinstance(m.func, ast.Name)
-        and m.func.id in ("print", "max", "min")
-    )
-
-
-def _is_local_annotation(m: ast.AST) -> bool:
-    return (
-        isinstance(m, ast.AnnAssign)
-        and m.value is not None
-        and isinstance(m.target, ast.Name)
-        and not isinstance(m.annotation, ast.Constant)
-    )
-
-
-_MUTATORS = frozenset(
-    "append extend insert pop remove clear sort reverse update setdefault popitem add discard "
-    "appendleft popleft".split()
-)
-
-
-def _mutates(s: ast.stmt) -> bool:
-    """Does ``s`` update an object in place (``d[k] = v``, ``o.a = v``, ``xs.sort()``)?"""
-    for m in _walk_scope(s):
-        if isinstance(m, (ast.Subscript, ast.Attribute)) and isinstance(m.ctx, (ast.Store, ast.Del)):
-            return True
-        if (
-            isinstance(m, ast.Expr)
-            and isinstance(m.value, ast.Call)
-            and isinstance(m.value.func, ast.Attribute)
-            and m.value.func.attr in _MUTATORS
-        ):
-            return True
-    return False
-
-
-def _target_names(t: ast.AST) -> list[str] | None:
-    """Names bound by a simple assignment target, or None if it is not simple."""
-    if isinstance(t, ast.Name):
-        return [t.id]
-    if isinstance(t, (ast.Tuple, ast.List)):
-        out: list[str] = []
-        for e in t.elts:
-            if isinstance(e, ast.Starred):
-                e = e.value
-            sub = _target_names(e)
-            if sub is None:
-                return None
-            out += sub
-        return out
-    return None
-
-
-def _rbw(stmts: list[ast.stmt], fresh: set[str]) -> tuple[set[str], set[str]]:
-    """Names that may be read before being written when ``stmts`` run once.
-
-    ``fresh`` are names known to have been assigned already. Returns the
-    read-before-written names and the names definitely assigned afterwards.
-    """
-    fresh = set(fresh)
-    rbw: set[str] = set()
-
-    def read(names: set[str]) -> None:
-        rbw.update(names - fresh)
-
-    for s in stmts:
-        if isinstance(s, ast.Assign):
-            read(_reads([s.value]))
-            stores: set[str] = set()
-            for t in s.targets:
-                tn = _target_names(t)
-                if tn is None:
-                    read(_reads([t]))
-                else:
-                    stores |= set(tn)
-            fresh |= stores
-        elif isinstance(s, ast.AnnAssign) and isinstance(s.target, ast.Name):
-            if s.value is not None:
-                read(_reads([s.value]))
-                fresh.add(s.target.id)
-        elif isinstance(s, ast.AugAssign) and isinstance(s.target, ast.Name):
-            read(_reads([s.value]) | {s.target.id})
-            fresh.add(s.target.id)
-        elif isinstance(s, ast.If):
-            read(_reads([s.test]))
-            r1, f1 = _rbw(s.body, fresh)
-            r2, f2 = _rbw(s.orelse, fresh)
-            rbw |= r1 | r2
-            fresh = f1 & f2
-        elif isinstance(s, ast.For) and _target_names(s.target) is not None:
-            read(_reads([s.iter]))
-            r1, _ = _rbw(s.body, fresh | set(_target_names(s.target) or ()))
-            r2, _ = _rbw(s.orelse, fresh)
-            rbw |= r1 | r2  # the loop may run zero times: nothing new is definite
-        elif isinstance(s, ast.While):
-            read(_reads([s.test]))
-            r1, _ = _rbw(s.body, fresh)
-            r2, _ = _rbw(s.orelse, fresh)
-            rbw |= r1 | r2
-        elif isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            read(_reads([s]))
-            fresh.add(s.name)
-        else:
-            read(_reads([s]))
-    return rbw, fresh
 
 
 # ---------------------------------------------------------------- generation
@@ -496,7 +227,7 @@ class _Exprs(ast.NodeTransformer):
                         ast.Tuple(elts=variables, ctx=ast.Load()), to, self.site(node),
                     )  # fmt: skip
                 return ast.copy_location(call, node)
-        if self.axis_names and _named_axes_call(node, self.axis_names):
+        if self.axis_names and analysis.named_axes_call(node, self.axis_names):
             # axis positions keep the names; everything else is visited as usual
             method = isinstance(node.func, ast.Attribute) and node.func.attr in axes.AXIS_METHODS
             node.func = self.visit(node.func)
@@ -602,20 +333,20 @@ class _Converter:
         if args.kwarg:
             params.append(args.kwarg.arg)
         declared: set[str] = set()
-        for m in _walk_all(fdef.body):
+        for m in analysis.walk_all(fdef.body):
             if isinstance(m, (ast.Global, ast.Nonlocal)):
                 declared |= set(m.names)
         self.declared = declared
         self.first_param = (args.posonlyargs + args.args)[0].arg if args.posonlyargs + args.args else None
-        self.locals = (set(params) | _assigned(fdef.body)) - declared
+        self.locals = (set(params) | analysis.assigned(fdef.body)) - declared
         # Names used inside nested functions, lambdas and generator expressions.
         # A statement assigning one of them is not converted: conversion moves
         # the assignment into a helper function, and the closure would stop
         # seeing the updates.
         self.captured: set[str] = set()
         for m in ast.walk(fdef):
-            if m is not fdef and isinstance(m, _SCOPES[:3] + (ast.GeneratorExp,)):
-                self.captured |= _free_names(m)
+            if m is not fdef and isinstance(m, analysis.SCOPES[:3] + (ast.GeneratorExp,)):
+                self.captured |= analysis.free_names(m)
         #: names whose values may be traced: locals and enclosing-function variables
         self.builtins_ok = {
             b for b in ("range", "enumerate", "zip", "reversed", "print", "max", "min") if b not in self.locals and b not in shadowed
@@ -634,8 +365,8 @@ class _Converter:
     def rewrite_appends(self, stmts: list[ast.stmt]) -> None:
         """``xs.append(v)`` -> ``xs = append_(xs, v)`` for local lists (lets loops collect)."""
         holder = ast.Module(body=stmts, type_ignores=[])
-        for m in [holder, *_walk_all(stmts)]:
-            if isinstance(m, _SCOPES):
+        for m in [holder, *analysis.walk_all(stmts)]:
+            if isinstance(m, analysis.SCOPES):
                 continue
             for field in ("body", "orelse", "finalbody"):
                 seq = getattr(m, field, None)
@@ -670,8 +401,8 @@ class _Converter:
         ``assert``.
         """
         holder = ast.Module(body=stmts, type_ignores=[])
-        for m in [holder, *_walk_all(stmts)]:
-            if isinstance(m, _SCOPES):
+        for m in [holder, *analysis.walk_all(stmts)]:
+            if isinstance(m, analysis.SCOPES):
                 continue
             for fld in ("body", "orelse", "finalbody"):
                 seq = getattr(m, fld, None)
@@ -715,7 +446,7 @@ class _Converter:
         """``raise X`` -> ``raise_(lambda: X)``: raised at once in plain Python, and
         when the compiled code reaches it if it sits in a traced branch."""
         for i, s in enumerate(stmts):
-            if isinstance(s, _SCOPES + _UNTOUCHED):
+            if isinstance(s, analysis.SCOPES + analysis.UNTOUCHED):
                 continue
             if isinstance(s, ast.Raise) and s.exc is not None and not _has_walrus(s):
                 cause = _thunk(s.cause) if s.cause is not None else ast.Constant(None)
@@ -733,15 +464,15 @@ class _Converter:
         """``h: f32[B, T] = v`` -> ``h = local_(v, lambda: f32[B, T], ...)`` (a checked local)."""
         count = 0
         holder = ast.Module(body=stmts, type_ignores=[])
-        for m in [holder, *_walk_all(stmts)]:
-            if isinstance(m, _SCOPES):
+        for m in [holder, *analysis.walk_all(stmts)]:
+            if isinstance(m, analysis.SCOPES):
                 continue
             for fld in ("body", "orelse", "finalbody"):
                 seq = getattr(m, fld, None)
                 if not isinstance(seq, list):
                     continue
                 for i, s in enumerate(seq):
-                    if _is_local_annotation(s) and s.target.id in self.locals:
+                    if analysis.is_local_annotation(s) and s.target.id in self.locals:
                         ann = _thunk(s.annotation)
                         ann._expex_annotation = True  # type: ignore[attr-defined]
                         call = _call(
@@ -766,10 +497,10 @@ class _Converter:
         """
         out: list[ast.stmt] = []
         for s in stmts:
-            if isinstance(s, _UNTOUCHED):
+            if isinstance(s, analysis.UNTOUCHED):
                 out.append(s)  # left exactly as written, real jumps included
                 continue
-            if not isinstance(s, _SCOPES):
+            if not isinstance(s, analysis.SCOPES):
                 for fld in ("body", "orelse", "finalbody"):
                     seq = getattr(s, fld, None)
                     if isinstance(seq, list) and seq and isinstance(seq[0], ast.stmt):
@@ -784,21 +515,21 @@ class _Converter:
 
     def _lower_loop(self, s: ast.For | ast.While) -> list[ast.stmt] | None:
         body = s.body
-        jumps = sum(isinstance(m, (ast.Break, ast.Continue)) for m in _walk_all(body, False))
-        returns = sum(isinstance(m, ast.Return) for m in _walk_all(body))
+        jumps = sum(isinstance(m, (ast.Break, ast.Continue)) for m in analysis.walk_all(body, False))
+        returns = sum(isinstance(m, ast.Return) for m in analysis.walk_all(body))
         if not jumps and not returns:
             return None
-        if s.orelse or _count_via_ifs(body) != jumps + returns:
+        if s.orelse or analysis.count_via_ifs(body) != jumps + returns:
             return None  # a jump inside try/with/match, or in a loop that was left alone
-        assigned = _assigned([s])
+        assigned = analysis.assigned([s])
         if (
             assigned & (self.declared | self.captured)
-            or _mutates(s)
-            or _has([s], _DECL + (ast.NamedExpr,))
+            or analysis.mutates(s)
+            or analysis.has([s], analysis.DECL + (ast.NamedExpr,))
         ):
             return None  # this loop will not be converted, so it keeps its real jumps
         if isinstance(s, ast.For):
-            targets = _target_names(s.target)
+            targets = analysis.target_names(s.target)
             if targets is None or not set(targets) <= self.locals:
                 return None
 
@@ -867,9 +598,9 @@ class _Converter:
                 if flagged:
                     out.append(set_flag(SKIP, s))
                 return out, True
-            if isinstance(s, ast.If) and (_count_via_ifs(s.body) or _count_via_ifs(s.orelse)):
+            if isinstance(s, ast.If) and (analysis.count_via_ifs(s.body) or analysis.count_via_ifs(s.orelse)):
                 rest = stmts[i + 1 :]
-                ja, jb = _always(s.body, _JUMPS), _always(s.orelse, _JUMPS)
+                ja, jb = analysis.always(s.body, analysis.JUMPS), analysis.always(s.orelse, analysis.JUMPS)
                 if flagged or not (ja or jb):
                     state["skip"] = True
                     then, _ = self._skip(s.body, brk, state, True)
@@ -904,9 +635,9 @@ class _Converter:
                     self.uses_return_flag = True
                     out.append(_locate(ast.Assign(targets=[_name(RETF, store=True)], value=ast.Constant(True)), s))
                 return out, True
-            if isinstance(s, ast.If) and (_returns_via_ifs(s.body) or _returns_via_ifs(s.orelse)):
+            if isinstance(s, ast.If) and (analysis.returns_via_ifs(s.body) or analysis.returns_via_ifs(s.orelse)):
                 rest = stmts[i + 1 :]
-                ja, jb = _always(s.body, (ast.Return,)), _always(s.orelse, (ast.Return,))
+                ja, jb = analysis.always(s.body, (ast.Return,)), analysis.always(s.orelse, (ast.Return,))
                 if flagged or not (ja or jb):
                     self.uses_return_flag = True
                     self.locals.add(RETF)
@@ -933,7 +664,7 @@ class _Converter:
         for i, s in enumerate(stmts):
             # live after s: read by the rest before being rewritten, or live at the
             # end of the block and not definitely rewritten by the rest
-            reads, definite = _rbw(stmts[i + 1 :], set())
+            reads, definite = analysis.read_before_written(stmts[i + 1 :], set())
             out.extend(self.stmt(s, reads | (live_out - definite)))
         return out
 
@@ -944,13 +675,13 @@ class _Converter:
             return self.while_(s, live)
         if isinstance(s, ast.For):
             return self.for_(s, live)
-        if isinstance(s, _SCOPES):
+        if isinstance(s, analysis.SCOPES):
             return [s]
-        if isinstance(s, _UNTOUCHED):
+        if isinstance(s, analysis.UNTOUCHED):
             # An exception caught here must see the assignments made before it
             # was raised, which a converted statement only writes back at its end.
             return [s]
-        inner = live | _reads([s])
+        inner = live | analysis.reads([s])
         for field in ("body", "orelse", "finalbody"):
             seq = getattr(s, field, None)
             if isinstance(seq, list) and seq and isinstance(seq[0], ast.stmt):
@@ -975,18 +706,18 @@ class _Converter:
         return it
 
     def _blocked(self, s: ast.stmt) -> bool:
-        assigned = _assigned([s])
+        assigned = analysis.assigned([s])
         if assigned & self.declared:
             return True  # assigns a global/nonlocal: must stay in this scope
         if assigned & self.captured:
             return True  # a closure shares the variable
-        if _mutates(s):
+        if analysis.mutates(s):
             return True  # in-place updates must happen exactly as written
-        return _has([s], _DECL + (ast.NamedExpr,)) or _has_return([s])
+        return analysis.has([s], analysis.DECL + (ast.NamedExpr,)) or analysis.has_return([s])
 
     def if_(self, s: ast.If, live: set[str]) -> list[ast.stmt]:
-        names = sorted((_assigned(s.body) | _assigned(s.orelse)) & self.locals)
-        ok = not self._blocked(s) and not _has_jump(s.body + s.orelse)
+        names = sorted((analysis.assigned(s.body) | analysis.assigned(s.orelse)) & self.locals)
+        ok = not self._blocked(s) and not analysis.has_jump(s.body + s.orelse)
         body = self.block(s.body, live)
         orelse = self.block(s.orelse, live)
         if not ok:
@@ -1000,9 +731,9 @@ class _Converter:
         return [_locate(n, s) for n in new]
 
     def while_(self, s: ast.While, live: set[str]) -> list[ast.stmt]:
-        names = sorted(_assigned(s.body) & self.locals)
-        ok = not s.orelse and not self._blocked(s) and not _has_jump(s.body)
-        back = _rbw(s.body, set())[0] | _reads([s.test]) | _reads(s.orelse)
+        names = sorted(analysis.assigned(s.body) & self.locals)
+        ok = not s.orelse and not self._blocked(s) and not analysis.has_jump(s.body)
+        back = analysis.read_before_written(s.body, set())[0] | analysis.reads([s.test]) | analysis.reads(s.orelse)
         body = self.block(s.body, live | back)
         if not ok:
             s.body = body
@@ -1017,20 +748,20 @@ class _Converter:
         return [_locate(n, s) for n in new]
 
     def for_(self, s: ast.For, live: set[str]) -> list[ast.stmt]:
-        targets = _target_names(s.target)
+        targets = analysis.target_names(s.target)
         ok = (
             targets is not None
             and not s.orelse
             and not self._blocked(s)
-            and not _has_jump(s.body)
+            and not analysis.has_jump(s.body)
             and set(targets) <= self.locals
         )
-        rbw, definite = _rbw(s.body, set(targets or ()))
+        rbw, definite = analysis.read_before_written(s.body, set(targets or ()))
         if not ok:
-            s.body = self.block(s.body, live | rbw | _reads(s.orelse))
+            s.body = self.block(s.body, live | rbw | analysis.reads(s.orelse))
             return [s]
         assert targets is not None
-        nameset = (_assigned(s.body) | set(targets)) & self.locals
+        nameset = (analysis.assigned(s.body) | set(targets)) & self.locals
         names = sorted(nameset)
         # Carried from one iteration to the next: read before being written, or
         # only conditionally written and needed after the loop.
@@ -1051,9 +782,6 @@ class _Converter:
 
 # ----------------------------------------------------------------- top level
 
-_INTERESTING = (ast.If, ast.While, ast.For, ast.IfExp, ast.BoolOp)
-_MANGLED = re.compile(r"(?<![\w.])__[A-Za-z0-9]\w*(?<!__)\b|\.__[A-Za-z0-9]\w*(?<!__)\b")
-
 
 def _operand_name(a: ast.expr) -> str | None:
     """An einsum operand's name for finding its annotation: ``q``, or ``self.wq`` for a field."""
@@ -1062,139 +790,6 @@ def _operand_name(a: ast.expr) -> str | None:
     if isinstance(a, ast.Attribute) and isinstance(a.value, ast.Name):
         return f"{a.value.id}.{a.attr}"
     return None
-
-
-def _einsum_spellings(raw: Any) -> tuple[dict[str, str], set[str]]:
-    """How ``raw`` reaches ``expex.einsum`` / ``expex.rearrange``: bare names, and modules."""
-    from .axes import einsum, rearrange
-
-    glb = getattr(raw, "__globals__", {})
-    names = {k: v.__name__ for k, v in glb.items() if v is einsum or v is rearrange}
-    modules = {
-        k for k, v in glb.items()
-        if isinstance(v, types.ModuleType) and getattr(v, "einsum", None) is einsum
-    }  # fmt: skip
-    return names, modules
-
-
-def _axis_names(raw: Any, fdef: ast.FunctionDef) -> set[str]:
-    """Names that stand for axes in ``raw``: type parameters and ``Dim`` classes."""
-    out = {tp.__name__ for tp in getattr(raw, "__type_params__", ())}
-    code = raw.__code__
-    for name, cell in zip(code.co_freevars, raw.__closure__ or ()):
-        try:
-            if axes.axis_name(cell.cell_contents) is not None:  # e.g. a class's type parameter
-                out.add(name)
-        except ValueError:  # an empty cell
-            pass
-    for name in code.co_names:
-        if axes.axis_name(raw.__globals__.get(name)) is not None:
-            out.add(name)
-    return out
-
-
-def _signature_names(fdef: ast.FunctionDef) -> set[str]:
-    """Names used in the signature's annotations, and the type parameters."""
-    a = fdef.args
-    anns = [x.annotation for x in a.posonlyargs + a.args + a.kwonlyargs + [a.vararg, a.kwarg] if x]
-    out = {n.id for ann in [*anns, fdef.returns] if ann is not None for n in ast.walk(ann) if isinstance(n, ast.Name)}
-    out |= {getattr(t, "name", "") for t in getattr(fdef, "type_params", ())}
-    for ann in [*anns, fdef.returns]:  # names inside a quoted annotation
-        if isinstance(ann, ast.Constant) and isinstance(ann.value, str):
-            try:
-                out |= {n.id for n in ast.walk(ast.parse(ann.value, mode="eval")) if isinstance(n, ast.Name)}
-            except SyntaxError:
-                pass
-    return out
-
-
-def _size_asserts(
-    fdef: ast.FunctionDef,
-    sizes: set[str],
-    defs: dict[str, str] | None = None,
-    def_stmts: list[ast.Assign] | None = None,
-) -> list[Any]:
-    """The leading ``assert``s and size definitions of the body.
-
-    ``assert D % heads == 0`` becomes the constraint ``D % heads == 0``: checked
-    before the body runs, and assumed by the prover. ``H, K = heads, D // heads``,
-    for names used in the signature, defines those sizes (recorded in ``defs``).
-    Both may only involve sizes, int parameters and fields of ``self``.
-    """
-    a = fdef.args
-    params = {x.arg for x in a.posonlyargs + a.args + a.kwonlyargs}
-    in_signature = _signature_names(fdef)
-    allowed = sizes | params
-
-    def plain(e: ast.AST) -> bool:
-        if isinstance(e, ast.Attribute):
-            return isinstance(e.value, ast.Name) and e.value.id == "self"
-        if isinstance(e, ast.Name):
-            return e.id in allowed and e.id != "self"
-        if isinstance(e, ast.Constant):
-            return type(e.value) is int
-        if isinstance(e, ast.BinOp):
-            return plain(e.left) and plain(e.right)
-        if isinstance(e, ast.UnaryOp):
-            return plain(e.operand)
-        if isinstance(e, ast.Compare):
-            return plain(e.left) and all(plain(c) for c in e.comparators)
-        return False
-
-    class Unself(ast.NodeTransformer):
-        def visit_Attribute(self, node: ast.Attribute) -> Any:
-            return ast.Name(id=node.attr, ctx=ast.Load())
-
-    out: list[tuple[ast.Assert, list[str]]] = []
-    body = fdef.body
-    start = 1 if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) else 0
-    for s in body[start:]:
-        if isinstance(s, ast.Assign) and defs is not None and len(s.targets) == 1:
-            target, value = s.targets[0], s.value
-            names = [target] if isinstance(target, ast.Name) else getattr(target, "elts", None)
-            values = [value] if isinstance(target, ast.Name) else getattr(value, "elts", None)
-            if (
-                names and values and len(names) == len(values)
-                and all(isinstance(n, ast.Name) and n.id in in_signature for n in names)
-                and all(plain(v) for v in values)
-            ):  # fmt: skip
-                for n, v in zip(names, values):
-                    defs[n.id] = ast.unparse(Unself().visit(copy.deepcopy(v)))
-                    allowed.add(n.id)
-                if def_stmts is not None:
-                    def_stmts.append(s)
-                continue
-            break
-        if not isinstance(s, ast.Assert):
-            break
-        tests = s.test.values if isinstance(s.test, ast.BoolOp) and isinstance(s.test.op, ast.And) else [s.test]
-        if not all(isinstance(t, ast.Compare) and plain(t) for t in tests):
-            break
-        out.append((s, [ast.unparse(Unself().visit(copy.deepcopy(t))) for t in tests]))
-    return out
-
-
-def _named_axes_call(node: ast.Call, names: set[str] | frozenset[str] | None) -> bool:
-    """Does the call pass an axis by name? (``names=None``: any bare name might be one.)"""
-    if any(isinstance(a, ast.Starred) for a in node.args) or any(k.arg is None for k in node.keywords):
-        return False
-
-    def is_axis(e: ast.expr) -> bool:
-        if isinstance(e, ast.Name):
-            return names is None or e.id in names
-        if isinstance(e, ast.Tuple) and e.elts:
-            return all(isinstance(x, ast.Constant) or is_axis(x) for x in e.elts) and any(
-                isinstance(x, ast.Name) for x in e.elts
-            )
-        return False
-
-    if any(k.arg in axes.AXIS_KEYWORDS and is_axis(k.value) for k in node.keywords):
-        return True
-    return (
-        isinstance(node.func, ast.Attribute)
-        and node.func.attr in axes.AXIS_METHODS
-        and any(is_axis(a) for a in node.args)
-    )
 
 
 def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
@@ -1214,17 +809,18 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
     fdef = tree.body[0] if tree.body else None
     if not isinstance(fdef, ast.FunctionDef) or fdef.name != raw.__name__:
         raise NotConverted("could not locate the function definition in its source")
-    names = _axis_names(raw, fdef)  # size names, used as sizes or axes
+    names = analysis.axis_names(raw, fdef)  # size names, used as sizes or axes
     if not any(
-        isinstance(m, _INTERESTING)
+        isinstance(m, analysis.INTERESTING)
         or (isinstance(m, ast.UnaryOp) and isinstance(m.op, ast.Not))
-        or _is_local_annotation(m)
-        or _is_rewritable(m)
+        or (isinstance(m, ast.Compare) and len(m.ops) > 1)  # a chained comparison
+        or analysis.is_local_annotation(m)
+        or analysis.is_rewritable(m)
         or (isinstance(m, ast.Name) and m.id in names)
-        for m in _walk_all(fdef.body)
-    ) and not _size_asserts(fdef, names, {}, []):
+        for m in analysis.walk_all(fdef.body)
+    ) and not analysis.size_asserts(fdef, names, {}, []):
         raise NotConverted("no control flow to convert")
-    if "." in raw.__qualname__.replace(".<locals>.", "") and _MANGLED.search(src):
+    if "." in raw.__qualname__.replace(".<locals>.", "") and analysis.MANGLED.search(src):
         raise NotConverted("uses private (name-mangled) attributes")
 
     conv, n_locals = _rewrite(tree, fdef, raw)
@@ -1290,7 +886,7 @@ def _rewrite(tree: ast.Module, fdef: ast.FunctionDef, raw: Any) -> tuple[_Conver
     ast.increment_lineno(tree, code.co_firstlineno - 1)
     defs: dict[str, str] = {}
     def_stmts: list[ast.Assign] = []
-    lifted = _size_asserts(fdef, _axis_names(raw, fdef), defs, def_stmts)
+    lifted = analysis.size_asserts(fdef, analysis.axis_names(raw, fdef), defs, def_stmts)
     # `H, K = heads, D // heads` defines sizes: H and K become size names, whose
     # value in the body is computed like any size of the call
     for s in def_stmts:
@@ -1315,8 +911,8 @@ def _rewrite(tree: ast.Module, fdef: ast.FunctionDef, raw: Any) -> tuple[_Conver
     conv.rewrite_raises(fdef.body)
     n_locals = conv.rewrite_annotations(fdef.body)
     exprs = _Exprs(
-        conv.site, conv.first_param, conv.builtins_ok, (_axis_names(raw, fdef) - conv.locals) | set(defs),
-        _einsum_spellings(raw),
+        conv.site, conv.first_param, conv.builtins_ok, (analysis.axis_names(raw, fdef) - conv.locals) | set(defs),
+        analysis.einsum_spellings(raw),
     )
     fdef.body = [exprs.visit(s) for s in fdef.body]
     n_locals += exprs.named  # axes by name need the call's sizes, as checked locals do
@@ -1325,7 +921,7 @@ def _rewrite(tree: ast.Module, fdef: ast.FunctionDef, raw: Any) -> tuple[_Conver
     conv.defs = defs
     fdef.body = conv.lower_jumps(fdef.body)
     if any(
-        isinstance(s, ast.If) and (_returns_via_ifs(s.body) or _returns_via_ifs(s.orelse))
+        isinstance(s, ast.If) and (analysis.returns_via_ifs(s.body) or analysis.returns_via_ifs(s.orelse))
         for s in fdef.body
     ):
         body, _ = conv.lower_returns(fdef.body)
