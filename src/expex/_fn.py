@@ -5,6 +5,7 @@ import copy
 import dataclasses
 import functools
 import inspect
+import sys
 import types
 import typing
 import os
@@ -869,7 +870,8 @@ def fn(
         (``"dots"``, ``"dots_no_batch"``, ``"everything"`` or a JAX policy).
     ``donate``
         With ``jit``: parameters whose buffers the call may reuse, e.g. the
-        state of a training step.
+        state of a training step. ``"auto"`` donates what each call site
+        reassigns: ``state = step(state, batch)`` donates ``state``.
     ``examples``
         Values the prover should try for parameters it cannot guess,
         as ``{"name": [value, ...]}``.
@@ -908,7 +910,8 @@ def fn(
         if remat:
             result = _remat(out, remat)
         if jit:
-            result = _jit(result, donate_argnames=(donate,) if isinstance(donate, str) else tuple(donate))
+            how = donate if donate == "auto" else (donate,) if isinstance(donate, str) else tuple(donate)
+            result = _jit(result, donate_argnames=how)
         elif donate:
             raise TypeError("@expex.fn(donate=...) only applies with jit=True")
         return result
@@ -987,7 +990,12 @@ def _jit(f: Any = None, /, **options: Any) -> Any:
     static = _static_names(g)
     given = options.pop("static_argnames", ())
     static += [given] if isinstance(given, str) else list(given)
-    compiled = jax.jit(f, static_argnames=tuple(dict.fromkeys(static)), **options)
+    static_names = tuple(dict.fromkeys(static))
+    if options.get("donate_argnames") == "auto":
+        options.pop("donate_argnames")
+        compiled: Any = _AutoDonate(f, g, static_names, options)
+    else:
+        compiled = jax.jit(f, static_argnames=static_names, **options)
     if not g.random:
         return compiled
 
@@ -1059,6 +1067,117 @@ def _remat(f: Any, how: Any) -> Any:
 
 
 jit.__doc__ = _jit.__doc__
+
+
+class _Probe:
+    def __call__(self, *args: Any, **kwargs: Any) -> int:
+        return sys.getrefcount(args[0] if args else kwargs["a"])
+
+
+def _held_once() -> tuple[int, int, int]:
+    """Reference counts of an argument nothing else holds, seen from ``_AutoDonate.__call__``.
+
+    Measured the same way (a call to an instance, the argument held by one
+    local variable), since the count depends on how the interpreter passes
+    arguments: (positional, positional when keywords are given too, keyword).
+    """
+    value, probe = object(), _Probe()
+    return probe(value), probe(value, k=1), probe(a=value)
+
+
+class _AutoDonate:
+    """``jax.jit`` that donates the arguments a call site reassigns: ``state = step(state, x)``.
+
+    The calling line is read once per call site (from the source, through the
+    frame's instruction position). An argument passed as a name that the same
+    statement assigns to is donated, unless something else also holds it (its
+    reference count says so). Arrays inside it that are held elsewhere are not
+    detected; reusing a donated array afterwards raises JAX's "deleted" error.
+    """
+
+    def __init__(self, f: Any, g: Any, static: tuple[str, ...], options: dict[str, Any]):
+        self.f, self.static, self.options = f, static, options
+        self.names = [n for n in g._sig.parameters]
+        self.compiled: dict[tuple[str, ...], Any] = {}
+        self.plain = self._variant(())
+        self.sites: dict[tuple[Any, int], Any] = {}  # call site -> its plan (see _plan)
+        self.base = _held_once()
+        functools.update_wrapper(self, f)
+
+    def _variant(self, donate: tuple[str, ...]) -> Any:
+        if donate not in self.compiled:
+            self.compiled[donate] = jax.jit(
+                self.f, static_argnames=self.static, donate_argnames=donate, **self.options
+            )
+        return self.compiled[donate]
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        __tracebackhide__ = True
+        frame: Any = sys._getframe(1)
+        while frame.f_globals.get("__name__", "").startswith("expex"):
+            frame = frame.f_back  # through expex's own wrappers, to the user's call
+        plan = self.sites.get((frame.f_code, frame.f_lasti), _UNSEEN)
+        if plan is _UNSEEN:
+            plan = self.sites[(frame.f_code, frame.f_lasti)] = self._plan(frame)
+        if plan is None:  # this call site reassigns none of the arguments
+            return self.plain(*args, **kwargs)
+        positions, keywords, extra = plan
+        plain, mixed, by_name = self.base
+        base = (mixed if kwargs else plain) + extra
+        donate = tuple(
+            [n for i, n in positions if i < len(args) and sys.getrefcount(args[i]) <= base]
+            + [k for k in keywords if k in kwargs and sys.getrefcount(kwargs[k]) <= by_name + extra]
+        )
+        return (self.compiled.get(donate) or self._variant(donate))(*args, **kwargs)
+
+    def _plan(self, frame: Any) -> Any:
+        """For a call site: the arguments it may donate (by position and keyword), or None."""
+        positions, keywords = _reassigned(frame)
+        named = tuple(
+            (i, self.names[i]) for i in positions
+            if i < len(self.names) and self.names[i] not in self.static
+        )  # fmt: skip
+        keywords = tuple(k for k in keywords if k in self.names and k not in self.static)
+        if not named and not keywords:
+            return None
+        # module-level code reads its variables as globals, which holds one more reference
+        return named, keywords, 0 if frame.f_code.co_flags & inspect.CO_OPTIMIZED else 1
+
+
+_UNSEEN = object()
+_SOURCES: dict[str, Any] = {}
+
+
+def _reassigned(frame: Any) -> tuple[tuple[int, ...], tuple[str, ...]]:
+    """Which arguments of the call running in ``frame`` its statement assigns back to."""
+    import ast
+    import linecache
+
+    code = frame.f_code
+    try:
+        line, _, col, _ = list(code.co_positions())[frame.f_lasti // 2]
+        name = code.co_filename
+        if name not in _SOURCES:
+            _SOURCES[name] = ast.parse("".join(linecache.getlines(name)))
+        tree = _SOURCES[name]
+    except Exception:
+        return (), ()
+    for stmt in ast.walk(tree):
+        if not isinstance(stmt, ast.Assign) or not (stmt.lineno <= (line or 0) <= (stmt.end_lineno or 0)):
+            continue
+        call = next(
+            (n for n in ast.walk(stmt.value) if isinstance(n, ast.Call) and n.lineno == line and n.col_offset == col),
+            None,
+        )
+        if call is None:
+            continue
+        targets = {n.id for t in stmt.targets for n in ast.walk(t) if isinstance(n, ast.Name)}
+        positions = tuple(i for i, a in enumerate(call.args) if isinstance(a, ast.Name) and a.id in targets)
+        keywords = tuple(
+            k.arg for k in call.keywords if k.arg and isinstance(k.value, ast.Name) and k.value.id in targets
+        )
+        return positions, keywords
+    return (), ()
 
 
 def random(f: Callable[P, R], /) -> Fn[P, R]:

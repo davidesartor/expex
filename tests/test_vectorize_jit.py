@@ -326,3 +326,34 @@ def test_tx_jit_on_struct_methods():
     with pytest.raises(ShapeError):
         m(jnp.ones(4))
     assert expex.prove(Lin.__call__).ok
+
+
+def test_donate_auto_donates_what_the_call_site_reassigns():
+    @fn(jit=True, donate="auto")
+    def step[N](state: f32[N], grad: f32[N], lr: float = 0.1) -> f32[N]:
+        return state - lr * grad
+
+    def variants(f=step):  # the donation sets that have been compiled
+        return sorted(k for k, v in f.compiled.items() if v._cache_size())
+
+    state, g = jnp.ones(64), jnp.ones(64)
+    old = state
+    state = step(state, g)  # `old` still holds the input: not donated
+    assert variants() == [()] and float(old[0]) == 1.0
+    del old
+    state = step(state, g)  # reassigned, held by nothing else: donated
+    assert variants() == [(), ("state",)]
+    other = step(state, g)  # not reassigned: not donated
+    assert float(state[0]) == pytest.approx(0.8) and other.shape == (64,)
+
+    @fn(jit=True, donate="auto")
+    def both[N](state: f32[N], grad: f32[N]) -> tuple[f32[N], f32]:
+        return state - grad, grad.sum()
+
+    s = jnp.ones(8)
+    s, total = both(s, grad=jnp.ones(8))  # tuple targets work too
+    assert variants(both) == [("state",)] and float(total) == 8.0
+    s = both(state=s, grad=jnp.ones(8))[0]  # by keyword: `s` is passed as `state` and reassigned
+    assert variants(both) == [("state",)]
+    kept = both(state=s, grad=jnp.ones(8))  # not reassigned
+    assert variants(both) == [(), ("state",)] and kept[1] == 8.0
