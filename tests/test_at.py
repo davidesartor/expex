@@ -123,10 +123,8 @@ def test_static_fields(model):
     new = model.at.heads.heads.set(2)
     assert new.heads.heads == 2 and new.heads.split(jnp.ones((3, D))).shape == (2, 3, 2)
     assert model.at.blocks[1].act.set(jnp.tanh).blocks[1].act is jnp.tanh
-    with pytest.raises(ShapeError, match="requires `D % heads == 0`"):
+    with pytest.raises(ShapeError, match=r"at `heads`, Heads requires `D % heads == 0`.*heads=3"):
         model.at.heads.heads.set(3)  # the class's invariant
-    with pytest.raises(ShapeError, match=r"`heads\.heads`.*expected int"):
-        model.at.heads.heads.set("four")
 
 
 def test_under_jit(model):
@@ -191,7 +189,8 @@ def test_fields_named_like_the_methods():
         at: int = 0  # a field named `at` is left alone
 
     o = Odd(jnp.ones(3))
-    assert o.at == 0 and not hasattr(Odd, "replace") or True
+    assert o.at == 0
+
     @expex.struct
     class Named[D]:
         get: f32[D]

@@ -341,6 +341,7 @@ class _NotGiven:
 
 _NOT_GIVEN = _NotGiven()
 _U32 = np.dtype("uint32")
+_ArrayImpl: Any
 try:
     from jax._src.array import ArrayImpl as _ArrayImpl
 except ImportError:  # pragma: no cover - every array then takes the longer look
@@ -358,7 +359,7 @@ def is_key(x: Any) -> bool:
     if isinstance(dtype, np.dtype):
         return dtype == _U32 and tuple(shape or ()) == (2,)
     try:
-        return bool(jax.dtypes.issubdtype(dtype, jax.dtypes.prng_key)) and tuple(shape or ()) == ()
+        return bool(jnp.issubdtype(dtype, jax.dtypes.prng_key)) and tuple(shape or ()) == ()
     except TypeError:
         return False
 
@@ -977,7 +978,7 @@ def _record_fields(x: Any) -> tuple[str, ...] | None:
     if dataclasses.is_dataclass(x) and not isinstance(x, type):
         return tuple(f.name for f in dataclasses.fields(x))
     if isinstance(x, tuple) and hasattr(x, "_fields"):
-        return tuple(x._fields)
+        return tuple(getattr(x, "_fields"))
     return None
 
 
@@ -1129,15 +1130,15 @@ def _put(
         return type(node)(out) if type(node) is not dict else out
 
     if isinstance(node, (list, tuple)) and fields is None:
-        n = len(node)
+        size = len(node)
         if isinstance(spec, SeqSpec):
-            elems: list[Any] = [spec.elem] * n
-        elif isinstance(spec, TupleSpec) and len(spec.elems) == n:
+            elems: list[Any] = [spec.elem] * size
+        elif isinstance(spec, TupleSpec) and len(spec.elems) == size:
             elems = list(spec.elems)
         else:
-            elems = [None] * n
-        chosen = list(range(n))[key] if isinstance(key, slice) else [_list_index(node, key, path, label)]
-        for j in range(n):  # the sizes the other elements fix
+            elems = [None] * size
+        chosen = list(range(size))[key] if isinstance(key, slice) else [_list_index(node, key, path, label)]
+        for j in range(size):  # the sizes the other elements fix
             if j not in chosen and elems[j] is not None and elems[j].leafy:
                 elems[j].match(node[j], f"{path}[{j}]", env)
         out = list(node)
@@ -1164,7 +1165,7 @@ def _put(
         new = down(old, espec, p)
         old_leaves, old_tree = jax.tree_util.tree_flatten_with_path(old)
         new_leaves, new_tree = jax.tree_util.tree_flatten_with_path(new)
-        if jax.tree.structure(old) != jax.tree.structure(new):
+        if str(old_tree) != str(new_tree):
             raise ShapeError(f"{label}: `{p}` is a row of a stacked list, and the new value has another structure.")
         for (kp, a), (_, b) in zip(old_leaves, new_leaves):
             if np.shape(a) != np.shape(b) or jnp.result_type(a) != jnp.result_type(b):
