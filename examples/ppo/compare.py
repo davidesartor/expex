@@ -34,7 +34,7 @@ cfg = Config(num_updates=updates)
 t = time.time()
 net, info = jax.jit(lambda k, n: train(k, cfg, n))(jr.PRNGKey(30), net_from("init"))
 jax.block_until_ready(net)
-print(f"typax port: {time.time() - t:.1f}s for {updates} updates (trace + compile + run)")
+print(f"expex port: {time.time() - t:.1f}s for {updates} updates (trace + compile + run)")
 
 worst = 0.0
 for got, want in zip(jax.tree.leaves(net), jax.tree.leaves(net_from("param"))):

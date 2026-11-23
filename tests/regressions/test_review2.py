@@ -13,23 +13,23 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-import typax as tx
-from typax import StageError, Static, f32, fn
-from typax._convert import convert
+import expex
+from expex import StageError, Static, f32, fn
+from expex._convert import convert
 
 
 def scoped(f, key, *args):
-    with tx.rng(key):
+    with expex.rng(key):
         return f(*args)
 
 
 def test_keys_agree_in_ternaries_and_boolean_operators():
-    @tx.random
+    @expex.random
     @fn
     def f(x):
-        a = jr.uniform(tx.key()) if x > 0 else -jr.uniform(tx.key())
-        b = (x > 100) or (jr.uniform(tx.key()) > 2)
-        return a, jr.uniform(tx.key()), b
+        a = jr.uniform(expex.key()) if x > 0 else -jr.uniform(expex.key())
+        b = (x > 100) or (jr.uniform(expex.key()) > 2)
+        return a, jr.uniform(expex.key()), b
 
     k = jr.key(7)
     eager = scoped(f, k, jnp.float32(1.0))
@@ -41,11 +41,11 @@ def test_while_test_and_body_draw_different_numbers():
     seen = []
 
     def draw():
-        v = float(jr.uniform(tx.key()))
+        v = float(jr.uniform(expex.key()))
         seen.append(v)
         return v
 
-    @tx.random
+    @expex.random
     @fn
     def f():
         n = 0
@@ -54,19 +54,19 @@ def test_while_test_and_body_draw_different_numbers():
             n += 1
         return n
 
-    tx.seed(0)
+    expex.seed(0)
     f()
     assert len(seen) == 7 and len(set(seen)) == 7
 
 
-@tx.random
+@expex.random
 @fn
 def noise(x: f32) -> f32:
-    return x + jr.uniform(tx.key())
+    return x + jr.uniform(expex.key())
 
 
 def test_vmap_with_a_shared_key_is_refused():
-    with tx.rng(0):
+    with expex.rng(0):
         assert len(set(noise.lift(jnp.zeros(4)).tolist())) == 4
         with pytest.raises(StageError, match="shared by the whole batch"):
             jax.vmap(noise)(jnp.zeros(4))
@@ -207,7 +207,7 @@ def test_a_variable_named_slice():
 
 
 def test_lift_maps_optional_arguments():
-    @tx.lift
+    @expex.lift
     @fn
     def f(x: f32, opt: f32 | None = None) -> f32:
         return x + (0 if opt is None else opt)
@@ -255,7 +255,7 @@ def test_minor_findings():
     @fn
     def chunked(xs):
         out = []
-        for i, x in enumerate(reversed(tx.rows(xs, chunk=2))):
+        for i, x in enumerate(reversed(expex.rows(xs, chunk=2))):
             out.append(x * i)
         return jnp.asarray(out)
 

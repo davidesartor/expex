@@ -11,9 +11,9 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
-import typax as tx
-from typax import f32, fn
-from typax._cost import Poly, cost
+import expex
+from expex import f32, fn
+from expex._cost import Poly, cost
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -43,7 +43,7 @@ def recur[T, D](xs: f32[T, D], w: f32[D, D]) -> f32[D]:
     return h
 
 
-@tx.struct
+@expex.struct
 class Linear[I, O]:
     w: f32[I, O]
     b: f32[O]
@@ -52,7 +52,7 @@ class Linear[I, O]:
         return x @ self.w + self.b
 
 
-@tx.struct
+@expex.struct
 class Stack[D]:
     layers: list[Linear[D, D]]
 

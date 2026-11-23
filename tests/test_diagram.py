@@ -11,10 +11,10 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
-import typax as tx
-from typax import _fn, f32
-from typax import _diagram
-from typax._diagram import Diagram, diagram
+import expex
+from expex import _fn, f32
+from expex import _diagram
+from expex._diagram import Diagram, diagram
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -154,12 +154,12 @@ def test_mixer_time_loop(mamba):
     check_mermaid(d2.mermaid)
 
 
-@tx.fn
+@expex.fn
 def unit[T, D](x: f32[T, D]) -> f32[T, D]:
     return x / jnp.linalg.norm(x)
 
 
-@tx.fn
+@expex.fn
 def gate[T, D](x: f32[T, D], w: f32[D, D]) -> f32[T, D]:
     if x.sum() > 0:
         y = unit(x @ w)
@@ -202,7 +202,7 @@ def test_page(transformer, tmp_path):
 @pytest.fixture(scope="module")
 def timed(transformer):
     model = transformer.Transformer.init(jr.key(0), Vocab=64, D=32, F=64, blocks=2, heads=4)
-    return tx.diagram.timed(model.__call__, jr.randint(jr.key(1), (16,), 0, 64))
+    return expex.diagram.timed(model.__call__, jr.randint(jr.key(1), (16,), 0, 64))
 
 
 def test_timed(timed):
@@ -229,7 +229,7 @@ def test_timed_loops_add_up_iterations(transformer):
     runs = {}
     for n in (2, 4):
         model = transformer.Transformer.init(jr.key(0), Vocab=64, D=32, F=64, blocks=n, heads=4)
-        d = tx.diagram.timed(model.__call__, jr.randint(jr.key(1), (16,), 0, 64))
+        d = expex.diagram.timed(model.__call__, jr.randint(jr.key(1), (16,), 0, 64))
         (block,) = [b for b in d.model["boxes"] if b["l"] == "Block.__call__"]
         runs[n] = block["n"]  # XLA instructions run per call, in the block
     assert runs[4] == pytest.approx(2 * runs[2], abs=2)
@@ -241,7 +241,7 @@ def test_timed_estimate(transformer, monkeypatch):
 
     monkeypatch.setattr(_diagram, "_profile", no_profiler)
     model = transformer.Transformer.init(jr.key(0), Vocab=64, D=32, F=64, blocks=2, heads=4)
-    d = tx.diagram.timed(model.__call__, jr.randint(jr.key(1), (16,), 0, 64))
+    d = expex.diagram.timed(model.__call__, jr.randint(jr.key(1), (16,), 0, 64))
     t = d.model["timing"]
     assert t["how"] == "estimate" and "no profiler here" in t["why"]
     assert "ESTIMATED from FLOPs" in d.text and "FLOP" in node(d, "Block.__call__")[2]
@@ -260,12 +260,12 @@ def test_timed_page(timed, tmp_path):
 # ---------------------------------------------------------------- shape errors
 
 
-@tx.fn
+@expex.fn
 def proj[T, D, E](x: f32[T, D], w: f32[D, E]) -> f32[T, E]:
     return x @ w
 
 
-@tx.fn
+@expex.fn
 def broken[T, D](x: f32[T, D], w: f32[D, D]) -> f32[T, D]:
     h = unit(proj(x, w))
     return proj(h, w[:-1])  # w loses a row: proj's D does not match
@@ -283,7 +283,7 @@ def buggy(tmp_path_factory):
 
 def test_error_diagram(buggy):
     model = buggy.Transformer.init(jr.key(0), Vocab=50, D=32, F=64, blocks=3, heads=4)
-    with pytest.raises(tx.ShapeError, match=r"MLP.__call__\(\): argument `x`") as e:
+    with pytest.raises(expex.ShapeError, match=r"MLP.__call__\(\): argument `x`") as e:
         model(jr.randint(jr.key(1), (24,), 0, 50))
     assert "e.diagram" not in str(e.value)  # the message is unchanged; the hint is a note
     assert e.value.__notes__[-1] == '(see e.diagram.save("error.html"))'
@@ -301,13 +301,13 @@ def test_error_diagram(buggy):
     check_mermaid(d.mermaid)
     assert "✗ received f32[24, 32], declared x: f32[D]" in d.text
     assert "path:  tokens: i32[24] → index → LayerNorm.__call__ · lift → Attention.__call__ → LayerNorm.__call__ · lift → ✗ MLP.__call__" in d.text
-    assert tx.diagram.explain(e.value) is d
+    assert expex.diagram.explain(e.value) is d
     assert _fn.CALL_HOOK.get() is None
 
 
 def test_explain_function():
     x, w = jnp.ones((5, 3)), jnp.ones((3, 3))
-    d = tx.diagram.explain(broken, x, w)
+    d = expex.diagram.explain(broken, x, w)
     fail = node(d, "✗ proj")
     assert fail[2] == "✗ proj\nreceived f32[2, 3]\ndeclared w: f32[D, E]"
     assert d.failed == fail[0] and "argument `w` does not match" in d.error
@@ -315,17 +315,17 @@ def test_explain_function():
     assert edge(d, "w", "✗ proj") == "f32[2, 3]"  # w[:-1] is passed through: the type it enters with
     assert {n[2].split("\n")[0] for n in d.nodes if n[0] in d.feeds} == {"x: f32[5, 3]", "w: f32[3, 3]", "proj", "unit"}
     check_mermaid(d.mermaid)
-    with pytest.raises(tx.ShapeError) as e:
+    with pytest.raises(expex.ShapeError) as e:
         broken(x, w)
     assert e.value.diagram.nodes == d.nodes
-    ok = tx.diagram.explain(gate, x, w)  # nothing fails: the plain diagram on these shapes
+    ok = expex.diagram.explain(gate, x, w)  # nothing fails: the plain diagram on these shapes
     assert ok.error is None and ok.failed is None and labels(ok, "out") == ["return f32[5, 3]"]
     with pytest.raises(ValueError, match="no diagram"):
-        tx.diagram.explain(ValueError("x"))
+        expex.diagram.explain(ValueError("x"))
 
 
 def test_explain_root_fails():
-    d = tx.diagram.explain(proj, jnp.ones((5, 3)), jnp.ones((4, 3)))
+    d = expex.diagram.explain(proj, jnp.ones((5, 3)), jnp.ones((4, 3)))
     assert labels(d, "op") == ["✗ ShapeError"] and d.failed == node(d, "✗ ShapeError")[0]
     assert "proj(): argument `w`" in d.error
     check_mermaid(d.mermaid)
@@ -337,13 +337,13 @@ def test_no_cost_on_success(monkeypatch):
     gate(jnp.ones((5, 3)), jnp.ones((3, 3)))
     jax.jit(gate)(jnp.ones((5, 3)), jnp.ones((3, 3)))
     assert calls == []
-    with pytest.raises(tx.ShapeError):
+    with pytest.raises(expex.ShapeError):
         broken(jnp.ones((5, 3)), jnp.ones((3, 3)))
     assert len(calls) == 1  # once, by the outermost call
 
 
 def test_error_page(tmp_path):
-    with pytest.raises(tx.ShapeError) as e:
+    with pytest.raises(expex.ShapeError) as e:
         jax.jit(broken)(jnp.ones((5, 3)), jnp.ones((3, 3)))
     page = e.value.diagram.save(tmp_path / "e.html").read_text()
     data = json.loads(re.search(r"const M = (.*);\n", page).group(1))

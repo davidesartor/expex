@@ -5,8 +5,8 @@
     mesh = jax.make_mesh((2, 4), ("data", "model"), axis_types=(AxisType.Auto,) * 2)
     names = dict(B="data", D="model")
 
-    model = tx.device_put(model, mesh, **names)     # w: f32[D, F] -> P("model")
-    step = tx.shard(train_step, mesh, **names)      # inputs placed, result constrained
+    model = expex.device_put(model, mesh, **names)     # w: f32[D, F] -> P("model")
+    step = expex.shard(train_step, mesh, **names)      # inputs placed, result constrained
 
 Every array's axes are named by its annotation, so a mapping from size names
 (``B``, ``D``) to mesh axes (``"data"``, ``"model"``) decides each array's
@@ -35,7 +35,7 @@ from ._types import ArrayAnn, DType
 def shardings(tree: Any, mesh: Mesh, /, *, annotation: Any = None, **names: Any) -> Any:
     """The ``NamedSharding`` of every array in ``tree``, read from its annotations.
 
-    ``tree`` is a value: a ``@tx.struct`` / annotated dataclass, or any pytree
+    ``tree`` is a value: a ``@expex.struct`` / annotated dataclass, or any pytree
     of them, with arrays or ``jax.ShapeDtypeStruct`` leaves (so
     ``jax.eval_shape(Model, ...)`` gives shardings before any memory is used).
     The result has the structure of ``tree``. ``annotation=`` gives the spec of
@@ -53,7 +53,7 @@ def shardings(tree: Any, mesh: Mesh, /, *, annotation: Any = None, **names: Any)
         return NamedSharding(mesh, _partition(spec, None, names, mesh, "annotation"))
     if isinstance(tree, type):
         raise TypeError(
-            f"tx.shardings needs a value, not the class {tree.__name__} (lists of layers have "
+            f"expex.shardings needs a value, not the class {tree.__name__} (lists of layers have "
             f"no length yet). Pass jax.eval_shape(lambda: {tree.__name__}(...)) instead."
         )
     return _tree(tree, mesh, names, annotation, None)
@@ -70,9 +70,9 @@ def shard(f: Callable[..., Any], mesh: Mesh, /, **names: Any) -> Callable[..., A
     Each call places the array arguments as their annotations say (a no-op if
     they already are) and runs ``jax.jit(f)``, which constrains the result to
     the return annotation's shardings. Static parameters are those of
-    :func:`tx.jit <typax.jit>`; parameters with no array annotation keep their
+    :func:`expex.jit <expex.jit>`; parameters with no array annotation keep their
     placement. A bound method (``model.__call__``) is compiled with the
-    instance as an argument; a plain function is wrapped with ``@tx.fn`` first.
+    instance as an argument; a plain function is wrapped with ``@expex.fn`` first.
     """
     names = _check_names(mesh, names)
     g = unwrap(f)
@@ -95,7 +95,7 @@ def shard(f: Callable[..., Any], mesh: Mesh, /, **names: Any) -> Callable[..., A
     def call(*args: Any, **kwargs: Any) -> Any:
         __tracebackhide__ = True
         extra = {}
-        if g.random and "key" not in g.params:  # as tx.jit: a fresh key per call
+        if g.random and "key" not in g.params:  # as expex.jit: a fresh key per call
             from ._rng import fresh
 
             extra["key"] = kwargs.pop("key") if "key" in kwargs else fresh(f"{g.name}()")

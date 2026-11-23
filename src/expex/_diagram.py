@@ -1,6 +1,6 @@
 """Architecture diagrams: an ``@fn`` or a module drawn as a Mermaid flowchart.
 
-``diagram(f)`` traces ``f`` like ``tx.cost`` and ``tx.prove`` do, with symbolic
+``diagram(f)`` traces ``f`` like ``expex.cost`` and ``expex.prove`` do, with symbolic
 sizes and no data, while every typed call runs inside a ``jax.named_scope``
 named after it. Each equation of the jaxpr then knows which calls it is
 nested in, and the calls become nodes::
@@ -22,7 +22,7 @@ nested in, and the calls become nodes::
   ``conv``, ``scatter``, ... Reshapes, broadcasts, elementwise arithmetic and
   ``jit`` wrappers are passed through: edges go straight across them.
 - A staged loop is a box labelled with its trip count: ``× L`` for a list of
-  modules (``L`` unless given, like ``tx.cost``), ``× T`` for a loop over time.
+  modules (``L`` unless given, like ``expex.cost``), ``× T`` for a loop over time.
   Traced ``if`` and ``while`` are boxes too.
 - Edges follow the data (through passed-through operations), labelled with the
   array's type as it leaves a node, or as it enters a call.
@@ -43,7 +43,7 @@ is looked up in the compiled HLO, whose ``op_name`` metadata carries the
 ``Name#uid`` scopes of the calls it came from. A fusion is split between the
 calls of its instructions; a staged loop's body runs once per iteration and
 each run is an event, so ``× L`` boxes add up their iterations. Without a
-profiler, shares are estimated from FLOPs per box (as ``tx.cost`` counts them)
+profiler, shares are estimated from FLOPs per box (as ``expex.cost`` counts them)
 and labelled so.
 
 Shape errors, ``diagram.explain(f, *args)`` or ``error.diagram``: the trace is
@@ -137,7 +137,7 @@ def _barrier(v: Any) -> Any:
 class _Stop(BaseException):
     """Raised by the hook (with ``stop=True``) in place of a call's ``ShapeError``.
 
-    A ``BaseException``, so it passes through typax's and JAX's ``except
+    A ``BaseException``, so it passes through expex's and JAX's ``except
     Exception`` handlers to the trace's top, carrying arrays traced at the top
     level: the arguments of the failing call, or of the innermost call around it
     whose arguments are top-level tracers (a ``.lift``'s are unbatched).
@@ -189,7 +189,7 @@ class _Hook:
         if top and bound:  # mark the inputs, so the diagram can name them
             full = fn._sig.bind(*args, **kwargs)
             for k in [k for k in bound if _arrays(bound[k])]:  # static arguments are not inputs
-                with jax.named_scope(f"typax-in.{k}"):
+                with jax.named_scope(f"expex-in.{k}"):
                     full.arguments[k] = _barrier(full.arguments[k])
                 self.inputs[k] = _brief(bound[k]) or ""
             args, kwargs = full.args, full.kwargs
@@ -224,7 +224,7 @@ class _Hook:
             self.batched.pop()
         self.calls[uid]["outs"] = _brief(out) or ""
         if top:
-            with jax.named_scope("typax-out"):
+            with jax.named_scope("expex-out"):
                 out = _barrier(out)
         return out
 
@@ -295,8 +295,8 @@ class _Builder:
                     b = self.call(b, int(uid), bool(lift))
             srcs = lambda vs: [_get(env, v) for v in vs]
             outs: list[list[int]] | None = None
-            if name == "optimization_barrier" and "typax-" in stack:
-                kind, what = ("in", stack.split("typax-in.")[-1].split("/")[0]) if "typax-in." in stack else ("out", "")
+            if name == "optimization_barrier" and "expex-" in stack:
+                kind, what = ("in", stack.split("expex-in.")[-1].split("/")[0]) if "expex-in." in stack else ("out", "")
                 text = f"{what}: {self.hook.inputs.get(what, '')}" if kind == "in" else "return " + " ".join(
                     filter(None, (_type(v.aval) for v in eqn.outvars)))  # fmt: skip
                 me = self.atom(-1, text, kind, eqn.invars if kind == "out" else [], env)
@@ -790,7 +790,7 @@ def _profile(compiled: Any, arrays: list[Any], module: str, runs: int) -> tuple[
         walls.append(time.perf_counter() - t0)
     secs: dict[str, float] = defaultdict(float)
     count: dict[str, float] = defaultdict(float)
-    with tempfile.TemporaryDirectory(prefix="typax-profile-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="expex-profile-") as tmp:
         jax.profiler.start_trace(tmp)
         try:
             for _ in range(runs):
@@ -891,14 +891,14 @@ def _estimated(b: _Builder, why: str) -> dict[str, Any]:
 def _timed(target: Any, args: tuple[Any, ...], kwargs: dict[str, Any], runs: int = 5) -> Diagram:
     arrays, put = _split(args, kwargs)
 
-    def _typax_timed(*xs: Any) -> Any:
+    def _expex_timed(*xs: Any) -> Any:
         a, k = put(xs)
         return target(*a, **k)
 
     hook = _Hook()
     token = _fn.CALL_HOOK.set(hook)
     try:
-        traced = jax.jit(_typax_timed).trace(*arrays)
+        traced = jax.jit(_expex_timed).trace(*arrays)
         lowered = traced.lower()
     finally:
         _fn.CALL_HOOK.reset(token)
@@ -922,7 +922,7 @@ def _explain(target: Any, args: tuple[Any, ...], kwargs: dict[str, Any], depth: 
     shapes = [jax.ShapeDtypeStruct(x.shape, x.dtype) for x in arrays]
     hook = _Hook(stop=True)
 
-    def _typax_explain(*xs: Any) -> Any:
+    def _expex_explain(*xs: Any) -> Any:
         a, k = put(xs)
         try:
             return target(*a, **k)
@@ -932,7 +932,7 @@ def _explain(target: Any, args: tuple[Any, ...], kwargs: dict[str, Any], depth: 
     token = _fn.CALL_HOOK.set(hook)
     try:
         with _fn.config(lower_loops=False):  # unrolled, the failing call is traced at the top level
-            jaxpr = jax.make_jaxpr(_typax_explain)(*shapes)
+            jaxpr = jax.make_jaxpr(_expex_explain)(*shapes)
     finally:
         _fn.CALL_HOOK.reset(token)
     b = _Builder(hook, fmt_dim)
@@ -971,7 +971,7 @@ def attach(fn: Any, e: BaseException, args: tuple[Any, ...], kwargs: dict[str, A
 
 
 class DiagramFn:
-    """``tx.diagram``: draw a function from a symbolic trace; ``.timed`` and ``.explain`` use arguments."""
+    """``expex.diagram``: draw a function from a symbolic trace; ``.timed`` and ``.explain`` use arguments."""
 
     def __call__(self, target: Any, /, depth: int = 1, **sizes: Any) -> Diagram:
         """Draw an ``@fn``, an unbound struct method or a bound one, without data.
@@ -979,7 +979,7 @@ class DiagramFn:
         ``depth=1`` shows the calls ``target`` makes as nodes, ``depth=2`` opens
         those one level further, and so on. Keywords set sizes (``T=128``), static
         parameters (``heads=4``) and the length of lists of modules (``L=12`` or
-        ``blocks=12``), as for ``tx.cost``. See the module docstring.
+        ``blocks=12``), as for ``expex.cost``. See the module docstring.
         """
         return _draw(target, depth, sizes)
 
@@ -1009,7 +1009,7 @@ class DiagramFn:
         return _explain(target, args, kwargs)
 
     def __repr__(self) -> str:
-        return "<function typax.diagram>"
+        return "<function expex.diagram>"
 
 
 diagram = DiagramFn()

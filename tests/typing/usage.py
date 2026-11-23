@@ -7,8 +7,8 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-import typax as tx
-from typax import Dim, Float, Int, Key, Static, f32, fn, i32
+import expex
+from expex import Dim, Float, Int, Key, Static, f32, fn, i32
 
 
 class RGB(Dim, size=3): ...
@@ -38,10 +38,10 @@ def pad[B, T](x: f32[B, T]) -> f32[B, T + 1]:  # type: ignore[valid-type]  # siz
     return jnp.pad(x, ((0, 0), (0, 1)))
 
 
-@tx.random
+@expex.random
 @fn(examples={"n": [1, 2]})
 def step[B](x: f32[B], lr: f32, n: int, key: Key, mode: str = "a") -> f32[B]:
-    return x * lr * n + jr.normal(tx.key(), x.shape)
+    return x * lr * n + jr.normal(expex.key(), x.shape)
 
 
 @fn
@@ -71,15 +71,15 @@ assert_type(step(x[0, 0], jnp.float32(0.1), 2, jr.key(0)), jax.Array)
 assert_type(Model().call(x[0, 0]), jax.Array)
 assert_type(Model().call.lift(x[0], scale=2.0), jax.Array)
 
-report = tx.prove(attend)
+report = expex.prove(attend)
 assert_type(report.ok, bool)
 attend.check().raise_if_failed()
 jax.jit(step, static_argnames=("n", "mode"))(x[0, 0], jnp.float32(0.1), 2, jr.key(0))
-lifted = tx.lift(attend)
+lifted = expex.lift(attend)
 assert_type(lifted(x, x), jax.Array)
 attend.flow
-with tx.rng(0):
-    tx.key()
+with expex.rng(0):
+    expex.key()
 
 # Errors a type checker should catch:
 attend(x)  # E: missing argument

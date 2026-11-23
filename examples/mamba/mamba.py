@@ -1,11 +1,11 @@
-"""Mamba (Gu & Dao, 2023) written with typax.
+"""Mamba (Gu & Dao, 2023) written with expex.
 
 A port of github.com/vvvm23/mamba-jax (Equinox), checked against it in
 tests/ports/test_mamba.py. The model is the same; what changes is how it is
 written:
 
 - every module states its sizes (`Mixer[D, E, N, R, K]`), so shapes are
-  checked on every call and proved for all sizes: `python -m typax examples/mamba/mamba.py`
+  checked on every call and proved for all sizes: `python -m expex examples/mamba/mamba.py`
 - the selective scan is a plain `for` loop over time (staged as `lax.scan`),
   and so is the loop over layers (identical blocks: one `lax.scan`)
 - sizes are used by name in the body: `xz[:, :E]`, `jnp.pad(u, ((K - 1, 0), ...))`
@@ -18,11 +18,11 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-import typax as tx
-from typax import Int, Key, f32, fn
+import expex
+from expex import Int, Key, f32, fn
 
 
-@tx.struct
+@expex.struct
 class RMSNorm[D]:
     weight: f32[D] = 1.0
     bias: f32[D] = 0.0
@@ -45,7 +45,7 @@ def selective_scan[T, E, N](
     return jnp.asarray(ys)
 
 
-@tx.struct
+@expex.struct
 class State[E, N, K]:
     """What the mixer remembers between tokens when generating."""
 
@@ -68,7 +68,7 @@ def s4d_real(key: Key, shape: tuple[int, ...], dtype=jnp.float32):
     return jnp.log(jnp.broadcast_to(jnp.arange(1, shape[-1] + 1, dtype=dtype), shape))
 
 
-@tx.struct
+@expex.struct
 class Mixer[D, E, N, R, K]:
     """The Mamba block: model width D, inner width E, state N, dt rank R, conv width K."""
 
@@ -112,7 +112,7 @@ class Mixer[D, E, N, R, K]:
         return self.out_proj @ (y * jax.nn.silu(z)), State(conv, ssm)
 
 
-@tx.struct
+@expex.struct
 class Block[D, E, N, R, K]:
     norm: RMSNorm[D]
     mixer: Mixer[D, E, N, R, K]
@@ -125,7 +125,7 @@ class Block[D, E, N, R, K]:
         return h + y, state
 
 
-@tx.struct
+@expex.struct
 class Mamba[V, P, D, E, N, R, K]:
     """A language model: vocabulary V (embedding table padded to P rows), width D."""
 
@@ -181,4 +181,4 @@ if __name__ == "__main__":
     print("logits", model(tokens).shape, " loss", float(model.loss(tokens)))
     print("sampled", model.generate(tokens[:8], 8, jr.key(2)))
     print()
-    print(tx.prove(__import__("__main__")))
+    print(expex.prove(__import__("__main__")))

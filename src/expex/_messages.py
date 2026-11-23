@@ -111,7 +111,7 @@ def annotate(f: Fn[Any, Any], e: Exception, bound: dict[str, Any], env: Env) -> 
             f"{n}: {describe(v)}" for n, v in bound.items() if f.params[n].spec.leafy
         )
         binds = env.summary()
-        note = f"typax: in {f.name}({args})" + (f"  [{binds}]" if binds else "")
+        note = f"expex: in {f.name}({args})" + (f"  [{binds}]" if binds else "")
         if note not in getattr(e, "__notes__", ()):
             e.add_note(note)
     except Exception:
@@ -149,7 +149,7 @@ def _user_frame(e: BaseException) -> tuple[str, int, str] | None:
 
 
 def _stage_hint(e: Exception, f: Fn[Any, Any]) -> None:
-    if not isinstance(e, jax.errors.JAXTypeError) or getattr(e, "_typax_hint", False):
+    if not isinstance(e, jax.errors.JAXTypeError) or getattr(e, "_expex_hint", False):
         return
     E = jax.errors
     if isinstance(e, E.TracerBoolConversionError):
@@ -176,12 +176,12 @@ def _stage_hint(e: Exception, f: Fn[Any, Any]) -> None:
         fixes = []
     else:
         return
-    setattr(e, "_typax_hint", True)
+    setattr(e, "_expex_hint", True)
     frame = _user_frame(e)
     where = f"`{frame[2]}`  ({frame[0]}:{frame[1]})" if frame and frame[2] else "this code"
     traced = [n for n, p in f.params.items() if isinstance(p.spec, (ArraySpec, KeySpec))]
     lines = [
-        f"typax: {where} needs {need},",
+        f"expex: {where} needs {need},",
         "    but the value is traced: inside jit/vmap/grad, array arguments have no "
         "values, only shapes.",
     ]

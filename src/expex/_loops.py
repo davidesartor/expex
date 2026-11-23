@@ -413,7 +413,7 @@ def _fori(
         )
     except TypeError as e:
         e.add_note(
-            f"typax: in the `for` at {site}; carried variables, in order: "
+            f"expex: in the `for` at {site}; carried variables, in order: "
             f"{', '.join(names[i] for i in dyn)}.\n"
             f"    Each must keep the same shape and dtype on every iteration."
         )

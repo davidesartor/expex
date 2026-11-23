@@ -1,4 +1,4 @@
-"""A tour of typax. Run with:  python examples/tour.py"""
+"""A tour of expex. Run with:  python examples/tour.py"""
 
 from typing import NamedTuple
 
@@ -6,8 +6,8 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-import typax as tx
-from typax import debug, f32, fn, i32
+import expex
+from expex import debug, f32, fn, i32
 
 
 def section(title: str) -> None:
@@ -61,18 +61,18 @@ if __name__ == "__main__":
     section("1. A call that breaks the contract")
     try:
         rnn(p, xs[:, :2])
-    except tx.ShapeError as e:
+    except expex.ShapeError as e:
         print(e)
 
     section("2. Proving the annotations for all sizes (no data needed)")
     for f in (cell, rnn, loss):
-        print(tx.prove(f))
+        print(expex.prove(f))
 
     @fn
     def off_by_one[T, D](xs: f32[T, D]) -> f32[T, D]:
         return xs[1:] - xs[:-1]
 
-    print(tx.prove(off_by_one))
+    print(expex.prove(off_by_one))
 
     section("3. Plain Python control flow, staged automatically")
     step = jax.jit(jax.value_and_grad(loss))
@@ -101,18 +101,18 @@ if __name__ == "__main__":
 
     section("5. Implicit random keys")
 
-    @tx.random
+    @expex.random
     @fn
     def dropout[D](x: f32[D], rate: float = 0.5) -> f32[D]:
-        keep = jr.bernoulli(tx.key(), 1 - rate, x.shape)
+        keep = jr.bernoulli(expex.key(), 1 - rate, x.shape)
         return jnp.where(keep, x / (1 - rate), 0.0)
 
-    tx.seed(0)
+    expex.seed(0)
     print(dropout(jnp.ones(6)), dropout(jnp.ones(6)), sep="\n")
     print("compiled, key passed in:", jax.jit(dropout)(jnp.ones(6), key=jr.key(1)))
     try:
         jax.jit(dropout)(jnp.ones(6))
-    except tx.StageError as e:
+    except expex.StageError as e:
         print("\nwithout a key:", str(e).splitlines()[0])
 
     section("6. Finding a NaN")

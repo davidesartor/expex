@@ -8,8 +8,8 @@ import pytest
 import jax
 import jax.numpy as jnp
 
-from typax import f32, fn, i32
-from typax._convert import NotConverted, convert
+from expex import f32, fn, i32
+from expex._convert import NotConverted, convert
 
 
 def same(f, make_args):

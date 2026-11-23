@@ -1,10 +1,10 @@
-"""``tx.eps``, ``tx.tiny``, ``tx.huge``: dtype limits that take the dtype of what they meet.
+"""``expex.eps``, ``expex.tiny``, ``expex.huge``: dtype limits that take the dtype of what they meet.
 
 ::
 
-    jnp.log(p + tx.tiny)          # the smallest normal number of p's dtype
-    x / (norm + 1e3 * tx.eps)     # scaled, still lazy until it meets `norm`
-    jnp.maximum(x, tx.tiny(x))    # as a function argument: give it the array
+    jnp.log(p + expex.tiny)          # the smallest normal number of p's dtype
+    x / (norm + 1e3 * expex.eps)     # scaled, still lazy until it meets `norm`
+    jnp.maximum(x, expex.tiny(x))    # as a function argument: give it the array
 
 In an operation with an array (``+ - * /``, comparisons), the constant becomes
 a scalar of that array's floating dtype, so bfloat16 gets bfloat16's epsilon
@@ -39,7 +39,7 @@ class Limit:
         else:
             dtype = jnp.result_type(like)  # a Python number: JAX's default float
         if not jnp.issubdtype(dtype, jnp.inexact):
-            raise TypeError(f"tx.{self.kind} needs a floating-point array, not one of dtype {dtype}")
+            raise TypeError(f"expex.{self.kind} needs a floating-point array, not one of dtype {dtype}")
         real = jnp.finfo(dtype)
         return np.asarray(getattr(real, _LIMITS[self.kind]) * self.scale, dtype=real.dtype)
 
@@ -48,7 +48,7 @@ class Limit:
             return NotImplemented
         number = isinstance(other, (int, float)) and not isinstance(other, bool)
         if number and (op is operator.mul or (op is operator.truediv and not swap)):
-            return Limit(self.kind, op(self.scale, other))  # 1e3 * tx.eps: still lazy
+            return Limit(self.kind, op(self.scale, other))  # 1e3 * expex.eps: still lazy
         value = self(other)
         return op(other, value) if swap else op(value, other)
 
@@ -92,7 +92,7 @@ class Limit:
         return self._with(o, operator.ge, False)
 
     def __repr__(self) -> str:
-        return f"tx.{self.kind}" if self.scale == 1 else f"{self.scale:g} * tx.{self.kind}"
+        return f"expex.{self.kind}" if self.scale == 1 else f"{self.scale:g} * expex.{self.kind}"
 
 
 #: Machine epsilon: the gap between 1 and the next number, in the dtype it meets.

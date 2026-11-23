@@ -1,15 +1,15 @@
-"""``tx.summary``: a model's modules in a table, with parameters and FLOPs as formulas.
+"""``expex.summary``: a model's modules in a table, with parameters and FLOPs as formulas.
 
 ::
 
-    >>> print(tx.summary(model, T=128))      # an instance: sizes from its arrays
-    >>> tx.summary(Transformer, Vocab=50, D=32, F=64, blocks=4)   # nothing allocated
+    >>> print(expex.summary(model, T=128))      # an instance: sizes from its arrays
+    >>> expex.summary(Transformer, Vocab=50, D=32, F=64, blocks=4)   # nothing allocated
 
 One row per module, by path; a list of identical layers is one row
 (``blocks[*]  × 4``) whose children are shown once. Array fields are leaf
 rows. Rows under a list count one element. Parameter formulas come from the
 field annotations, in the names of the root class; FLOPs are those of one call
-of a module's ``__call__``, from :func:`typax.cost`. Sizes the call needs but
+of a module's ``__call__``, from :func:`expex.cost`. Sizes the call needs but
 the model does not fix (a sequence length ``T``) are keywords; without them
 only the formula is shown. ``str()`` is a text table, ``_repr_html_()`` an
 interactive one (collapsible, sortable, formulas on hover), and
@@ -129,7 +129,7 @@ class Summary:
 def summary(model: Any, /, **sizes: int) -> Summary:
     """A table of a model's modules: parameters, bytes and FLOPs, as numbers and formulas.
 
-    ``model`` is an ``@tx.struct`` instance, or a struct class with the sizes
+    ``model`` is an ``@expex.struct`` instance, or a struct class with the sizes
     ``init`` needs (``summary(Transformer, Vocab=50, D=32, F=64, blocks=4)``,
     built under ``jax.eval_shape``, so nothing is allocated). Other keywords
     (``T=128``) are sizes of the ``__call__`` methods, used for FLOP counts.
@@ -146,7 +146,7 @@ def summary(model: Any, /, **sizes: int) -> Summary:
     cls = type(model)
     spec = parse_owner(cls)
     if not isinstance(spec, StructSpec):
-        raise TypeError(f"tx.summary: {cls.__name__} is not a @tx.struct with array fields")
+        raise TypeError(f"expex.summary: {cls.__name__} is not a @expex.struct with array fields")
     env = Env()
     spec.match(model, cls.__name__, env)
     known = {k: int(v) for k, v in env.dims.items() if isinstance(v, int) and k.isidentifier()}
@@ -166,9 +166,9 @@ def summary(model: Any, /, **sizes: int) -> Summary:
         s.notes.append(f"FLOP formulas of {', '.join(s.fallback)} are in the call's sizes only: static fields differ from the class defaults")  # fmt: skip
     used = set().union(*(r.flops.names() for r in [*rows, total] if r.flops is not None))
     if unknown := set(sizes) - used:
-        raise TypeError(f"tx.summary: unknown size {', '.join(sorted(unknown))} (the calls use {', '.join(sorted(used)) or 'none'})")  # fmt: skip
+        raise TypeError(f"expex.summary: unknown size {', '.join(sorted(unknown))} (the calls use {', '.join(sorted(used)) or 'none'})")  # fmt: skip
     order = [p.__name__ for p in getattr(cls, "__type_params__", ())]
-    calls = sorted((used | set(sizes)) - set(known) - {"L"} - set(order))  # T first, as tx.cost does
+    calls = sorted((used | set(sizes)) - set(known) - {"L"} - set(order))  # T first, as expex.cost does
     order = list(dict.fromkeys([*calls, *order, *sorted(known.keys() - {"L"}), "L"]))
     shown = {k: v for k, v in sorted({**known, **sizes}.items(), key=lambda kv: order.index(kv[0]))}
     return Summary(cls.__name__, rows, total, shown, order, s.notes)

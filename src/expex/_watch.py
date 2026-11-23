@@ -1,4 +1,4 @@
-"""``tx.debug.watch``: the activations and gradients of every typed call in one step.
+"""``expex.debug.watch``: the activations and gradients of every typed call in one step.
 
 ::
 

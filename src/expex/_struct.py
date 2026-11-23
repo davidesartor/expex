@@ -1,8 +1,8 @@
-"""``@tx.struct``: a typed, immutable module class that JAX can trace.
+"""``@expex.struct``: a typed, immutable module class that JAX can trace.
 
 ::
 
-    @tx.struct
+    @expex.struct
     class Linear[I, O]:
         w: f32[O, I]
         b: f32[O]
@@ -46,8 +46,8 @@ def struct(**moved: Any) -> Callable[[T], T]: ...
 def struct(cls: Any = None, /, **moved: Any) -> Any:
     """Turn a class into a typed module. See the module docstring.
 
-    Methods are wrapped with ``@tx.fn``; one already decorated (``@tx.fn(...)``,
-    ``@tx.lift``, ``@tx.random``, ``@tx.jit``) keeps its own options.
+    Methods are wrapped with ``@expex.fn``; one already decorated (``@expex.fn(...)``,
+    ``@expex.lift``, ``@expex.random``, ``@expex.jit``) keeps its own options.
 
     A method's leading ``assert`` that only involves the class's sizes and
     fields, such as ``assert D % self.heads == 0``, is an invariant of the
@@ -56,7 +56,7 @@ def struct(cls: Any = None, /, **moved: Any) -> Any:
     """
     for k in moved:
         raise TypeError(
-            f"@tx.struct got {k}=...: write invariants as an `assert` at the top of a "
+            f"@expex.struct got {k}=...: write invariants as an `assert` at the top of a "
             f"method instead, e.g. assert D % self.heads == 0."
         )
 
@@ -66,7 +66,7 @@ def struct(cls: Any = None, /, **moved: Any) -> Any:
         cls: Any = original
         custom_init = "__init__" in vars(cls)  # dataclass() keeps a hand-written __init__
         if localns:
-            cls.__typax_localns__ = localns
+            cls.__expex_localns__ = localns
         params = vars(cls).get("__dataclass_params__")  # not a parent's
         if not (isinstance(cls, type) and params is not None and params.frozen):
             _init.mark(cls, _class_annotations(cls))  # array defaults are initializers
@@ -92,13 +92,13 @@ def struct(cls: Any = None, /, **moved: Any) -> Any:
             if isinstance(value, (staticmethod, classmethod)):
                 wrapper, value = type(value), value.__func__
             inner = unwrap(value)
-            if inner is not value and isinstance(inner, Fn):  # e.g. @jax.jit over @tx.fn
+            if inner is not value and isinstance(inner, Fn):  # e.g. @jax.jit over @expex.fn
                 inner.__set_name__(cls, name)
                 continue
             if inspect.isfunction(getattr(value, "__wrapped__", None)) and hasattr(value, "lower"):
                 raise TypeError(
-                    f"{cls.__name__}.{name} is jitted but not checked. Put @tx.fn under "
-                    f"@jax.jit:\n\n    @jax.jit\n    @tx.fn\n    def {name}(self, ...): ..."
+                    f"{cls.__name__}.{name} is jitted but not checked. Put @expex.fn under "
+                    f"@jax.jit:\n\n    @jax.jit\n    @expex.fn\n    def {name}(self, ...): ..."
                 )
             if not inspect.isfunction(value) and not isinstance(value, Fn):
                 continue
@@ -121,8 +121,8 @@ def struct(cls: Any = None, /, **moved: Any) -> Any:
                 return rebuild(self, **changes)
 
             cls.replace = replace
-        cls.__typax_struct__ = True
-        cls.__typax_where__ = _invariants(cls)
+        cls.__expex_struct__ = True
+        cls.__expex_where__ = _invariants(cls)
         return cls
 
     return build(cls) if cls is not None else build
@@ -134,7 +134,7 @@ def _invariants(cls: Any) -> tuple[Any, ...]:
     names |= {f.name for f in dataclasses.fields(cls)}
     out: list[Any] = []
     for base in reversed(cls.__mro__[1:]):
-        out += [e for e in getattr(base, "__typax_where__", ()) if e not in out]
+        out += [e for e in getattr(base, "__expex_where__", ()) if e not in out]
     for value in vars(cls).values():
         method = unwrap(getattr(value, "__func__", value))
         for e in getattr(method, "_asserted", ()):
@@ -183,11 +183,11 @@ def _wrap_init(cls: Any) -> None:
 
     @functools.wraps(user_init)
     def __init__(self: Any, *args: Any, **kwargs: Any) -> None:
-        object.__setattr__(self, "__typax_building__", True)
+        object.__setattr__(self, "__expex_building__", True)
         try:
             user_init(self, *args, **kwargs)
         finally:
-            object.__delattr__(self, "__typax_building__")
+            object.__delattr__(self, "__expex_building__")
         missing = []
         for f in dataclasses.fields(cls):
             if f.name in self.__dict__:
@@ -204,7 +204,7 @@ def _wrap_init(cls: Any) -> None:
         _check_new(cls, self)
 
     def __setattr__(self: Any, name: str, value: Any) -> None:
-        if self.__dict__.get("__typax_building__"):
+        if self.__dict__.get("__expex_building__"):
             object.__setattr__(self, name, value)
         else:
             frozen_setattr(self, name, value)

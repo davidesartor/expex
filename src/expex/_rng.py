@@ -4,7 +4,7 @@ A *key context* holds a key and a counter. ``key()`` returns
 ``fold_in(context key, counter)`` and bumps the counter, so every draw gets a
 distinct key without the user threading and splitting keys by hand.
 
-Contexts nest: a ``@tx.random`` function, each branch of a converted
+Contexts nest: a ``@expex.random`` function, each branch of a converted
 ``if`` and each iteration of a converted loop gets a child context derived
 from its parent, so results are the same whether the code runs eagerly, under
 ``jit``, as a ``scan`` or as a ``vmap``.
@@ -87,7 +87,7 @@ def current() -> KeyCtx | None:
     return _state.stack[-1] if _state.stack else None
 
 
-def fresh(what: str = "typax.key()") -> Any:
+def fresh(what: str = "expex.key()") -> Any:
     """A new key from the active context, or from the global key at top level."""
     ctx = current()
     if ctx is not None:
@@ -96,8 +96,8 @@ def fresh(what: str = "typax.key()") -> Any:
                 f"{what} needs a key, but the key in scope was set outside this "
                 f"jit/vmap/grad, so inside it would be a constant: a compiled function "
                 f"would draw the same numbers on every call.\n"
-                f"    - pass the key to a @tx.random function:   f(x, key=key)\n"
-                f"    - or open the scope inside the transformed function:   with tx.rng(key): ..."
+                f"    - pass the key to a @expex.random function:   f(x, key=key)\n"
+                f"    - or open the scope inside the transformed function:   with expex.rng(key): ..."
             )
         return ctx.next()
     if tracing():
@@ -106,8 +106,8 @@ def fresh(what: str = "typax.key()") -> Any:
             f"in scope.\n"
             f"    The global key lives in Python, so inside a compiled function it would be "
             f"frozen into a constant and every call would draw the same numbers.\n"
-            f"    - pass the key to a @tx.random function:   f(x, key=key)\n"
-            f"    - or open a key scope inside the jitted function:   with tx.rng(key): ..."
+            f"    - pass the key to a @expex.random function:   f(x, key=key)\n"
+            f"    - or open a key scope inside the jitted function:   with expex.rng(key): ..."
         )
     if _state.root is None:
         _state.root = KeyCtx(jr.key(0))

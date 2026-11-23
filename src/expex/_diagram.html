@@ -1,10 +1,10 @@
 <!doctype html>
-<!-- The page tx.diagram(...).save(path) writes: _diagram.py fills in the title, the Mermaid URL and the data. -->
+<!-- The page expex.diagram(...).save(path) writes: _diagram.py fills in the title, the Mermaid URL and the data. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>__TITLE__ · typax diagram</title>
+<title>__TITLE__ · expex diagram</title>
 <style>
   :root { --bg: #ffffff; --fg: #0f172a; --muted: #64748b; --panel: #f8fafc; --border: #e2e8f0;
           --accent: #2563eb; --code: #f1f5f9; color-scheme: light; }
@@ -232,7 +232,7 @@ async function draw(refit) {
   const {text: src, nodes} = mermaidText(d);
   let svg;
   try {
-    ({svg} = await mermaid.render("typax-diagram-" + (++renders), src));
+    ({svg} = await mermaid.render("expex-diagram-" + (++renders), src));
   } catch (e) {
     stage.innerHTML = `<div id="error">Mermaid could not draw this diagram:\n${text(String(e && e.message || e))}</div>`;
     return;

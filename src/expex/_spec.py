@@ -286,7 +286,7 @@ class NoneSpec(Spec):
 
 
 class OpaqueSpec(Spec):
-    """Anything typax does not look into."""
+    """Anything expex does not look into."""
 
     leafy = False
 
@@ -461,7 +461,7 @@ def rebuild(obj_or_cls: Any, **values: Any) -> Any:
 
     ``rebuild(obj, f=v)`` copies ``obj`` with some fields changed;
     ``rebuild(cls, **fields)`` makes a new one, filling in field defaults.
-    Classes with a custom ``__init__`` (``@tx.struct`` modules) need this.
+    Classes with a custom ``__init__`` (``@expex.struct`` modules) need this.
     """
     cls: Any
     base: dict[str, Any] | None
@@ -474,7 +474,7 @@ def rebuild(obj_or_cls: Any, **values: Any) -> Any:
             record: Any = obj_or_cls
             return record._replace(**values)
         return cls(**values)
-    if not getattr(cls, "__typax_struct__", False):
+    if not getattr(cls, "__expex_struct__", False):
         if base is None:
             return dataclasses.replace(obj_or_cls, **values)  # type: ignore[type-var]
         return cls(**values)
@@ -534,7 +534,7 @@ class StructSpec(Spec):
     def _translate(self, subst: dict[Any, Any]) -> list[tuple[Expr, dict[str, str]]]:
         out = []
         params = getattr(self.cls, "__type_params__", ()) or getattr(self.cls, "__parameters__", ())
-        for inv in getattr(self.cls, "__typax_where__", ()):
+        for inv in getattr(self.cls, "__expex_where__", ()):
             mapping: dict[str, str] = {}
             back: dict[str, str] = {}
             ok = True
@@ -681,7 +681,7 @@ def _class_annotations(cls: type) -> dict[str, Any]:
             continue
         anns = texts(c)
         glb = getattr(sys.modules.get(c.__module__), "__dict__", {})
-        scope = dict(getattr(c, "__typax_localns__", {}))
+        scope = dict(getattr(c, "__expex_localns__", {}))
         scope.update({p.__name__: p for p in getattr(c, "__type_params__", ())})
         scope[c.__name__] = c
         for k, v in anns.items():

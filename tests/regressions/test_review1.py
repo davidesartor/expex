@@ -7,8 +7,8 @@ import pytest
 import jax
 import jax.numpy as jnp
 
-from typax import StageError, fn
-from typax._convert import NotConverted, convert
+from expex import StageError, fn
+from expex._convert import NotConverted, convert
 
 
 def same(f, *args):

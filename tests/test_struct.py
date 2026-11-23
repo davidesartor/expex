@@ -1,4 +1,4 @@
-"""@tx.struct: typed, immutable modules that JAX can trace."""
+"""@expex.struct: typed, immutable modules that JAX can trace."""
 
 from typing import Callable
 
@@ -8,11 +8,11 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-import typax as tx
-from typax import ShapeError, f32, fn
+import expex
+from expex import ShapeError, f32, fn
 
 
-@tx.struct
+@expex.struct
 class Linear[I, O]:
     w: f32[O, I]
     b: f32[O]
@@ -30,7 +30,7 @@ class Linear[I, O]:
         return Linear(jr.normal(key, (o, i)), jnp.zeros(o))
 
 
-@tx.struct
+@expex.struct
 class MLP[I, H, O]:
     layers: tuple[Linear[I, H], Linear[H, O]]
     depth: int = 2
@@ -78,13 +78,13 @@ def test_nested_structs_and_proofs():
     assert mlp(jnp.ones((4, 3))).shape == (4, 2)
     with pytest.raises(ShapeError, match="H is 8"):
         MLP((Linear.init(k1, 3, 8), Linear.init(k2, 7, 2)))(jnp.ones((4, 3)))
-    assert tx.prove(Linear.__call__).status == "proved"
-    assert tx.prove(Linear.wrong).status == "failed"
-    assert tx.prove(MLP.__call__).status == "proved"
+    assert expex.prove(Linear.__call__).status == "proved"
+    assert expex.prove(Linear.wrong).status == "failed"
+    assert expex.prove(MLP.__call__).status == "proved"
 
 
 def test_methods_keep_their_own_decorators():
-    @tx.struct
+    @expex.struct
     class Scaled:
         k: float
         v: f32[3]  # type: ignore[valid-type]
@@ -94,7 +94,7 @@ def test_methods_keep_their_own_decorators():
         def apply(self, x: f32[3]) -> f32[3]:  # type: ignore[valid-type]
             return x * self.k + self.v
 
-        @tx.lift
+        @expex.lift
         def norm(self, x: f32[3]) -> f32:  # type: ignore[valid-type]
             return jnp.linalg.norm(x * self.k)
 
@@ -102,20 +102,20 @@ def test_methods_keep_their_own_decorators():
     assert s.apply(jnp.ones(3)).tolist() == [3.0, 3.0, 3.0]
     assert s.replace(v=jnp.zeros(3)).apply(jnp.ones(3)).tolist() == [2.0, 2.0, 2.0]
     assert s.replace(k=3.0).apply(jnp.ones(3)).tolist() == [4.0, 4.0, 4.0]  # k is static
-    with pytest.raises(tx.ShapeError):
+    with pytest.raises(expex.ShapeError):
         s.apply(jnp.ones(4))
     assert s.norm(jnp.ones((5, 3))).shape == (5,)
 
-    with pytest.raises(TypeError, match="Put @tx.fn under @jax.jit"):
+    with pytest.raises(TypeError, match="Put @expex.fn under @jax.jit"):
 
-        @tx.struct
+        @expex.struct
         class Bare:
             @jax.jit
             def f(self, x):
                 return x
 
 
-@tx.struct
+@expex.struct
 class Block[D]:
     w: f32[D, D]
     b: f32[D]
@@ -124,7 +124,7 @@ class Block[D]:
         return x + jnp.tanh(self.w @ x + self.b)
 
 
-@tx.struct
+@expex.struct
 class Deep[D]:
     blocks: list[Block[D]]
 
@@ -146,8 +146,8 @@ def test_loops_over_identical_layers_are_scanned():
 
     assert jnp.allclose(jax.jit(lambda m, x: m(x))(deep, x), unrolled(deep, x), atol=1e-5)
     assert any("lax.scan" in how for how in Deep.__call__.flow.values())
-    staged = tx.debug.ops(lambda m, x: m(x), deep, x).count
-    plain = tx.debug.ops(unrolled, deep, x).count
+    staged = expex.debug.ops(lambda m, x: m(x), deep, x).count
+    plain = expex.debug.ops(unrolled, deep, x).count
     assert staged * 5 < plain
     g = jax.grad(lambda m: m(x).sum())(deep)
     g_ref = jax.grad(lambda m: unrolled(m, x).sum())(deep)
@@ -162,7 +162,7 @@ def test_lists_of_different_layers_still_unroll():
     assert jax.jit(lambda m, x: m(x))(mlp, jnp.ones((4, 3))).shape == (4, 2)
 
 
-@tx.struct
+@expex.struct
 class Heads[D]:
     w: f32[D, D]
     heads: int = 2
@@ -177,7 +177,7 @@ class Heads[D]:
         return self.w @ x
 
 
-@tx.struct
+@expex.struct
 class UsesHeads[D]:
     inner: Heads[D]
 
@@ -194,15 +194,15 @@ def test_invariants_are_checked_and_assumed():
     with pytest.raises(ShapeError, match="requires `D % heads == 0`"):
         UsesHeads(Heads(jnp.eye(5), heads=2))(jnp.ones((3, 5)))
     # the caller never states the constraint: it is assumed from the struct
-    assert tx.prove(UsesHeads.__call__).status == "proved"
-    assert tx.prove(Heads.split).status == "proved"
+    assert expex.prove(UsesHeads.__call__).status == "proved"
+    assert expex.prove(Heads.split).status == "proved"
     # field values can be used by name in a method's derived sizes
     assert "-> f32[heads, T, D // heads]" in repr(Heads.split)
 
 
 def test_struct_where_is_rejected():
-    with pytest.raises(TypeError, match="@tx.struct got where=.*write invariants as an `assert`"):
-        tx.struct(where="D % heads == 0")
+    with pytest.raises(TypeError, match="@expex.struct got where=.*write invariants as an `assert`"):
+        expex.struct(where="D % heads == 0")
 
 
 def test_module_lift():
@@ -211,7 +211,7 @@ def test_module_lift():
     assert jnp.allclose(m.lift(jnp.ones((5, 4))), 2.0)
 
 
-@tx.struct
+@expex.struct
 class Attn[D]:
     wq: f32[D, D]
     wo: f32[D, D]
@@ -246,7 +246,7 @@ def test_custom_init():
         Attn(jr.key(0), 5)
     assert jax.tree_util.keystr(jax.tree_util.tree_flatten_with_path(a)[0][0][0]) == ".wq"
 
-    @tx.struct
+    @expex.struct
     class Incomplete:
         w: f32[2]  # type: ignore[valid-type]
 

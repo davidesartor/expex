@@ -1,4 +1,4 @@
-"""``.lift`` / ``@tx.lift`` (vectorising from the signature) and ``jax.jit`` on typed functions."""
+"""``.lift`` / ``@expex.lift`` (vectorising from the signature) and ``jax.jit`` on typed functions."""
 
 import warnings
 from typing import NamedTuple
@@ -11,8 +11,8 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-import typax as tx
-from typax import Key, ShapeError, Static, f32, fn
+import expex
+from expex import Key, ShapeError, Static, f32, fn
 
 
 @fn
@@ -126,11 +126,11 @@ def test_fn_options():
 
     tile(jnp.ones(3), 2, 0.1)
     tile(jnp.ones(3), 2, 0.5)
-    assert len(calls) == 1 and tx.prove(tile).ok
+    assert len(calls) == 1 and expex.prove(tile).ok
 
     @fn(jit=True, random=True, lift=True)
     def noise[D](x: f32[D]) -> f32[D]:
-        return x + jr.normal(tx.key(), x.shape)
+        return x + jr.normal(expex.key(), x.shape)
 
     a = noise(jnp.zeros((2, 3)))
     assert a.shape == (2, 3) and not jnp.allclose(a[0], a[1])
@@ -147,7 +147,7 @@ def test_fn_options():
 
     g = jax.grad(loss)(jnp.eye(8) * 0.5)
     plain = jax.grad(lambda w: jnp.tanh(jnp.tanh(jnp.tanh(jnp.ones((4, 8)) @ w) @ w) @ w).sum())(jnp.eye(8) * 0.5)
-    assert jnp.allclose(g, plain, atol=1e-6) and tx.prove(layer).ok
+    assert jnp.allclose(g, plain, atol=1e-6) and expex.prove(layer).ok
 
     @fn(jit=True, donate="state")
     def step[N](state: f32[N], grad: f32[N]) -> f32[N]:
@@ -163,7 +163,7 @@ def test_fn_options():
 
 
 def test_options_on_struct_methods():
-    @tx.struct
+    @expex.struct
     class Lin[I, O]:
         w: f32[O, I]
 
@@ -172,7 +172,7 @@ def test_options_on_struct_methods():
             return self.w @ x
 
     assert Lin(jnp.ones((2, 3)))(jnp.ones((5, 3))).shape == (5, 2)
-    assert tx.prove(Lin.__call__).ok
+    assert expex.prove(Lin.__call__).ok
 
 
 def test_print_works_under_jit(capfd):
@@ -209,7 +209,7 @@ def test_rows_chunk_runs_like_lax_map():
     @fn
     def f[N, D](xs: f32[N, D], chunk: Static[int]) -> f32[N]:
         out = []
-        for x in tx.rows(xs, chunk=chunk):
+        for x in expex.rows(xs, chunk=chunk):
             out.append(jnp.tanh(x).sum())
         return jnp.asarray(out)
 
@@ -225,7 +225,7 @@ def test_rows_chunk_runs_like_lax_map():
 def test_lift_option_and_forward_references():
     from typing import NamedTuple
 
-    @tx.lift
+    @expex.lift
     @fn
     def safe_sqrt(x: f32) -> f32:
         if x > 0:
@@ -237,13 +237,13 @@ def test_lift_option_and_forward_references():
     g = jax.grad(lambda v: safe_sqrt(v).sum())(jnp.array([4.0, 0.0, -1.0]))
     assert g.tolist() == [0.25, 0.0, 0.0]
 
-    @tx.lift
+    @expex.lift
     @fn
     def dot[D](a: f32[D], b: f32[D]) -> f32:
         return a @ b
 
     assert dot(jnp.ones((5, 1, 3)), jnp.ones((4, 3))).shape == (5, 4)
-    assert tx.prove(dot).status == "proved"
+    assert expex.prove(dot).status == "proved"
 
 
 class Poly[*B, K](__import__("typing").NamedTuple):
@@ -272,13 +272,13 @@ def test_methods_can_name_their_own_class():
     assert Poly.zeros(jnp.ones(4)).c.shape == (4,)
     with pytest.raises(ShapeError, match=r"declared  return.c: f32\[\*B, K\]"):
         p.bad()
-    assert tx.prove(Poly.zeros).status == "proved"
+    assert expex.prove(Poly.zeros).status == "proved"
 
 
 def test_tx_jit_reads_static_arguments_from_the_signature():
     calls = []
 
-    @tx.jit
+    @expex.jit
     @fn
     def tile[N](x: f32[N], n: int, lr: float, mode: str = "a") -> "f32[N * n]":  # quoted forward reference
         calls.append(1)
@@ -289,9 +289,9 @@ def test_tx_jit_reads_static_arguments_from_the_signature():
     assert len(calls) == 1
     tile(jnp.ones(3), 3, 0.5)  # an int is static
     assert len(calls) == 2
-    assert tx.prove(tile).ok
+    assert expex.prove(tile).ok
 
-    @tx.jit
+    @expex.jit
     def scaled[N](x: f32[N], k: Static[float]) -> f32[N]:  # Static[...] forces static
         calls.append(2)
         return x * k
@@ -302,22 +302,22 @@ def test_tx_jit_reads_static_arguments_from_the_signature():
 
 
 def test_tx_jit_gives_random_functions_a_fresh_key():
-    @tx.jit
-    @tx.random
+    @expex.jit
+    @expex.random
     @fn
     def noise[D](x: f32[D]) -> f32[D]:
-        return x + jr.normal(tx.key(), x.shape)
+        return x + jr.normal(expex.key(), x.shape)
 
     assert not jnp.allclose(noise(jnp.zeros(2)), noise(jnp.zeros(2)))
     assert jnp.allclose(noise(jnp.zeros(2), key=jr.key(0)), noise(jnp.zeros(2), key=jr.key(0)))
 
 
 def test_tx_jit_on_struct_methods():
-    @tx.struct
+    @expex.struct
     class Lin[I, O]:
         w: f32[O, I]
 
-        @tx.jit
+        @expex.jit
         def __call__(self, x: f32[I], scale: int = 1) -> f32[O]:
             return self.w @ x * scale
 
@@ -325,4 +325,4 @@ def test_tx_jit_on_struct_methods():
     assert m(jnp.ones(3), 2).tolist() == [6.0, 6.0]
     with pytest.raises(ShapeError):
         m(jnp.ones(4))
-    assert tx.prove(Lin.__call__).ok
+    assert expex.prove(Lin.__call__).ok

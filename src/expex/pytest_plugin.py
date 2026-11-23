@@ -1,9 +1,9 @@
 """pytest plugin: one test per ``@fn``, proving its shape annotations.
 
-Enable with ``pytest --typax mypackage`` or in the config file::
+Enable with ``pytest --expex mypackage`` or in the config file::
 
     [tool.pytest.ini_options]
-    typax = ["mypackage"]
+    expex = ["mypackage"]
 """
 
 from typing import Any
@@ -12,15 +12,15 @@ import pytest
 
 
 def pytest_addoption(parser: Any) -> None:
-    group = parser.getgroup("typax")
+    group = parser.getgroup("expex")
     group.addoption(
-        "--typax",
+        "--expex",
         action="append",
         default=[],
         metavar="MODULE",
         help="prove the shape annotations of every @fn in this module/package (repeatable)",
     )
-    parser.addini("typax", "modules whose @fn functions are proved", type="args", default=[])
+    parser.addini("expex", "modules whose @fn functions are proved", type="args", default=[])
 
 
 class ProofFailed(Exception):
@@ -41,7 +41,7 @@ class ProofItem(pytest.Item):
         if report.status == UNCHECKED:
             pytest.skip(report.detail)
         if report.status == SPOT:
-            self.add_report_section("call", "typax", str(report))
+            self.add_report_section("call", "expex", str(report))
 
     def repr_failure(self, excinfo: Any, style: Any = None) -> Any:
         if isinstance(excinfo.value, ProofFailed):
@@ -56,7 +56,7 @@ class ProofItem(pytest.Item):
 
 
 def pytest_collection_modifyitems(session: Any, config: Any, items: list[Any]) -> None:
-    targets = list(config.getoption("typax")) + list(config.getini("typax"))
+    targets = list(config.getoption("expex")) + list(config.getini("expex"))
     if not targets:
         return
     from ._check import collect
@@ -68,4 +68,4 @@ def pytest_collection_modifyitems(session: Any, config: Any, items: list[Any]) -
                 continue
             seen.add(id(f))
             mod = getattr(f.raw, "__module__", "?")
-            items.append(ProofItem.from_parent(session, name=f"typax::{mod}.{f.name}", fn=f))
+            items.append(ProofItem.from_parent(session, name=f"expex::{mod}.{f.name}", fn=f))

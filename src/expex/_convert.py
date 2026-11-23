@@ -14,7 +14,7 @@ A statement becomes::
     def __bn_false_1__(x, y):
         ...original else...
         return (x, y)
-    (x, y) = __typax_flow__.if_(test, __bn_true_1__, __bn_false_1__, (x, y), ...)
+    (x, y) = __expex_flow__.if_(test, __bn_true_1__, __bn_false_1__, (x, y), ...)
 
 What is left alone (and keeps plain Python semantics): loops containing
 ``break`` / ``continue`` / ``return``, loops with an ``else`` clause,
@@ -32,7 +32,7 @@ from typing import Any, Callable, Iterable
 
 from . import _axes, _runtime
 
-FLOW = "__typax_flow__"
+FLOW = "__expex_flow__"
 RET = "__bn_ret__"
 RETF = "__bn_returned__"
 
@@ -441,7 +441,7 @@ class _Exprs(ast.NodeTransformer):
         self.first_param = first_param
         self.builtins_ok = builtins_ok
         self.axis_names = axis_names
-        #: How `tx.einsum` is spelled here: bare names, and modules it is an attribute of.
+        #: How `expex.einsum` is spelled here: bare names, and modules it is an attribute of.
         self.einsums = einsums
         #: Calls rewritten to take axes by name.
         self.named = 0
@@ -453,7 +453,7 @@ class _Exprs(ast.NodeTransformer):
     visit_ClassDef = visit_FunctionDef  # type: ignore[assignment]
 
     def visit_Lambda(self, node: ast.Lambda) -> Any:
-        if getattr(node, "_typax_annotation", False):
+        if getattr(node, "_expex_annotation", False):
             return node  # `f32[B, T]` in a local annotation: the names stay names
         self.generic_visit(node)
         return node
@@ -470,7 +470,7 @@ class _Exprs(ast.NodeTransformer):
         return node
 
     def _by_name(self, f: ast.expr) -> str | None:
-        """``"einsum"`` / ``"rearrange"`` if ``f`` is typax's, however it was imported."""
+        """``"einsum"`` / ``"rearrange"`` if ``f`` is expex's, however it was imported."""
         names, modules = self.einsums
         if isinstance(f, ast.Name):
             return names.get(f.id)
@@ -481,7 +481,7 @@ class _Exprs(ast.NodeTransformer):
     def visit_Call(self, node: ast.Call) -> Any:
         which = self._by_name(node.func)
         if which and not any(isinstance(a, ast.Starred) for a in node.args):
-            # tx.einsum(q, k, to=(B, T, S)): the operands' variable names find their
+            # expex.einsum(q, k, to=(B, T, S)): the operands' variable names find their
             # annotations, and the names in `to` stay names
             to = next((k.value for k in node.keywords if k.arg == "to"), None)
             if to is not None and len(node.keywords) == 1:
@@ -743,7 +743,7 @@ class _Converter:
                 for i, s in enumerate(seq):
                     if _is_local_annotation(s) and s.target.id in self.locals:
                         ann = _thunk(s.annotation)
-                        ann._typax_annotation = True  # type: ignore[attr-defined]
+                        ann._expex_annotation = True  # type: ignore[attr-defined]
                         call = _call(
                             "local_", s.value, ann,
                             ast.Constant(s.target.id), self.site(s),
@@ -1056,7 +1056,7 @@ _MANGLED = re.compile(r"(?<![\w.])__[A-Za-z0-9]\w*(?<!__)\b|\.__[A-Za-z0-9]\w*(?
 
 
 def _einsum_spellings(raw: Any) -> tuple[dict[str, str], set[str]]:
-    """How ``raw`` reaches ``typax.einsum`` / ``typax.rearrange``: bare names, and modules."""
+    """How ``raw`` reaches ``expex.einsum`` / ``expex.rearrange``: bare names, and modules."""
     from ._axes import einsum, rearrange
 
     glb = getattr(raw, "__globals__", {})
@@ -1267,11 +1267,11 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
     new.__module__ = raw.__module__
     new.__doc__ = raw.__doc__
     new.__dict__.update(raw.__dict__)
-    new.__typax_converted__ = conv.count  # type: ignore[attr-defined]
-    new.__typax_locals__ = n_locals  # type: ignore[attr-defined]
-    new.__typax_sizes__ = conv.sizes  # type: ignore[attr-defined]
-    new.__typax_where__ = conv.lifted  # type: ignore[attr-defined]
-    new.__typax_defs__ = conv.defs  # type: ignore[attr-defined]
+    new.__expex_converted__ = conv.count  # type: ignore[attr-defined]
+    new.__expex_locals__ = n_locals  # type: ignore[attr-defined]
+    new.__expex_sizes__ = conv.sizes  # type: ignore[attr-defined]
+    new.__expex_where__ = conv.lifted  # type: ignore[attr-defined]
+    new.__expex_defs__ = conv.defs  # type: ignore[attr-defined]
     return new
 
 

@@ -4,14 +4,14 @@ The original is written with nested `jax.lax.scan`s over closures and
 `jax.vmap` with hand-written `in_axes`. This port keeps the algorithm, the
 random-number stream and the arithmetic identical, but writes it as:
 
-* modules (`@tx.struct`) with shapes in their signatures, written for one
+* modules (`@expex.struct`) with shapes in their signatures, written for one
   environment or one example and vectorised with `.lift`;
 * plain Python `for` loops and `if` statements, staged by `@fn`.
 
 `compare.py` (next to this file) checks that it reproduces the original's numbers.
 
     python examples/ppo/ppo.py              # train and print returns
-    python -m typax examples/ppo/ppo.py     # prove the shapes
+    python -m expex examples/ppo/ppo.py     # prove the shapes
 """
 
 from typing import Literal, NamedTuple
@@ -21,8 +21,8 @@ import jax.numpy as jnp
 import jax.random as jr
 import optax
 
-import typax as tx
-from typax import Batch, Bool, Key, f32, fn, i32
+import expex
+from expex import Batch, Bool, Key, f32, fn, i32
 
 # ------------------------------------------------------------------ config
 
@@ -65,7 +65,7 @@ type Obs = Literal[4]
 type Actions = Literal[2]
 
 
-@tx.struct
+@expex.struct
 class Cart:
     x: f32
     x_dot: f32
@@ -103,7 +103,7 @@ class Cart:
         )
 
 
-@tx.struct
+@expex.struct
 class Info:
     returned_return: f32
     returned_length: i32
@@ -111,7 +111,7 @@ class Info:
     returned_episode: Bool
 
 
-@tx.struct
+@expex.struct
 class Env:
     """A cart plus the episode statistics that PureJaxRL's LogWrapper keeps."""
 
@@ -149,7 +149,7 @@ class Env:
 # ------------------------------------------------------------------ network
 
 
-@tx.struct
+@expex.struct
 class Layer[I, O]:
     w: f32[I, O]
     b: f32[O]
@@ -162,7 +162,7 @@ class Layer[I, O]:
         return x @ self.w + self.b
 
 
-@tx.struct
+@expex.struct
 class MLP[I, H, O]:
     layers: tuple[Layer[I, H], Layer[H, H], Layer[H, O]]
 
@@ -176,7 +176,7 @@ class MLP[I, H, O]:
         return c(jnp.tanh(b(h)))
 
 
-@tx.struct
+@expex.struct
 class Transition:
     done: Bool
     action: i32
@@ -187,7 +187,7 @@ class Transition:
     info: Info
 
 
-@tx.struct
+@expex.struct
 class Net[H]:
     actor: MLP[Obs, H, Actions]
     critic: MLP[Obs, H, Literal[1]]
@@ -286,7 +286,7 @@ def train[H, T, N](key: Key, cfg: Config, net: Net[H] | None = None):
             next_obs, env, reward, done, info = env.step.lift(step_keys, action)
             trajectory.append(Transition(done, action, value, reward, log_prob, obs, info))
             obs = next_obs
-        traj: Batch[Transition, T, N] = tx.stack(trajectory)
+        traj: Batch[Transition, T, N] = expex.stack(trajectory)
 
         # Advantages, per environment.
         _, last_value = net.lift(obs)
@@ -304,13 +304,13 @@ def train[H, T, N](key: Key, cfg: Config, net: Net[H] | None = None):
             key, perm_key = jr.split(key)
             order = jr.permutation(perm_key, batch_size)
             data = take(flatten_time((traj, advantages, targets), batch_size), order)
-            for batch, adv, target in tx.rows(split_rows(data, cfg.num_minibatches)):
+            for batch, adv, target in expex.rows(split_rows(data, cfg.num_minibatches)):
                 grads, _aux = jax.grad(Net.loss, has_aux=True)(net, batch, adv, target, cfg)
                 updates, opt_state = optimizer.update(grads, opt_state, net)
                 net = optax.apply_updates(net, updates)
 
         metrics.append(traj.info)
-    return net, tx.stack(metrics)
+    return net, expex.stack(metrics)
 
 
 if __name__ == "__main__":

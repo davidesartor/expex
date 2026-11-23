@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "typax"
+name = "expex"
 version = "0.1.0"
 description = "Shape-typed functions for JAX: annotations that are proved, checked and used."
 readme = "README.md"
@@ -24,16 +24,16 @@ dependencies = ["jax>=0.12", "numpy"]
 dev = ["pytest", "pyright", "mypy", "optax"]
 
 [project.urls]
-Repository = "https://github.com/davidesartor/typax"
+Repository = "https://github.com/davidesartor/expex"
 
 [project.scripts]
-typax = "typax.__main__:main"
+expex = "expex.__main__:main"
 
 [project.entry-points.pytest11]
-typax = "typax.pytest_plugin"
+expex = "expex.pytest_plugin"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/typax"]
+packages = ["src/expex"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -8,7 +8,7 @@ import contextlib
 
 import pytest
 
-from typax._convert import NotConverted, convert
+from expex._convert import NotConverted, convert
 
 G = 10
 

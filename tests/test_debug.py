@@ -7,8 +7,8 @@ import jax.numpy as jnp
 import jax.random as jr
 from jax import lax
 
-import typax as tx
-from typax import debug, f32, fn
+import expex
+from expex import debug, f32, fn
 
 
 def test_find_nan_points_at_the_line():
@@ -135,16 +135,16 @@ def test_timing():
     assert "trace" in str(t) and "compile" in str(t)
 
     @jax.jit
-    @tx.random
+    @expex.random
     @fn
     def r[D](x: f32[D]) -> f32[D]:
-        return x + jr.normal(tx.key(), x.shape)
+        return x + jr.normal(expex.key(), x.shape)
 
     assert debug.timing(r, jnp.ones(8), repeat=1).ops >= 1
 
 
 def test_debug_tools_keep_static_arguments_static():
-    from typax import Static
+    from expex import Static
 
     @fn
     def rep[T](x: f32[T], n: Static[int], mode: Static[str] = "log") -> f32:
@@ -199,10 +199,10 @@ def test_shapes_concrete_and_symbolic():
 
 
 def test_jax_checkpoint_on_methods_saves_memory_and_keeps_gradients():
-    import typax as tx
+    import expex
 
     def make(policy):
-        @tx.struct
+        @expex.struct
         class Layer[D]:
             w: f32[D, D]
 

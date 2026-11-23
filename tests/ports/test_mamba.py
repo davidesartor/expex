@@ -11,7 +11,7 @@ import sys
 
 import numpy as np
 
-import typax as tx
+import expex
 
 ROOT = pathlib.Path(__file__).parent.parent.parent
 sys.path.insert(0, str(ROOT / "examples" / "mamba"))
@@ -30,6 +30,6 @@ def test_matches_the_original():
 
 
 def test_every_shape_is_proved():
-    reports = tx.prove(mamba)
+    reports = expex.prove(mamba)
     assert all(r.status == "proved" for r in reports), str(reports)
     assert len(reports) == 12

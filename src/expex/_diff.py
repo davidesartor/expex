@@ -1,12 +1,12 @@
-"""Comparing two models or checkpoints field by field: ``tx.diff(a, b)``.
+"""Comparing two models or checkpoints field by field: ``expex.diff(a, b)``.
 
 ::
 
-    d = tx.diff(model, tx.load(Model, "ckpt.npz"))   # or tx.diff(model, "ckpt.npz")
+    d = expex.diff(model, expex.load(Model, "ckpt.npz"))   # or expex.diff(model, "ckpt.npz")
     print(d)                                         # 3 changed, 1 added, 120 unchanged ...
     d.save("diff.html")                              # an interactive report
 
-Fields are named by the keys :func:`tx.save <typax._io.save>` writes
+Fields are named by the keys :func:`expex.save <expex._io.save>` writes
 (``layers[2].mixer.x_proj``): a model is saved to memory and read back like a
 file, so models and files compare the same way. Arrays are compared by shape,
 dtype and values; the plain static fields that ``save`` keeps (numbers,
@@ -121,7 +121,7 @@ class Diff:
 
 
 def diff(a: Any, b: Any, *, atol: float = 0.0, rtol: float = 0.0) -> Diff:
-    """Compare two models, each a struct, another pytree or a file written by ``tx.save``.
+    """Compare two models, each a struct, another pytree or a file written by ``expex.save``.
 
     A field's values count as changed when any element is outside
     ``|a - b| <= atol + rtol * |b|`` (NaNs in the same place are equal).
@@ -146,7 +146,7 @@ def diff(a: Any, b: Any, *, atol: float = 0.0, rtol: float = 0.0) -> Diff:
 
 
 def _read(x: Any) -> tuple[str, dict[str, Any]]:
-    """A name, and every array and plain static value by its ``tx.save`` key."""
+    """A name, and every array and plain static value by its ``expex.save`` key."""
     if not isinstance(x, (str, os.PathLike)):
         if not isinstance(parse_owner(type(x)), StructSpec):
             leaves = jax.tree_util.tree_flatten_with_path(x)[0]

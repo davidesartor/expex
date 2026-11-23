@@ -74,7 +74,7 @@ _NUM = (bool, int, float, complex)
 
 def _function(v: Any) -> bool:
     """A function or other callable that is not data (a module with ``__call__`` is data)."""
-    return callable(v) and not getattr(type(v), "__typax_struct__", False)
+    return callable(v) and not getattr(type(v), "__expex_struct__", False)
 
 
 def _dyn(v: Any) -> bool:
@@ -190,7 +190,7 @@ def _cond(
             plan = {**plan, **new_plan}
             continue
         if err is not None:
-            err.add_note(f"typax: in the `if` at {site}; variables it assigns: {', '.join(names)}")
+            err.add_note(f"expex: in the `if` at {site}; variables it assigns: {', '.join(names)}")
             raise err
         break
 
@@ -514,7 +514,7 @@ def while_(
         _, final = lax.while_loop(cond_f, body_f, (count0, init))
     except TypeError as e:
         e.add_note(
-            f"typax: in the `while` at {site}; carried variables, in order: "
+            f"expex: in the `while` at {site}; carried variables, in order: "
             f"{', '.join(names[i] for i in dyn)}.\n"
             f"    Each must keep the same shape and dtype on every iteration."
         )
@@ -553,7 +553,7 @@ class Stacked(Sequence):  # type: ignore[type-arg]
         except Exception:
             raise TypeError(
                 f"the values collected by this loop number {n}, a size not known while "
-                f"proving: use jnp.asarray(ys) (or tx.stack(ys) for pytrees), which takes "
+                f"proving: use jnp.asarray(ys) (or expex.stack(ys) for pytrees), which takes "
                 f"the stacked array as it is, rather than jnp.stack(ys)."
             ) from None
 

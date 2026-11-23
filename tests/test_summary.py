@@ -1,4 +1,4 @@
-"""`tx.summary`: one row per module, lists collapsed, parameters and FLOPs as numbers and formulas."""
+"""`expex.summary`: one row per module, lists collapsed, parameters and FLOPs as numbers and formulas."""
 
 import importlib.util
 import math
@@ -11,10 +11,10 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
-import typax as tx
-from typax import f32
-from typax._cost import Poly
-from typax._summary import Summary, summary
+import expex
+from expex import f32
+from expex._cost import Poly
+from expex._summary import Summary, summary
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -90,10 +90,10 @@ def test_transformer_rows(tf_summary, tf_model):
 def test_transformer_flops(tf, tf_summary, tf_model):
     rows = by_path(tf_summary)
     attn = rows["blocks[*].attn"]
-    assert attn.flops == tx.cost(tf.Attention.__call__).flops
-    assert attn.flops_value == tx.cost(tf_model.blocks[0].attn.__call__, T=128).flops.value
-    assert tf_summary.total.flops_value == tx.cost(tf_model.__call__, T=128).flops.value
-    assert tf_summary.total.flops == tx.cost(tf.Transformer.__call__).flops
+    assert attn.flops == expex.cost(tf.Attention.__call__).flops
+    assert attn.flops_value == expex.cost(tf_model.blocks[0].attn.__call__, T=128).flops.value
+    assert tf_summary.total.flops_value == expex.cost(tf_model.__call__, T=128).flops.value
+    assert tf_summary.total.flops == expex.cost(tf.Transformer.__call__).flops
     assert rows["blocks[*].norm1"].flops_value == 9 * 32 + 8  # one call: per vector, no T
     assert rows["embed"].flops is None and rows["embed"].flops_value is None
 
@@ -113,8 +113,8 @@ def test_static_fields_differ_from_defaults(tf):
     model = tf.Transformer.init(jr.key(0), Vocab=50, D=32, F=64, blocks=2, heads=8)
     s = summary(model, T=16)
     attn = by_path(s)["blocks[*].attn"]
-    assert attn.flops == tx.cost(model.blocks[0].attn.__call__).flops  # the instance's, in T
-    assert attn.flops_value == tx.cost(model.blocks[0].attn.__call__, T=16).flops.value
+    assert attn.flops == expex.cost(model.blocks[0].attn.__call__).flops  # the instance's, in T
+    assert attn.flops_value == expex.cost(model.blocks[0].attn.__call__, T=16).flops.value
     assert "blocks[*].attn" in s.notes[-1] and "static fields" in s.notes[-1]
 
 
@@ -134,10 +134,10 @@ def test_mamba():
     assert rows["layers[*].mixer.x_proj"].label == "f32[R + 2 * N, E]"
     assert rows["layers[*].mixer.x_proj"].formula.format() == "2·E·N + E·R"
     check_totals(s, model)
-    assert s.total.flops_value == tx.cost(model.__call__, T=24).flops.value
+    assert s.total.flops_value == expex.cost(model.__call__, T=24).flops.value
 
 
-@tx.struct
+@expex.struct
 class Linear[I, O]:
     w: f32[I, O] = jax.nn.initializers.normal()
     b: f32[O] = 0.0
@@ -146,7 +146,7 @@ class Linear[I, O]:
         return x @ self.w + self.b
 
 
-@tx.struct
+@expex.struct
 class Net[D, F]:
     up: Linear[D, F]
     down: Linear[F, D]

@@ -1,4 +1,4 @@
-"""Sharding by axis names (``typax._shard``) on a simulated 8-device CPU mesh.
+"""Sharding by axis names (``expex._shard``) on a simulated 8-device CPU mesh.
 
 The multi-device tests need ``--xla_force_host_platform_device_count=8`` before
 JAX creates its CPU backend, and setting it here would give every other test
@@ -18,9 +18,9 @@ import pytest
 from jax.sharding import AxisType, NamedSharding
 from jax.sharding import PartitionSpec as P
 
-import typax as tx
-from typax import f32
-from typax._shard import device_put, shard, shardings
+import expex
+from expex import f32
+from expex._shard import device_put, shard, shardings
 
 EIGHT = jax.device_count() >= 8
 needs8 = pytest.mark.skipif(not EIGHT, reason="run in a subprocess by test_on_eight_devices")
@@ -40,7 +40,7 @@ def test_on_eight_devices():
     assert "skipped" not in r.stdout.splitlines()[-1].replace("1 skipped", ""), r.stdout
 
 
-@tx.struct
+@expex.struct
 class Block[D, F]:
     w: f32[D, F]
     b: f32[F]
@@ -50,7 +50,7 @@ class Block[D, F]:
         return jnp.tanh(x @ self.w + self.b) * self.scale
 
 
-@tx.struct
+@expex.struct
 class Model[D, F]:
     up: Block[D, F]
     blocks: list[Block[F, F]]
@@ -126,7 +126,7 @@ def test_sharded_function_matches_unsharded(mesh):
     assert y.sharding.spec == P("data")  # follows `-> f32[B]`
     assert jnp.allclose(y, model(x), atol=1e-5)
 
-    @tx.fn
+    @expex.fn
     def layer[B, D, F](x: f32[B, D], w: f32[D, F], n: int, lr: float) -> f32[B, F]:
         for _ in range(n):
             x = x * lr
@@ -146,14 +146,14 @@ def test_bound_methods_and_random_functions(mesh):
     y = shard(model.__call__, mesh, B="data", F="model")(x)
     assert y.sharding.spec == P("data") and jnp.allclose(y, model(x), atol=1e-5)
 
-    @tx.random
-    @tx.fn
+    @expex.random
+    @expex.fn
     def dropout[B, D](x: f32[B, D]) -> f32[B, D]:
-        return jnp.where(jr.bernoulli(tx.key(), 0.5, x.shape), x, 0.0)
+        return jnp.where(jr.bernoulli(expex.key(), 0.5, x.shape), x, 0.0)
 
     g = shard(dropout, mesh, B="data", D="model")
     assert g(x).sharding.spec == P("data", "model")
-    assert not jnp.array_equal(g(x), g(x))  # a fresh key per call, as tx.jit
+    assert not jnp.array_equal(g(x), g(x))  # a fresh key per call, as expex.jit
     assert jnp.array_equal(g(x, key=jr.key(0)), dropout(x, key=jr.key(0)))
 
 

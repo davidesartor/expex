@@ -52,10 +52,10 @@ except Exception:  # pragma: no cover
     pass
 
 
-#: Set by ``tx.diagram`` while it traces: ``hook(fn, args, kwargs, run)`` wraps every
+#: Set by ``expex.diagram`` while it traces: ``hook(fn, args, kwargs, run)`` wraps every
 #: checked call (``run(args, kwargs)`` runs it), to put it in a ``jax.named_scope``.
 CALL_HOOK: contextvars.ContextVar[Callable[..., Any] | None] = contextvars.ContextVar(
-    "typax_call_hook", default=None
+    "expex_call_hook", default=None
 )
 
 P = ParamSpec("P")
@@ -65,27 +65,27 @@ S = TypeVar("S")
 
 
 class Config:
-    """Global switches. Also settable through ``TYPAX_*`` environment variables."""
+    """Global switches. Also settable through ``EXPEX_*`` environment variables."""
 
     def __init__(self) -> None:
         #: Check arguments and return values on every (traced or eager) call.
-        self.checked: bool = os.environ.get("TYPAX_CHECKED", "1") not in ("0", "false", "")
+        self.checked: bool = os.environ.get("EXPEX_CHECKED", "1") not in ("0", "false", "")
         #: Attach "in f(x: f32[3, 4])" notes to exceptions passing through ``@fn``.
-        self.notes: bool = os.environ.get("TYPAX_NOTES", "1") not in ("0", "false", "")
+        self.notes: bool = os.environ.get("EXPEX_NOTES", "1") not in ("0", "false", "")
         #: Turn ``for`` loops into ``lax.scan`` / ``vmap`` when tracing. With False,
         #: loops over arrays and ranges are unrolled, as in plain JAX.
-        self.lower_loops: bool = os.environ.get("TYPAX_LOWER_LOOPS", "1") not in ("0", "false", "")
+        self.lower_loops: bool = os.environ.get("EXPEX_LOWER_LOOPS", "1") not in ("0", "false", "")
 
 
     def __call__(self, **changes: Any) -> "_Scoped":
-        """``with tx.config(checked=False): ...`` changes settings inside the block."""
+        """``with expex.config(checked=False): ...`` changes settings inside the block."""
         for k in changes:
             if k not in vars(self):
-                raise AttributeError(f"typax.config has no setting {k!r}")
+                raise AttributeError(f"expex.config has no setting {k!r}")
         return _Scoped(self, changes)
 
     def __repr__(self) -> str:
-        return "typax.config(" + ", ".join(f"{k}={v!r}" for k, v in vars(self).items()) + ")"
+        return "expex.config(" + ", ".join(f"{k}={v!r}" for k, v in vars(self).items()) + ")"
 
 
 class _Scoped:
@@ -104,7 +104,7 @@ class _Scoped:
 
 config = Config()
 
-def compile_cache(path: str = "~/.cache/typax", min_compile_seconds: float = 1.0) -> str:
+def compile_cache(path: str = "~/.cache/expex", min_compile_seconds: float = 1.0) -> str:
     """Keep compiled functions on disk, so later runs of a program skip compilation.
 
     Turns on JAX's persistent compilation cache in ``path``. Only functions that
@@ -189,9 +189,9 @@ class Fn(Generic[P, R]):
     ):
         functools.update_wrapper(self, raw)
         self.raw = raw
-        #: Set by ``@tx.random``: the function gets an implicit PRNG key.
+        #: Set by ``@expex.random``: the function gets an implicit PRNG key.
         self.random = False
-        #: Set by ``@tx.lift``: a plain call maps over extra leading axes by itself.
+        #: Set by ``@expex.lift``: a plain call maps over extra leading axes by itself.
         self.auto_lift = False
         #: The function that actually runs: ``raw`` with its control flow converted.
         self._impl: Callable[..., Any] = raw
@@ -206,7 +206,7 @@ class Fn(Generic[P, R]):
                 self.convert_note = f"conversion failed: {type(e).__name__}: {e}"
         self.converted = self._impl is not raw
         #: The body uses sizes by name (or annotated locals): it needs this call's sizes.
-        self._needs_sizes = bool(getattr(self._impl, "__typax_sizes__", 0))
+        self._needs_sizes = bool(getattr(self._impl, "__expex_sizes__", 0))
         self.name: str = getattr(raw, "__qualname__", getattr(raw, "__name__", repr(raw)))
         self.prove = prove
         self.examples = dict(examples or {})
@@ -215,14 +215,14 @@ class Fn(Generic[P, R]):
         # annotations would fail on size arithmetic such as f32[n] or f32[T + 1]
         self.__signature__ = self._sig
 
-        defs = {**getattr(self._impl, "__typax_defs__", {}), **(defs or {})}  # H = heads in the body
+        defs = {**getattr(self._impl, "__expex_defs__", {}), **(defs or {})}  # H = heads in the body
         self.defs = {k: Expr(v) for k, v in defs.items()}
         if isinstance(where, str):
             where = [where]
         self.where = [Expr(w, constraint=True) for w in where]
         #: Leading `assert`s on sizes in the body: constraints like `where`.
         self._groups: list[list[Expr]] = []
-        for group in getattr(self._impl, "__typax_where__", ()):
+        for group in getattr(self._impl, "__expex_where__", ()):
             try:
                 self._groups.append([Expr(w, constraint=True) for w in group])
             except Exception:
@@ -242,7 +242,7 @@ class Fn(Generic[P, R]):
         #: Where the function was defined (for annotations written as text).
         self._localns = _sym.caller_locals()
         # sizes defined in the body (H = heads) are names in the annotations
-        defined = getattr(self._impl, "__typax_defs__", {})
+        defined = getattr(self._impl, "__expex_defs__", {})
         self._localns.update({n: typing.TypeVar(n) for n in defined})  # type: ignore[misc]  # pyright: ignore[reportGeneralTypeIssues]
         anns = _annotations(raw, self._localns)
         # Annotations that could not be evaluated yet (a forward reference to the
@@ -560,14 +560,14 @@ class Fn(Generic[P, R]):
         # even when the call itself sits inside a traced branch of the caller.
         depth, _flow._STAGE.depth = _flow._STAGE.depth, 0
         try:
-            _ops.CALLS.stack.append((env, self))  # for checked locals, axis names, tx.size
+            _ops.CALLS.stack.append((env, self))  # for checked locals, axis names, expex.size
             try:
                 out = self._impl(*args, **kwargs)
             finally:
                 _ops.CALLS.stack.pop()
         except Exception as e:
             _flow._STAGE.depth = depth
-            if config.notes and not getattr(e, "_typax_local", None) is self:
+            if config.notes and not getattr(e, "_expex_local", None) is self:
                 _messages.annotate(self, e, bound, env)
             if isinstance(e, ShapeError) and not _ops.CALLS.stack and CALL_HOOK.get() is None:
                 from ._diagram import attach  # the outermost call: e.diagram, built only if used
@@ -611,7 +611,7 @@ class Fn(Generic[P, R]):
 
     @property
     def signature(self) -> str:
-        """The signature as typax understands it."""
+        """The signature as expex understands it."""
         if self._lazy:
             self._resolve_owner()
         tps = getattr(self.raw, "__type_params__", ())
@@ -644,7 +644,7 @@ class Fn(Generic[P, R]):
                 resolve(env)
         except Mismatch as m:
             e = _messages.error(self, m, "local", env, site)
-            setattr(e, "_typax_local", self)
+            setattr(e, "_expex_local", self)
             raise e from None
 
 
@@ -714,7 +714,7 @@ class Fn(Generic[P, R]):
     # ----------------------------------------------------------------- prove
 
     def check(self, **examples: Any) -> "Report":
-        """Prove the declared shapes for all sizes. See :func:`typax.prove`."""
+        """Prove the declared shapes for all sizes. See :func:`expex.prove`."""
         from ._check import prove
 
         return prove(self, examples=examples or None)
@@ -731,7 +731,7 @@ class Fn(Generic[P, R]):
         return BoundFn(self, obj)
 
     def info(self) -> str:
-        """Everything typax knows about this function, as text."""
+        """Everything expex knows about this function, as text."""
         lines = [self.signature, f"  defined at {self.location}"]
         opts = [k for k, v in (("lift", self.auto_lift), ("random", self.random)) if v]
         if opts:
@@ -846,7 +846,7 @@ def fn(
 
     ::
 
-        @tx.fn
+        @expex.fn
         def split_heads[T, D](x: f32[T, D], heads: int) -> f32[heads, T, D // heads]:
             assert D % heads == 0
             return x.reshape(T, heads, D // heads).transpose(1, 0, 2)
@@ -859,13 +859,13 @@ def fn(
     the body runs, and assumed by the prover.
 
     ``jit``
-        Compile, as :func:`typax.jit`: static arguments read from the signature.
+        Compile, as :func:`expex.jit`: static arguments read from the signature.
     ``lift``
-        Plain calls take extra leading batch axes, as :func:`typax.lift`.
+        Plain calls take extra leading batch axes, as :func:`expex.lift`.
     ``random``
-        An implicit PRNG key, ``tx.key()``, as :func:`typax.random`.
+        An implicit PRNG key, ``expex.key()``, as :func:`expex.random`.
     ``remat``
-        Gradient checkpointing, as :func:`typax.remat`: ``True``, or a policy
+        Gradient checkpointing, as :func:`expex.remat`: ``True``, or a policy
         (``"dots"``, ``"dots_no_batch"``, ``"everything"`` or a JAX policy).
     ``donate``
         With ``jit``: parameters whose buffers the call may reuse, e.g. the
@@ -874,7 +874,7 @@ def fn(
         Values the prover should try for parameters it cannot guess,
         as ``{"name": [value, ...]}``.
     ``prove``
-        ``False`` leaves the function out of ``tx.prove`` and ``pytest --typax``.
+        ``False`` leaves the function out of ``expex.prove`` and ``pytest --expex``.
     ``convert``
         ``False`` keeps Python control flow as it is (no rewriting).
 
@@ -882,7 +882,7 @@ def fn(
     own transformations.
     """
     hints = {
-        "checked": "use `with tx.config(checked=False):`",
+        "checked": "use `with expex.config(checked=False):`",
         "vectorize": "the option is called lift=True",
         "where": "write the constraint as an `assert` at the top of the body: assert T >= 2",
     }
@@ -890,7 +890,7 @@ def fn(
         hint = hints.get(
             k, f"write the size in the annotation instead, e.g. -> f32[{v}] in place of {k}"
         )
-        raise TypeError(f"@tx.fn got {k}={v!r}: {hint}.")
+        raise TypeError(f"@expex.fn got {k}={v!r}: {hint}.")
 
     def wrap(raw: Callable[..., Any]) -> Fn[Any, Any]:
         flags: dict[str, bool] = {}
@@ -910,7 +910,7 @@ def fn(
         if jit:
             result = _jit(result, donate_argnames=(donate,) if isinstance(donate, str) else tuple(donate))
         elif donate:
-            raise TypeError("@tx.fn(donate=...) only applies with jit=True")
+            raise TypeError("@expex.fn(donate=...) only applies with jit=True")
         return result
 
     if f is not None:
@@ -922,11 +922,11 @@ def _flagged(f: Any, flag: str) -> Any:
     if isinstance(f, (staticmethod, classmethod)):
         return type(f)(_flagged(f.__func__, flag))
     if not isinstance(f, Fn) and hasattr(f, "__wrapped__"):
-        deco = "@tx.random" if flag == "random" else "@tx.lift"
+        deco = "@expex.random" if flag == "random" else "@expex.lift"
         raise TypeError(
             f"{deco} must go under @jax.jit / @jax.checkpoint (inside it would be "
-            f"compiled once and repeat): put it directly on the @tx.fn function, or use "
-            f"@tx.jit, which handles random functions."
+            f"compiled once and repeat): put it directly on the @expex.fn function, or use "
+            f"@expex.jit, which handles random functions."
         )
     if isinstance(f, Fn):
         g = copy.copy(f)
@@ -946,8 +946,8 @@ def lift(f: Callable[P, R], /) -> Fn[P, R]:
 
     ::
 
-        @tx.lift
-        @tx.fn
+        @expex.lift
+        @expex.fn
         def norm[D](x: f32[D]) -> f32: ...
 
         norm(jnp.ones((8, 3, 5)))   # f32[8, 3]
@@ -967,13 +967,13 @@ def _jit(f: Any = None, /, **options: Any) -> Any:
 
     ::
 
-        @tx.jit
+        @expex.jit
         def tile[N, K](x: f32[N], n: int) -> f32[K]: ...    # n is static
 
     Parameters annotated with plain Python types (``int``, ``bool``, ``str``,
     tuples, callables, enums, ...) and ``Static[...]`` are static; arrays and
     ``float`` / ``complex`` numbers are traced, so a new learning rate does not
-    recompile. A ``@tx.random`` function draws a fresh key outside the compiled
+    recompile. A ``@expex.random`` function draws a fresh key outside the compiled
     code on every call, unless ``key=`` is given. Other options go to ``jax.jit``.
     A plain function is wrapped with :func:`fn` first.
     """
@@ -1062,17 +1062,17 @@ jit.__doc__ = _jit.__doc__
 
 
 def random(f: Callable[P, R], /) -> Fn[P, R]:
-    """Give a function an implicit PRNG key: ``tx.key()`` inside it is fresh on every call.
+    """Give a function an implicit PRNG key: ``expex.key()`` inside it is fresh on every call.
 
-    Each call draws a new key from the global key (``tx.seed``) or from the
-    enclosing ``with tx.rng(key):`` block. Pass ``key=`` to choose it, which is
+    Each call draws a new key from the global key (``expex.seed``) or from the
+    enclosing ``with expex.rng(key):`` block. Pass ``key=`` to choose it, which is
     required under ``jax.jit`` (the global key is Python state and would be
     frozen into the compiled function)::
 
-        @tx.random
-        @tx.fn
+        @expex.random
+        @expex.fn
         def noisy[N](x: f32[N]) -> f32[N]:
-            return x + jr.normal(tx.key(), x.shape)
+            return x + jr.normal(expex.key(), x.shape)
 
         noisy(x)                                    # a new draw every time
         jax.jit(noisy)(x, key=jr.key(0))            # compiled: pass the key

@@ -1,9 +1,9 @@
-"""Saving and loading typed modules: ``tx.save(model, path)``, ``tx.load(Model, path)``.
+"""Saving and loading typed modules: ``expex.save(model, path)``, ``expex.load(Model, path)``.
 
 ::
 
-    tx.save(model, "mamba.npz")
-    model = tx.load(Mamba, "mamba.npz", D=64)    # or tx.load(template, "mamba.npz")
+    expex.save(model, "mamba.npz")
+    model = expex.load(Mamba, "mamba.npz", D=64)    # or expex.load(template, "mamba.npz")
 
 ``save`` writes every array of a struct to one ``.npz`` file under a readable
 key (``layers[2].mixer.x_proj``), with the static fields that are plain data
@@ -26,7 +26,7 @@ from ._spec import (
     _field_defaults, parse_owner, rebuild,
 )  # fmt: skip
 
-_META = "__typax__"  # the npz entry holding the JSON metadata
+_META = "__expex__"  # the npz entry holding the JSON metadata
 _MISSING = object()
 
 
@@ -67,7 +67,7 @@ def save(obj: Any, path: Any) -> None:
         elif isinstance(spec, UnionSpec):
             walk(next(o for o in spec.options if not isinstance(o, NoneSpec)), value, p)
         else:
-            raise TypeError(f"tx.save: cannot save `{p}` (annotated {spec}).")
+            raise TypeError(f"expex.save: cannot save `{p}` (annotated {spec}).")
 
     walk(_owner_spec(type(obj)), obj, "")
     arrays[_META] = np.array(json.dumps(meta))
@@ -120,7 +120,7 @@ def load(cls_or_template: Any, path: Any, *, strict: bool = True, **sizes: int) 
             if (t is None) if t is not _MISSING else (p in static and static[p] is None):
                 return None
             return build(next(o for o in spec.options if not isinstance(o, NoneSpec)), t, p)
-        raise TypeError(f"tx.load: cannot load `{p}` (annotated {spec}).")
+        raise TypeError(f"expex.load: cannot load `{p}` (annotated {spec}).")
 
     obj = build(spec, template if template is not None else _MISSING, "")
     extra = sorted(set(arrays) - used)
@@ -128,8 +128,8 @@ def load(cls_or_template: Any, path: Any, *, strict: bool = True, **sizes: int) 
         lines = [f"    missing from the file: {', '.join(missing)}"] if missing else []
         lines += [f"    in the file but not in {cls.__name__}: {', '.join(extra)}"] if extra and strict else []
         hint = "\n\n    Pass strict=False to ignore the extra keys." if extra and strict and not missing else ""
-        raise ShapeError(f"tx.load({cls.__name__}, {str(path)!r}): the keys do not match.\n\n" + "\n".join(lines) + hint)
-    _check(spec, obj, sizes, f"tx.load({cls.__name__}, {str(path)!r})")
+        raise ShapeError(f"expex.load({cls.__name__}, {str(path)!r}): the keys do not match.\n\n" + "\n".join(lines) + hint)
+    _check(spec, obj, sizes, f"expex.load({cls.__name__}, {str(path)!r})")
     return spec.walk(obj, "", lambda s, v, p: jnp.asarray(v))
 
 
@@ -142,7 +142,7 @@ def _check(spec: StructSpec, obj: Any, sizes: dict[str, int], where: str) -> Non
     env = Env()
     for k, v in sizes.items():
         env.dims[k] = int(v)
-        env.origin[k] = f"{k}={v} passed to tx.load"
+        env.origin[k] = f"{k}={v} passed to expex.load"
     try:
         for name, s in spec.fields.items():  # field by field, so that paths read `layers[2].x`
             if s.leafy and not isinstance(s, StaticSpec):
@@ -174,9 +174,9 @@ def _static(cls: type, name: str, p: str, given: Any, saved: dict[str, Any]) -> 
     if name in _field_defaults(cls):
         return _MISSING  # rebuild() skips it and fills in the default
     raise TypeError(
-        f"tx.load: the static field `{p}` ({cls.__name__}.{name}) is not in the file (only "
+        f"expex.load: the static field `{p}` ({cls.__name__}.{name}) is not in the file (only "
         f"numbers, strings, None and tuples/lists of those are saved) and has no default. "
-        f"Load into a template instead: tx.load(model, path)."
+        f"Load into a template instead: expex.load(model, path)."
     )
 
 

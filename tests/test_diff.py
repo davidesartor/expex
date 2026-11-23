@@ -1,4 +1,4 @@
-"""tx.diff: comparing models and checkpoints field by field."""
+"""expex.diff: comparing models and checkpoints field by field."""
 
 import dataclasses
 import pathlib
@@ -9,8 +9,8 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
-from typax._diff import diff
-from typax._io import save
+from expex._diff import diff
+from expex._io import save
 
 ROOT = pathlib.Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "examples"))

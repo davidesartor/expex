@@ -197,7 +197,7 @@ def _from_dims(name: str, dims: tuple[Any, ...], var_index: int | None, rank: in
 
 
 def einsum(*operands: Any, to: Any) -> Any:
-    """Contract arrays by their axis names: ``tx.einsum(q, k, to=(B, T, S))``.
+    """Contract arrays by their axis names: ``expex.einsum(q, k, to=(B, T, S))``.
 
     Axes with the same name are matched, and names missing from ``to`` are
     summed over, as in ``jnp.einsum``. Each operand's names come from its
@@ -205,16 +205,16 @@ def einsum(*operands: Any, to: Any) -> Any:
     ``k_: f32[B, S, D] = k``), or else from its sizes in this call. Only inside
     an ``@fn``.
     """
-    return einsum_(operands, (None,) * len(operands), to, "tx.einsum")
+    return einsum_(operands, (None,) * len(operands), to, "expex.einsum")
 
 
 def einsum_(operands: tuple[Any, ...], variables: tuple[str | None, ...], to: Any, site: str) -> Any:
-    """``tx.einsum`` with the operands' variable names (passed by the converter)."""
+    """``expex.einsum`` with the operands' variable names (passed by the converter)."""
     __tracebackhide__ = True
     from ._ops import CALLS
 
     if not CALLS.stack:
-        raise ShapeError("tx.einsum() finds axes by name, so it only works inside an @fn.")
+        raise ShapeError("expex.einsum() finds axes by name, so it only works inside an @fn.")
     env, fn = CALLS.stack[-1]
     outs = _names(to if isinstance(to, (tuple, list)) else (to,), env)
     twice = sorted({n for n in outs if outs.count(n) > 1})
@@ -249,7 +249,7 @@ def _names(items: Any, env: Any) -> list[str]:
     for v in items:
         n = axis_name(v)
         if n is None:
-            raise TypeError(f"tx.einsum(to=...) takes size names (B, T, ...), not {v!r}")
+            raise TypeError(f"expex.einsum(to=...) takes size names (B, T, ...), not {v!r}")
         if n.startswith("*"):
             out += [f"{n}{i}" for i in range(len(env.vars.get(n[1:], ())))]
         else:
@@ -299,23 +299,23 @@ def _operand_names(x: Any, var: str | None, env: Any, fn: Any, site: str) -> lis
 
 
 def rearrange(x: Any, *, to: Any) -> Any:
-    """Move, split and merge axes by name: ``tx.rearrange(x, to=(H, T, K))``.
+    """Move, split and merge axes by name: ``expex.rearrange(x, to=(H, T, K))``.
 
     For ``x: f32[T, D]`` and sizes ``H, K = heads, D // heads``, ``D`` is not in
     ``to`` but ``H`` and ``K`` are new, so ``D`` is split into ``(H, K)`` (in the
     order they appear in ``to``); the reverse merges them. Names in both are
     moved. Only inside an ``@fn``.
     """
-    return rearrange_(x, None, to, "tx.rearrange")
+    return rearrange_(x, None, to, "expex.rearrange")
 
 
 def rearrange_(x: Any, var: str | None, to: Any, site: str) -> Any:
-    """``tx.rearrange`` with the operand's variable name (passed by the converter)."""
+    """``expex.rearrange`` with the operand's variable name (passed by the converter)."""
     __tracebackhide__ = True
     from ._ops import CALLS
 
     if not CALLS.stack:
-        raise ShapeError("tx.rearrange() finds axes by name, so it only works inside an @fn.")
+        raise ShapeError("expex.rearrange() finds axes by name, so it only works inside an @fn.")
     env, fn = CALLS.stack[-1]
     src = _operand_names(x, var, env, fn, site)
     tgt = _names(to if isinstance(to, (tuple, list)) else (to,), env)

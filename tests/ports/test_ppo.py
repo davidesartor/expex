@@ -15,7 +15,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-import typax as tx
+import expex
 
 pytest.importorskip("optax")
 ROOT = pathlib.Path(__file__).parent.parent.parent
@@ -50,7 +50,7 @@ def test_every_loop_was_staged_and_the_program_is_small():
     jax.jit(lambda k: ppo.train(k, cfg))(jr.key(0))
     flow = list(ppo.train.flow.values())
     assert len(flow) == 4 and all("lax.scan" in how for how in flow), flow
-    small = tx.debug.ops(ppo.train, jr.key(0), cfg)
+    small = expex.debug.ops(ppo.train, jr.key(0), cfg)
     assert small.top_level_ops < 200
 
 
@@ -75,6 +75,6 @@ def test_environment_step_matches_a_reference_rollout():
 
 
 def test_all_shapes_are_proved():
-    reports = tx.prove(ppo)
+    reports = expex.prove(ppo)
     assert len(reports) == 12
     assert all(r.status == "proved" for r in reports), reports

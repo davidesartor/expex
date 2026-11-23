@@ -1,6 +1,6 @@
-"""A small decoder-only transformer written with typax modules.
+"""A small decoder-only transformer written with expex modules.
 
-    python -m typax examples/transformer.py     # prove every shape
+    python -m expex examples/transformer.py     # prove every shape
     python examples/transformer.py              # train a few steps
 """
 
@@ -8,8 +8,8 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-import typax as tx
-from typax import Dim, Int, f32
+import expex
+from expex import Dim, Int, f32
 
 
 class Vocab(Dim): ...
@@ -19,7 +19,7 @@ class Vocab(Dim): ...
 dense = jax.nn.initializers.variance_scaling(1.0, "fan_in", "normal")
 
 
-@tx.struct
+@expex.struct
 class LayerNorm[D]:
     scale: f32[D] = 1.0
     bias: f32[D] = 0.0
@@ -28,7 +28,7 @@ class LayerNorm[D]:
         return (x - x.mean()) / (x.std() + 1e-5) * self.scale + self.bias
 
 
-@tx.struct
+@expex.struct
 class Attention[D]:
     wq: f32[D, D] = dense
     wk: f32[D, D] = dense
@@ -39,10 +39,10 @@ class Attention[D]:
     def split[T](self, x: f32[T, D]) -> f32[H, T, K]:
         H, K = self.heads, D // self.heads
         assert D % self.heads == 0
-        return tx.rearrange(x, to=(H, T, K))  # D is split into H, K
+        return expex.rearrange(x, to=(H, T, K))  # D is split into H, K
 
     @staticmethod
-    @tx.fn
+    @expex.fn
     def causal[T, K](q: f32[T, K], k: f32[T, K], v: f32[T, K]) -> f32[T, K]:
         scores = q @ k.T / jnp.sqrt(q.shape[-1])
         mask = jnp.tril(jnp.ones((q.shape[0], q.shape[0]), bool))
@@ -52,10 +52,10 @@ class Attention[D]:
     def __call__[T, H, K](self, x: f32[T, D]) -> f32[T, D]:
         q, k, v = self.split(x @ self.wq), self.split(x @ self.wk), self.split(x @ self.wv)
         out: f32[H, T, K] = Attention.causal.lift(q, k, v)  # over heads
-        return tx.rearrange(out, to=(T, D)) @ self.wo  # H, K are merged back into D
+        return expex.rearrange(out, to=(T, D)) @ self.wo  # H, K are merged back into D
 
 
-@tx.struct
+@expex.struct
 class MLP[D, F]:
     w1: f32[D, F] = dense
     w2: f32[F, D] = dense
@@ -64,7 +64,7 @@ class MLP[D, F]:
         return jax.nn.gelu(x @ self.w1) @ self.w2
 
 
-@tx.struct
+@expex.struct
 class Block[D, F]:
     norm1: LayerNorm[D]
     attn: Attention[D]
@@ -76,7 +76,7 @@ class Block[D, F]:
         return x + self.mlp.lift(self.norm2.lift(x))
 
 
-@tx.struct
+@expex.struct
 class Transformer[D, F]:
     embed: f32[Vocab, D] = dense
     blocks: list[Block[D, F]]
@@ -108,6 +108,6 @@ if __name__ == "__main__":
         value, model = step(model, data)
         print(f"step {i}: loss {value:.4f}")
     print()
-    print(tx.prove(__import__("__main__")))
+    print(expex.prove(__import__("__main__")))
     print()
-    print(tx.debug.shapes(Attention.__call__))
+    print(expex.debug.shapes(Attention.__call__))

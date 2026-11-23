@@ -1,4 +1,4 @@
-# typax
+# expex
 
 Shape-typed JAX in plain Python. The idea: be explicit about the shapes of
 arrays, and of collections of arrays, and the library does the rest by reading
@@ -8,8 +8,8 @@ your annotations. Put the shapes in the signature:
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-import typax as tx
-from typax import fn, f32, i32
+import expex
+from expex import fn, f32, i32
 
 @fn
 def attend[B, T, D](q: f32[B, T, D], k: f32[B, T, D]) -> f32[B, T, T]:
@@ -24,23 +24,23 @@ data, and used to vectorise the function. Inside `@fn`, plain `if` / `for` /
 ```
 pip install -e .                               # Python 3.14+, JAX 0.12+
 python examples/tour.py                        # see everything run
-python -m typax examples/transformer.py        # prove a small transformer's shapes
+python -m expex examples/transformer.py        # prove a small transformer's shapes
 ```
 
 | | |
 |---|---|
 | [Checked calls](#checked-calls) | errors that name the axis and where its size came from |
 | [Sizes and axes by name](#sizes-and-axes-by-name) | `jnp.zeros((B, T))`, `x.reshape(T, H, K)`, `x.sum(T)`, `axis=T` |
-| [Proofs](#proofs-without-data) | `tx.prove(f)`: the shapes hold for every size |
+| [Proofs](#proofs-without-data) | `expex.prove(f)`: the shapes hold for every size |
 | [Plain Python control flow](#plain-python-on-traced-values) | `if` → `lax.cond`, `for` → `lax.scan` / `vmap`, `while` → `lax.while_loop` |
-| [Vectorising](#vectorising) | `f.lift(...)` and `@tx.lift` map over extra leading axes |
-| [Modules](#modules) | `@tx.struct`: typed, immutable classes that JAX can trace |
-| [Random keys](#random-keys) | `@tx.random` and `tx.key()`, no key threading |
-| [Compiling and gradients](#compiling-and-gradients) | `@tx.fn(jit=True, lift=True, random=True, remat=True)`, or JAX's own transformations |
-| [Sharding](#sharding) | `tx.shard(f, mesh, B="data", D="model")`: shardings from axis names |
-| [Diagrams](#diagrams) | `tx.diagram(f)`: an interactive architecture diagram, shapes on every edge, measured time per module, shape errors in place |
+| [Vectorising](#vectorising) | `f.lift(...)` and `@expex.lift` map over extra leading axes |
+| [Modules](#modules) | `@expex.struct`: typed, immutable classes that JAX can trace |
+| [Random keys](#random-keys) | `@expex.random` and `expex.key()`, no key threading |
+| [Compiling and gradients](#compiling-and-gradients) | `@expex.fn(jit=True, lift=True, random=True, remat=True)`, or JAX's own transformations |
+| [Sharding](#sharding) | `expex.shard(f, mesh, B="data", D="model")`: shardings from axis names |
+| [Diagrams](#diagrams) | `expex.diagram(f)`: an interactive architecture diagram, shapes on every edge, measured time per module, shape errors in place |
 | [Cost estimates](#cost-estimates) | FLOPs and parameters as formulas in the sizes |
-| [Precision constants](#precision-constants) | `tx.eps`, `tx.tiny`, `tx.huge` in the dtype they meet |
+| [Precision constants](#precision-constants) | `expex.eps`, `expex.tiny`, `expex.huge` in the dtype they meet |
 | [Debugging](#debugging) | where a NaN appeared, shapes line by line, memory, timing |
 
 ## Checked calls
@@ -48,7 +48,7 @@ python -m typax examples/transformer.py        # prove a small transformer's sha
 ```python
 try:
     attend(jnp.ones((2, 3, 4)), jnp.ones((5, 3, 4)))
-except tx.ShapeError as e:
+except expex.ShapeError as e:
     print(e)
 ```
 
@@ -102,7 +102,7 @@ def heads_first[T, D](x: f32[T, D], heads: int) -> f32[H, T, K]:
 
 Only names used in the signature are definitions; other assignments are
 ordinary local variables. (Arithmetic in annotations works because Python 3.14
-evaluates annotations lazily: typax reads them as written.)
+evaluates annotations lazily: expex reads them as written.)
 
 ## Sizes and axes by name
 
@@ -130,7 +130,7 @@ def running_mean[N, D](xs: f32[N, D]) -> f32[N, D]:
 
 pool(jnp.ones((2, 3, 4))).shape                  # (2, 4)
 swap(jnp.ones((2, 3, 4))).shape                  # (3, 2, 4)
-print(tx.prove(running_mean))                    # proved for all sizes
+print(expex.prove(running_mean))                    # proved for all sizes
 ```
 
 - **Axes**: positional arguments of array methods (`sum`, `mean`, `max`,
@@ -148,24 +148,24 @@ Contractions and reshapes need only the names of the result:
 ```python
 @fn
 def attention[B, T, S, D](q: f32[B, T, D], k: f32[B, S, D]) -> f32[B, T, S]:
-    return tx.einsum(q, k, to=(B, T, S))      # D is not in `to`: summed over
+    return expex.einsum(q, k, to=(B, T, S))      # D is not in `to`: summed over
 
 @fn
 def heads[T, D](x: f32[T, D], n: int) -> f32[H, T, K]:
     H, K = n, D // n
     assert D % n == 0
-    return tx.rearrange(x, to=(H, T, K))      # D split into H, K; T moved
+    return expex.rearrange(x, to=(H, T, K))      # D split into H, K; T moved
 ```
 
 Each operand's names come from its annotation, or from its sizes when they
 are unambiguous; repeated names are matched, as in `jnp.einsum`. To give an
 axis a second name (self-attention: keys along `S`), annotate a copy:
-`keys: f32[B, S, D] = x`. `tx.rearrange` moves axes, splits one into several
+`keys: f32[B, S, D] = x`. `expex.rearrange` moves axes, splits one into several
 new ones, or merges several into one new one.
 
 ## Proofs without data
 
-`tx.prove` traces a function with symbolic sizes, so a passing proof holds for
+`expex.prove` traces a function with symbolic sizes, so a passing proof holds for
 every size:
 
 ```python
@@ -173,7 +173,7 @@ every size:
 def diff[T, D](xs: f32[T, D]) -> f32[T, D]:
     return xs[1:] - xs[:-1]
 
-print(tx.prove(diff))
+print(expex.prove(diff))
 ```
 
 ```
@@ -187,11 +187,11 @@ diff: failed
     ...
 ```
 
-`tx.prove(split_heads)` proves it for every `D` and `heads` with
+`expex.prove(split_heads)` proves it for every `D` and `heads` with
 `D % heads == 0`. Parameters such as `heads: int` are tried at a few values
 (ints at 1 and 2, bools both ways, every `Literal` and enum value); others take
-`@fn(examples={"name": [...]})`. Prove a whole package with `python -m typax pkg`
-or `pytest --typax pkg`.
+`@fn(examples={"name": [...]})`. Prove a whole package with `python -m expex pkg`
+or `pytest --expex pkg`.
 
 ## Plain Python on traced values
 
@@ -252,11 +252,11 @@ score.lift(jnp.ones((32, 5, 3)), jnp.ones(3)).shape                # (32, 5)
 score.lift(jnp.ones((8, 1, 5, 3)), jnp.ones((7, 3))).shape         # (8, 7, 5)
 ```
 
-Batch axes broadcast like NumPy. `@tx.lift` makes plain calls do the same, so
+Batch axes broadcast like NumPy. `@expex.lift` makes plain calls do the same, so
 a function written for one element takes batches:
 
 ```python
-@tx.lift
+@expex.lift
 def safe_log(x: f32) -> f32:
     if x > 0:
         return jnp.log(x)
@@ -272,7 +272,7 @@ Compile time does not depend on the batch size: one example is traced.
 ```python
 from typing import Callable
 
-@tx.struct
+@expex.struct
 class Block[D]:
     w: f32[D, D] = jax.nn.initializers.normal(0.1)   # how to make it
     b: f32[D] = 0.0
@@ -281,7 +281,7 @@ class Block[D]:
     def __call__[B](self, x: f32[B, D]) -> f32[B, D]:
         return x + self.act(x @ self.w + self.b)
 
-@tx.struct
+@expex.struct
 class Stack[D]:
     blocks: list[Block[D]]
 
@@ -307,7 +307,7 @@ grads = jax.grad(lambda m: m(jnp.ones((4, 16))).sum())(model)   # a Stack too
   against the annotations. JAX and `.replace(...)` rebuild objects without
   calling it.
 - Every method is an `@fn` sharing the class's sizes, so
-  `tx.prove(Block.__call__)` works without an instance.
+  `expex.prove(Block.__call__)` works without an instance.
 - A loop over identical layers is one `lax.scan`, so a deep model compiles in
   the time one layer takes.
 - `model.lift(x)` maps `__call__` over extra axes. Other decorators go on the
@@ -319,7 +319,7 @@ checked whenever an instance is passed in, and assumed by every function that
 receives one, including the prover:
 
 ```python
-@tx.struct
+@expex.struct
 class Heads[D]:
     w: f32[D, D]
     heads: int = 4
@@ -329,14 +329,14 @@ class Heads[D]:
         return (x @ self.w).reshape(T, self.heads, D // self.heads).transpose(1, 0, 2)
 
 Heads(jnp.eye(8)).split(jnp.ones((5, 8))).shape      # (4, 5, 2)
-print(tx.prove(Heads.split).ok)                      # True
+print(expex.prove(Heads.split).ok)                      # True
 ```
 
 
 ### Model summary
 
 ```python
-print(tx.summary(model, B=64))     # B: a size the call needs that the model does not have
+print(expex.summary(model, B=64))     # B: a size the call needs that the model does not have
 ```
 
 ```
@@ -351,21 +351,21 @@ total      Stack               6,528  D²·L + D·L  26.1 kB  1.03 M  2·B·D²�
 ```
 
 One row per module, a list of identical layers as one row; parameters and
-FLOPs of a call, as formulas in the sizes and as numbers. `tx.summary(Stack,
+FLOPs of a call, as formulas in the sizes and as numbers. `expex.summary(Stack,
 D=16, blocks=24)` gives the same without building the model. In a notebook,
 or with `.save("summary.html")`, it is a collapsible, sortable table.
 
 ### Saving and loading
 
 ```python
-tx.save(model, "stack.npz")
-model = tx.load(Stack, "stack.npz")            # no __init__ call, no key needed
-model = tx.load(Stack, "stack.npz", D=16)      # and D must be 16
+expex.save(model, "stack.npz")
+model = expex.load(Stack, "stack.npz")            # no __init__ call, no key needed
+model = expex.load(Stack, "stack.npz", D=16)      # and D must be 16
 ```
 
 ```
->>> tx.load(Mamba, "mamba.npz")
-ShapeError: tx.load(Mamba, 'mamba.npz'):
+>>> expex.load(Mamba, "mamba.npz")
+ShapeError: expex.load(Mamba, 'mamba.npz'):
 
     layers[2].mixer.x_proj: declared f32[R + 2 * N, E], file has f32[40, 128]
 
@@ -380,22 +380,22 @@ ShapeError: tx.load(Mamba, 'mamba.npz'):
 - Static fields that are plain data (numbers, strings, `None`, tuples and
   lists of those) are saved too. Others, such as `act: Callable`, take the
   class default. Without one, load into an existing model, which supplies the
-  structure and static fields: `tx.load(model, "stack.npz")`.
+  structure and static fields: `expex.load(model, "stack.npz")`.
 - Keys missing from the file are an error, and so are extra keys unless you
   pass `strict=False`.
 
 
 ### Comparing models and checkpoints
 
-`tx.diff(a, b)` compares two models, or files written by `tx.save`, field by
+`expex.diff(a, b)` compares two models, or files written by `expex.save`, field by
 field:
 
 ```python
 small = Stack.init(jr.key(0), D=16, blocks=3)
-tx.save(small, "base.npz")
+expex.save(small, "base.npz")
 grads = jax.grad(lambda m: (m(jnp.ones((4, 16))) ** 2).mean())(small)
 tuned = jax.tree.map(lambda p, g: p - 0.1 * g, small, grads)   # one SGD step
-print(tx.diff("base.npz", tuned))
+print(expex.diff("base.npz", tuned))
 ```
 
 ```
@@ -422,26 +422,26 @@ change, with a filter for unchanged fields.
 ## Random keys
 
 ```python
-@tx.random
+@expex.random
 @fn
 def dropout[D](x: f32[D], rate: float = 0.5) -> f32[D]:
-    keep = jr.bernoulli(tx.key(), 1 - rate, x.shape)
+    keep = jr.bernoulli(expex.key(), 1 - rate, x.shape)
     return jnp.where(keep, x / (1 - rate), 0.0)
 
-tx.seed(0)
+expex.seed(0)
 dropout(jnp.ones(6))                        # different on every call
 dropout(jnp.ones(6), key=jr.key(1))         # or choose the key
 dropout.lift(jnp.ones((4, 6)))              # each row gets its own key
 ```
 
-Every `tx.key()` is a new key. Nested calls, branches and loop iterations
+Every `expex.key()` is a new key. Nested calls, branches and loop iterations
 derive their own, so eager, `jit`, `scan` and `vmap` runs draw the same
 numbers. Under `jax.jit`, pass the key: the global key is Python state and
 would be frozen into the compiled function.
 
 ## Compiling and gradients
 
-The common transformations are options of `@tx.fn`, in any combination:
+The common transformations are options of `@expex.fn`, in any combination:
 
 ```python
 @fn(jit=True, remat="dots")
@@ -455,12 +455,12 @@ repeat(jnp.ones(3), 4, 0.5).shape                       # (12,)
 |---|---|
 | `jit=True` | compile; static arguments are read from the signature |
 | `lift=True` | plain calls take extra leading batch axes |
-| `random=True` | `tx.key()` inside gives a fresh key on every call |
+| `random=True` | `expex.key()` inside gives a fresh key on every call |
 | `remat=True` | recompute in the backward pass (`jax.checkpoint`); or a policy: `"dots"`, `"dots_no_batch"`, `"everything"` |
 | `donate=("state",)` | with `jit`: reuse these arguments' buffers |
 
-Each is also a decorator of its own (`@tx.jit`, `@tx.lift`, `@tx.random`,
-`@tx.remat`). Static arguments are the ones with plain Python types (`int`,
+Each is also a decorator of its own (`@expex.jit`, `@expex.lift`, `@expex.random`,
+`@expex.remat`). Static arguments are the ones with plain Python types (`int`,
 `str`, tuples, callables, enums) and `Static[...]`; arrays and `float`
 numbers are traced, so a new learning rate does not recompile. A compiled
 random function draws a fresh key on every call, or takes `key=`.
@@ -468,7 +468,7 @@ random function draws a fresh key on every call, or takes `key=`.
 JAX's own transformations work on any `@fn` too: `jax.jit(f,
 static_argnames=...)`, `jax.grad`, `jax.vmap`, `jax.checkpoint`.
 
-`tx.compile_cache(path)` keeps compiled programs on disk across runs.
+`expex.compile_cache(path)` keeps compiled programs on disk across runs.
 
 ## Sharding
 
@@ -483,17 +483,17 @@ n = jax.device_count()                    # e.g. 8 devices: make_mesh((2, 4), ..
 mesh = jax.make_mesh((n, 1), ("data", "model"), axis_types=(AxisType.Auto,) * 2)
 names = dict(B="data", D="model")
 
-print(tx.shardings(model, mesh, **names).blocks[0].w.spec)   # P('model',): w is f32[D, D]
+print(expex.shardings(model, mesh, **names).blocks[0].w.spec)   # P('model',): w is f32[D, D]
 
-model = tx.device_put(model, mesh, **names)
-forward = tx.shard(Stack.__call__, mesh, **names)
+model = expex.device_put(model, mesh, **names)
+forward = expex.shard(Stack.__call__, mesh, **names)
 out = forward(model, jnp.ones((8 * n, 16))) # x: f32[B, D], and the result, split as B, D
 ```
 
-- `tx.shardings(tree, mesh, **names)` gives the `NamedSharding`s of a model
+- `expex.shardings(tree, mesh, **names)` gives the `NamedSharding`s of a model
   (or of `jax.eval_shape(...)` of one, before any memory is used), with lists
-  of layers and nested modules; `tx.device_put` places a tree by them.
-- `tx.shard(f, mesh, **names)` is `tx.jit(f)` with the arguments placed and
+  of layers and nested modules; `expex.device_put` places a tree by them.
+- `expex.shard(f, mesh, **names)` is `expex.jit(f)` with the arguments placed and
   the result constrained by their annotations. Intermediates need nothing:
   XLA propagates on `Auto` mesh axes. (`jax.make_mesh` makes `Explicit` ones
   by default, where JAX asks for an `out_sharding` at contractions over a
@@ -507,12 +507,12 @@ out = forward(model, jnp.ones((8 * n, 16))) # x: f32[B, D], and the result, spli
 
 ## Cost estimates
 
-`tx.cost` counts a function's FLOPs, and a module's parameters, as formulas in
+`expex.cost` counts a function's FLOPs, and a module's parameters, as formulas in
 its sizes. Like the prover, it needs no data:
 
 ```python
-print(tx.cost(Stack.__call__))
-print(tx.cost(Stack.__call__, B=64, D=1024, blocks=24))
+print(expex.cost(Stack.__call__))
+print(expex.cost(Stack.__call__, B=64, D=1024, blocks=24))
 ```
 
 ```
@@ -535,13 +535,13 @@ loop counts one iteration and says so.
 
 ### Profiles, line by line
 
-`tx.debug.profile` puts `tx.cost`'s numbers on the source. It traces the function with
+`expex.debug.profile` puts `expex.cost`'s numbers on the source. It traces the function with
 symbolic sizes, so you don't need data. Each line, and each line of the functions it
 calls, shows the shape it produces, its FLOPs as a formula and, once sizes are given,
 as a number and a share of the total:
 
 ```python
-report = tx.debug.profile(Stack.__call__, B=64, D=1024, blocks=24)
+report = expex.debug.profile(Stack.__call__, B=64, D=1024, blocks=24)
 report.save("profile.html")           # the source as a heat map, FLOPs or bytes
 ```
 
@@ -571,29 +571,29 @@ Transformer.__call__   (sizes: T=1024, D=512, F=2048, Vocab=32000, L=12)
 
 - Each operation is counted once, on the innermost line that created it. A line that
   calls into other functions shows their share as `calls`. The per-line counts add up
-  to `tx.cost(f).flops`.
+  to `expex.cost(f).flops`.
 - Lines inside a staged loop are multiplied by the loop's trip count and marked: `×L`
   for a loop over a list of modules, `×T` for `range(T)`.
 - The last column is the bytes the line's operations produce (data written, not peak
-  memory; for peak memory, use `tx.debug.memory`).
+  memory; for peak memory, use `expex.debug.memory`).
 - `profile.save("profile.html")`, or a notebook's rich display, gives a self-contained
   page. Each line has a heat map you can switch between FLOPs and bytes, and hovering
   over a line shows its formula. Each function is a collapsible section.
 
 ## Diagrams
 
-`tx.diagram` draws a function or a module from a trace with symbolic sizes,
-so like `tx.cost` and `tx.prove` it needs no data:
+`expex.diagram` draws a function or a module from a trace with symbolic sizes,
+so like `expex.cost` and `expex.prove` it needs no data:
 
 ```python
-d = tx.diagram(Stack.__call__)                  # depth=1: the calls it makes
+d = expex.diagram(Stack.__call__)                  # depth=1: the calls it makes
 print(d)                                        # Mermaid text, for Markdown
 d.save("stack.html")                            # an interactive page
-tx.diagram(Stack.__call__, depth=2)             # every call opened one level
-tx.diagram(Stack.__call__, B=64, blocks=24)     # sizes and list lengths, as for tx.cost
+expex.diagram(Stack.__call__, depth=2)             # every call opened one level
+expex.diagram(Stack.__call__, B=64, blocks=24)     # sizes and list lengths, as for expex.cost
 ```
 
-For the transformer in `examples/`, `print(tx.diagram(Transformer.__call__))`
+For the transformer in `examples/`, `print(expex.diagram(Transformer.__call__))`
 gives this, which GitHub draws in a `mermaid` block:
 
 ```mermaid
@@ -639,18 +639,18 @@ f32#91;D#93; → f32#91;D#93;"]
 
 ### Where the time goes, and where shapes fail
 
-`tx.diagram.timed` draws the same diagram from a run on real arguments. It
+`expex.diagram.timed` draws the same diagram from a run on real arguments. It
 compiles the function with `jax.jit`, runs it under `jax.profiler`, and colours
 each call and loop by its share of the measured time. Shape errors get a
 diagram too. A `ShapeError` raised inside a typed call carries `e.diagram`,
 which is the trace up to the call that failed:
 
 ```python
-d = tx.diagram.timed(model.__call__, jnp.ones((256, 16)))  # runs it, under jax.jit and jax.profiler
+d = expex.diagram.timed(model.__call__, jnp.ones((256, 16)))  # runs it, under jax.jit and jax.profiler
 print(d.text)
 d.save("stack_timed.html")                       # each box coloured by its share of the time
 
-@tx.struct
+@expex.struct
 class Probe[D]:
     stack: Stack[D]
     w: f32[D] = 1.0
@@ -661,7 +661,7 @@ class Probe[D]:
 probe = Probe.init(jr.key(1), D=16, blocks=2)
 try:
     probe(jnp.ones((4, 16)))
-except tx.ShapeError as e:
+except expex.ShapeError as e:
     print(e.diagram.text)                        # the trace up to the call that failed
     e.diagram.save("error.html")                 # that call in red, the path into it in red
 ```
@@ -680,14 +680,14 @@ Probe.__call__   ShapeError: traced up to the failing call
   ...
 ```
 
-- The profiler names XLA instructions, not Python calls. typax looks each one
+- The profiler names XLA instructions, not Python calls. expex looks each one
   up in the compiled program, where it carries the scopes of the calls it came
   from. A fused instruction that spans calls is split between them. A loop's
   body runs once per iteration, so `× 24` adds up all 24. Each call's time
   includes the calls inside it. Shares are of XLA op time summed over threads,
   so on CPU they can add up to more than the wall time.
 - When the profiler can't run, the shares are estimated from FLOPs per box
-  (counted as `tx.cost` counts them). The diagram is then labelled `ESTIMATED`.
+  (counted as `expex.cost` counts them). The diagram is then labelled `ESTIMATED`.
 - `d.timings` maps boxes to (seconds per call, share), and `d.at(2)` opens the
   diagram one level further.
 - `e.diagram` is built only when you use it, so calls that succeed cost
@@ -696,22 +696,22 @@ Probe.__call__   ShapeError: traced up to the failing call
   the type it received and the one it declared, and the edges from the inputs
   to it are red too. The calls around it are open. The error's message is
   unchanged. A note under it says `(see e.diagram.save("error.html"))`.
-  `tx.diagram.explain(f, *args)` draws the same thing without running `f`.
+  `expex.diagram.explain(f, *args)` draws the same thing without running `f`.
 
 ## Precision constants
 
-`tx.eps`, `tx.tiny` and `tx.huge` are the limits of whatever floating dtype
+`expex.eps`, `expex.tiny` and `expex.huge` are the limits of whatever floating dtype
 they meet, so the same code is right in bfloat16, float32 and float64:
 
 ```python
 @fn
 def entropy_safe[N](p: f32[N]) -> f32:
-    return -(p * jnp.log(p + tx.tiny)).sum()       # tiny of p's dtype
+    return -(p * jnp.log(p + expex.tiny)).sum()       # tiny of p's dtype
 
 x = jnp.ones(3, jnp.bfloat16)
-x + tx.eps                                         # bfloat16's epsilon: 0.0078125
-x / (x.sum() + 1e3 * tx.eps)                       # scaled, still in x's dtype
-jnp.maximum(x, tx.tiny(x))                         # as an argument: give it the array
+x + expex.eps                                         # bfloat16's epsilon: 0.0078125
+x / (x.sum() + 1e3 * expex.eps)                       # scaled, still in x's dtype
+jnp.maximum(x, expex.tiny(x))                         # as an argument: give it the array
 ```
 
 ## Debugging
@@ -722,7 +722,7 @@ def entropy[N](logits: f32[N]) -> f32:
     p = jax.nn.softmax(logits)
     return -(p * jnp.log(p)).sum()
 
-print(tx.debug.find_nan(entropy, jnp.array([0.0, 200.0, -200.0])))
+print(expex.debug.find_nan(entropy, jnp.array([0.0, 200.0, -200.0])))
 ```
 
 ```
@@ -735,7 +735,7 @@ NaN first appears at model.py:4 (entropy)
 ```
 
 `find_nan` replays the program one operation at a time, including inside loops
-and branches. `tx.debug.shapes` annotates every line with its shapes, here for
+and branches. `expex.debug.shapes` annotates every line with its shapes, here for
 all sizes at once:
 
 ```python
@@ -744,7 +744,7 @@ def attention[B, T, D](q: f32[B, T, D], k: f32[B, T, D]) -> f32[B, T, T]:
     scores = q @ k.swapaxes(-1, -2)
     return jax.nn.softmax(scores, axis=-1)
 
-print(tx.debug.shapes(attention))
+print(expex.debug.shapes(attention))
 ```
 
 ```
@@ -756,29 +756,29 @@ attention[B, T, D](q: f32[B, T, D], k: f32[B, T, D]) -> f32[B, T, T]   [symbolic
 
 | Tool | |
 |---|---|
-| `tx.debug.find_nan(f, *args)` | the first operation that made a NaN or inf, with its inputs |
-| `tx.debug.shapes(f[, *args])` | every line with its shapes, symbolic or concrete |
-| `tx.debug.memory(f, *args)` | peak memory, and which values on which lines make it up |
-| `tx.debug.timing(f, *args)` | trace, compile and run time |
-| `tx.debug.ops(f, *args)` | operations by kind and line; flags unrolled loops and big constants |
-| `f.info()` | everything typax knows about a function |
-| `tx.show(tree)` | a pytree as shapes: `Params(w=f32[3, 3], b=f32[3])` |
+| `expex.debug.find_nan(f, *args)` | the first operation that made a NaN or inf, with its inputs |
+| `expex.debug.shapes(f[, *args])` | every line with its shapes, symbolic or concrete |
+| `expex.debug.memory(f, *args)` | peak memory, and which values on which lines make it up |
+| `expex.debug.timing(f, *args)` | trace, compile and run time |
+| `expex.debug.ops(f, *args)` | operations by kind and line; flags unrolled loops and big constants |
+| `f.info()` | everything expex knows about a function |
+| `expex.show(tree)` | a pytree as shapes: `Params(w=f32[3, 3], b=f32[3])` |
 
 
 ### Activations and gradients, call by call
 
-`tx.debug.watch` runs one forward and backward pass of a loss and reports
+`expex.debug.watch` runs one forward and backward pass of a loss and reports
 every typed call made on the way: statistics of its output, and of the
 gradient of the loss with respect to that output.
 
 ```python
 x = jr.normal(jr.key(1), (8, 16))
 loss = lambda m: (m(x) ** 2).mean()
-print(tx.debug.watch(loss, model))       # one row per call, each layer its own row
+print(expex.debug.watch(loss, model))       # one row per call, each layer its own row
 
 blocks = list(model.blocks)
 blocks[5] = blocks[5].replace(w=blocks[5].w * 1e3)        # plant a problem
-w = tx.debug.watch(loss, model.replace(blocks=blocks), growth=10.0)
+w = expex.debug.watch(loss, model.replace(blocks=blocks), growth=10.0)
 for row in w.flagged:
     print(row.name, row.flags)
 w.save("watch.html")                     # collapsible, sortable, RMS per layer as bars
@@ -821,7 +821,7 @@ blocks[5].__call__ ['activations growing: RMS ×2.8e+02 from blocks[4].__call__'
 
 ```python
 from typing import Literal, NamedTuple
-from typax import Dim, Int, Key
+from expex import Dim, Int, Key
 
 class RGB(Dim, size=3): ...          # a named fixed size
 

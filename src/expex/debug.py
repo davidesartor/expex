@@ -748,7 +748,7 @@ def memory(f: Callable[..., Any], *args: Any, **kwargs: Any) -> Memory:
 def profile(f: Callable[..., Any], /, **sizes: Any) -> Any:
     """The cost of every source line of ``f``, and of the functions it calls.
 
-    Like ``tx.cost`` (same targets and keywords), without data: each line gets
+    Like ``expex.cost`` (same targets and keywords), without data: each line gets
     the shape it produces and its FLOPs and bytes, as formulas and, given the
     sizes, as numbers and shares. ``.save("profile.html")`` writes it as a
     heat map over the source.
@@ -766,7 +766,7 @@ def watch(loss_fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
     gradient of the loss with respect to it. Rows are flagged for NaN/inf,
     exploding or vanishing gradients and fast-growing activations. JAX's
     compilation caches are cleared, so jitted functions recompile once after.
-    See ``typax._watch.watch`` for the options.
+    See ``expex._watch.watch`` for the options.
     """
     from ._watch import watch as run
 

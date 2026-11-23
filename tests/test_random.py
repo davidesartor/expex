@@ -6,45 +6,45 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-import typax as tx
-from typax import Key, StageError, Static, f32, fn
+import expex
+from expex import Key, StageError, Static, f32, fn
 
 
-@tx.random
+@expex.random
 @fn
 def noise[D](x: f32[D]) -> f32[D]:
-    return x + jr.normal(tx.key(), x.shape)
+    return x + jr.normal(expex.key(), x.shape)
 
 
 def test_fresh_key_each_call_and_reproducible_with_seed():
-    tx.seed(0)
+    expex.seed(0)
     a, b = noise(jnp.zeros(3)), noise(jnp.zeros(3))
     assert not jnp.allclose(a, b)
-    tx.seed(0)
+    expex.seed(0)
     a2, b2 = noise(jnp.zeros(3)), noise(jnp.zeros(3))
     assert jnp.allclose(a, a2) and jnp.allclose(b, b2)
 
 
 def test_several_draws_inside_one_call_differ():
-    @tx.random
+    @expex.random
     @fn
     def two() -> tuple[f32, f32]:
-        return jr.normal(tx.key()), jr.normal(tx.key())
+        return jr.normal(expex.key()), jr.normal(expex.key())
 
     a, b = two()
     assert a != b
 
 
 def test_explicit_key_scope():
-    with tx.rng(42):
+    with expex.rng(42):
         a = noise(jnp.zeros(3))
-    with tx.rng(jr.key(42)):
+    with expex.rng(jr.key(42)):
         b = noise(jnp.zeros(3))
     assert jnp.allclose(a, b)
 
 
 def test_nested_random_functions_get_distinct_keys():
-    @tx.random
+    @expex.random
     @fn
     def outer[D](x: f32[D]) -> tuple[f32[D], f32[D]]:
         return noise(x), noise(x)
@@ -61,28 +61,28 @@ def test_plain_jit_without_a_key_is_refused():
 def test_plain_jit_with_explicit_key_scope():
     @jax.jit
     def step(x, key):
-        with tx.rng(key):
+        with expex.rng(key):
             return noise(x)
 
     a = step(jnp.zeros(3), jr.key(0))
     b = step(jnp.zeros(3), jr.key(1))
     assert not jnp.allclose(a, b)
-    with tx.rng(jr.key(0)):
+    with expex.rng(jr.key(0)):
         assert jnp.allclose(a, noise(jnp.zeros(3)))  # same result eagerly
 
 
 def test_jax_jit_takes_the_key_as_an_argument():
-    @tx.random
+    @expex.random
     @fn
     def noise[D](x: f32[D]) -> f32[D]:
-        return x + jr.normal(tx.key(), x.shape)
+        return x + jr.normal(expex.key(), x.shape)
 
     jnoise = jax.jit(noise)
     outs = [jnoise(jnp.zeros(3), key=jr.key(i)) for i in range(4)]
     assert len({tuple(o.tolist()) for o in outs}) == 4
     assert jnoise._cache_size() == 1
     assert jnp.allclose(jnoise(jnp.zeros(3), key=jr.key(1)), noise(jnp.zeros(3), key=jr.key(1)))
-    with pytest.raises(tx.StageError, match="key=key"):
+    with pytest.raises(expex.StageError, match="key=key"):
         jnoise(jnp.zeros(3))
 
 
@@ -93,36 +93,36 @@ def test_lift_gives_each_example_its_own_key():
 
 
 def test_random_functions_are_provable():
-    assert tx.prove(noise).status == "proved"
+    assert expex.prove(noise).status == "proved"
 
     @fn
     def caller[D](x: f32[D]) -> f32[D]:
         return noise(x)  # not itself random, but calls one
 
-    assert tx.prove(caller).status == "proved"
+    assert expex.prove(caller).status == "proved"
 
 
 def test_keys_agree_between_eager_and_staged_control_flow():
-    @tx.random
+    @expex.random
     @fn
     def walk[T](steps: f32[T]) -> f32[T]:
         pos = 0.0
         out = []
         for s in steps:
             if s > 0:
-                pos = pos + s * jr.normal(tx.key())
+                pos = pos + s * jr.normal(expex.key())
             else:
-                pos = pos - jr.uniform(tx.key())
+                pos = pos - jr.uniform(expex.key())
             out.append(pos)
         return jnp.asarray(out)
 
     steps = jnp.array([1.0, -1.0, 2.0, 0.5, -3.0])
-    with tx.rng(3):
+    with expex.rng(3):
         eager = walk(steps)
 
     @jax.jit
     def run(steps, key):
-        with tx.rng(key):
+        with expex.rng(key):
             return walk(steps)
 
     staged = run(steps, jr.key(3))
@@ -132,16 +132,16 @@ def test_keys_agree_between_eager_and_staged_control_flow():
 
 
 def test_independent_random_loop_uses_vmap_with_distinct_keys():
-    @tx.random
+    @expex.random
     @fn
     def samples[T](x: f32[T]) -> f32[T]:
         out = []
         for v in x:
-            out.append(v + jr.normal(tx.key()))
+            out.append(v + jr.normal(expex.key()))
         return jnp.asarray(out)
 
     x = jnp.zeros(6)
-    with tx.rng(1):
+    with expex.rng(1):
         eager = samples(x)
     staged = jax.jit(lambda x, k: _scoped(samples, k, x))(x, jr.key(1))
     assert jnp.allclose(eager, staged, atol=1e-6)
@@ -150,5 +150,5 @@ def test_independent_random_loop_uses_vmap_with_distinct_keys():
 
 
 def _scoped(f, key, *args):
-    with tx.rng(key):
+    with expex.rng(key):
         return f(*args)

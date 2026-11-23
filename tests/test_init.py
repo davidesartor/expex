@@ -8,14 +8,14 @@ import jax.random as jr
 import pytest
 from jax.nn import initializers as ini
 
-import typax as tx
-from typax import Dim, ShapeError, f32
+import expex
+from expex import Dim, ShapeError, f32
 
 
 class Vocab(Dim): ...
 
 
-@tx.struct
+@expex.struct
 class Linear[I, O]:
     w: f32[O, I] = ini.lecun_normal(in_axis=-1, out_axis=-2)
     b: f32[O] = 0.0
@@ -25,7 +25,7 @@ class Linear[I, O]:
         return self.act(self.w @ x + self.b)
 
 
-@tx.struct
+@expex.struct
 class Block[D, F]:
     up: Linear[D, F]
     down: Linear[F, D]
@@ -34,7 +34,7 @@ class Block[D, F]:
         return x + self.down(self.up(x))
 
 
-@tx.struct
+@expex.struct
 class Net[D, F]:
     embed: f32[Vocab, D] = ini.normal()
     blocks: list[Block[D, F]]
@@ -78,7 +78,7 @@ def test_mistakes_are_explained():
     with pytest.raises(TypeError, match="wat is neither a size"):
         Net.init(jr.key(0), D=8, F=16, Vocab=5, blocks=1, wat=1)
 
-    @tx.struct
+    @expex.struct
     class NoInit[D]:
         w: f32[D]
 

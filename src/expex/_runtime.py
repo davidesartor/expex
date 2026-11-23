@@ -1,4 +1,4 @@
-"""The namespace converted functions call into (as ``__typax_flow__``)."""
+"""The namespace converted functions call into (as ``__expex_flow__``)."""
 
 from ._axes import dim_, einsum_, lifted_, named_, rearrange_, size_
 from ._flow import LOG, UNDEF, Stacked, append_, if_, ifexp, ld, ret_, unstack, while_

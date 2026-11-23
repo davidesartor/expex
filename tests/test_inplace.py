@@ -9,9 +9,9 @@ import pytest
 import jax
 import jax.numpy as jnp
 
-import typax as tx
-from typax import StageError, f32, fn, i32
-from typax._convert import convert
+import expex
+from expex import StageError, f32, fn, i32
+from expex._convert import convert
 
 
 def both(f, *args):
@@ -230,7 +230,7 @@ def test_shadowed_builtins_are_left_alone():
 
 
 def convert_or_same(f):
-    from typax._convert import NotConverted
+    from expex._convert import NotConverted
 
     try:
         return convert(f)

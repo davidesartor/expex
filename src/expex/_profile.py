@@ -1,6 +1,6 @@
 """Line-by-line analytical profile: FLOPs, bytes and shapes per source line.
 
-``profile(f, **sizes)`` traces ``f`` like ``tx.cost`` (symbolic sizes, no
+``profile(f, **sizes)`` traces ``f`` like ``expex.cost`` (symbolic sizes, no
 data), counts each equation with the same rules, and attributes it to the
 source line that created it::
 
@@ -9,12 +9,12 @@ source line that created it::
 - Every function the trace passes through gets its own section (``f`` first,
   then the others by cost). An operation counts once, as *self* cost, on the
   innermost line that made it; the lines that called into it show it as
-  *calls*. Self costs add up to ``tx.cost(f).flops``.
+  *calls*. Self costs add up to ``expex.cost(f).flops``.
 - Lines in a staged loop are multiplied by its trip count, and say so
   (``×L`` for a loop over a list of modules, ``×T`` for ``range(T)``). Like
-  ``tx.cost``, a ``while`` body counts once and a ``cond`` its costliest branch.
+  ``expex.cost``, a ``while`` body counts once and a ``cond`` its costliest branch.
 - *bytes* is the size of every value a line's operations produce (times the
-  trip count): data written, not peak memory (see ``tx.debug.memory``).
+  trip count): data written, not peak memory (see ``expex.debug.memory``).
 - ``str()`` is annotated source; ``_repr_html_()`` / ``save(path)`` give a
   self-contained page with a heat map (FLOPs or bytes) and the formulas on hover.
 """
@@ -71,7 +71,7 @@ class Profile:
     name: str
     sizes: list[str]  # size names, display order
     given: dict[str, int]  # sizes given as keywords (a list's length as ``L``)
-    flops: Poly  # total, as ``tx.cost`` (formulas here are in all sizes: see ``number``)
+    flops: Poly  # total, as ``expex.cost`` (formulas here are in all sizes: see ``number``)
     sections: list[Section]
     other: Poly  # FLOPs not on any line of these functions (argument checks, ...)
     notes: list[str] = field(default_factory=list)
@@ -167,7 +167,7 @@ def _short(file: str) -> str:
 def _stack(eqn: Any) -> list[tuple[Key, int]] | None:
     """The user's frames that made ``eqn``, innermost first, as (section, line).
 
-    typax's own frames are skipped, and so are the helper functions its
+    expex's own frames are skipped, and so are the helper functions its
     rewriting creates (``__bn_body_1__``): their lines belong to the enclosing function.
     """
     from jax._src import source_info_util as su
@@ -269,7 +269,7 @@ def _source(key: Key) -> tuple[str, list[str], int]:
 def profile(target: Any, /, **sizes: Any) -> Profile:
     """Cost of every source line of ``target`` and of the functions it calls.
 
-    ``target`` and the keywords are as for ``tx.cost``: an ``@fn`` or a struct
+    ``target`` and the keywords are as for ``expex.cost``: an ``@fn`` or a struct
     method (unbound: sizes stay symbolic; bound: the instance's sizes), static
     parameters (``heads=4``), list lengths (``blocks=12``) and sizes (``T=1024``).
     """
@@ -286,7 +286,7 @@ def profile(target: Any, /, **sizes: Any) -> Profile:
         if not lists:
             break
     lines, other = walks[0].lines, walks[0].other
-    if len(walks) == 2:  # linear in the list length: extrapolate from 1 and 2, as tx.cost does
+    if len(walks) == 2:  # linear in the list length: extrapolate from 1 and 2, as expex.cost does
         L, w2 = Poly.of("L") - 1, walks[1]
         for at, a in lines.items():
             w2.lines.setdefault(at, Line(a.number, "", loops=a.loops, shapes=a.shapes))
@@ -308,7 +308,7 @@ def profile(target: Any, /, **sizes: Any) -> Profile:
         row.flops, row.bytes, row.calls, row.loops, row.shapes = ln.flops, ln.bytes, ln.calls, ln.loops, ln.shapes
     main = [k for k in sections if k[:2] == root]
     rest = sorted((k for k in sections if k not in main), key=lambda k: -sections[k].flops.subs(total.given).sample())
-    flops: Poly = other  # summed line by line: = tx.cost's total, before the sizes are put in
+    flops: Poly = other  # summed line by line: = expex.cost's total, before the sizes are put in
     for ln in lines.values():
         flops = flops + ln.flops
     return Profile(total.name, [*total.sizes, *total.given], total.given, flops,

@@ -10,8 +10,8 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-import typax as tx
-from typax import (
+import expex
+from expex import (
     Arr, Bool, Dim, Float, Int, Key, ShapeError, StageError, Static, config, f32, fn, i32,
 )  # fmt: skip
 
@@ -217,12 +217,12 @@ def test_derived_dim_solved_from_input():
 
 
 def test_derived_dim_keyword_is_rejected():
-    with pytest.raises(TypeError, match="@tx.fn got U='T \\+ 1': write the size in the annotation instead"):
+    with pytest.raises(TypeError, match="@expex.fn got U='T \\+ 1': write the size in the annotation instead"):
 
         @fn(U="T + 1")
         def f[T](x: f32[T]) -> f32[T]: ...
 
-    with pytest.raises(TypeError, match="@tx.fn got where='T >= 2': write the constraint as an `assert`"):
+    with pytest.raises(TypeError, match="@expex.fn got where='T >= 2': write the constraint as an `assert`"):
 
         @fn(where="T >= 2")
         def g[T](x: f32[T]) -> f32[T]: ...
@@ -474,7 +474,7 @@ def test_notes_on_exceptions():
     with pytest.raises(TypeError) as e:
         badadd(jnp.ones((2, 3)), jnp.ones((3, 2)))
     notes = "\n".join(e.value.__notes__)
-    assert "typax: in " in notes
+    assert "expex: in " in notes
     assert "badadd(x: f32[2, 3], y: f32[3, 2])  [B=2, T=3]" in notes
 
 
@@ -520,7 +520,7 @@ def test_stage_hint():
 
 
 def test_batch_annotation():
-    from typax import Batch
+    from expex import Batch
 
     class Step(NamedTuple):
         obs: f32[Literal[4]]
@@ -537,7 +537,7 @@ def test_batch_annotation():
     assert "traj: Batch[Step, T, N]" in repr(total)
     with pytest.raises(ShapeError, match=r"declared  traj.reward: f32\[T, N\]"):
         total(Step(jnp.ones((6, 3, 4)), jnp.ones((6, 2)), keys), jnp.ones((3, 4)))
-    from typax import prove
+    from expex import prove
 
     assert prove(total).status == "proved"
 
@@ -561,7 +561,7 @@ def test_hints():
 
 
 def test_info():
-    @tx.lift
+    @expex.lift
     @fn
     def pad[B, T](x: f32[B, T]) -> f32[B, T + 1]:
         return jnp.pad(x, ((0, 0), (0, 1)))
@@ -579,23 +579,23 @@ def test_info():
 
 
 def test_show_and_scoped_config():
-    import typax as tx
+    import expex
 
     class P(NamedTuple):
         w: Any
         b: Any
 
     tree = {"p": P(jnp.ones((3, 3)), jnp.zeros(3, jnp.int32)), "k": jr.key(0), "n": 2.0}
-    assert tx.show(tree) == "{k: Key[()], n: Python float, p: P(w=f32[3, 3], b=i32[3])}"
+    assert expex.show(tree) == "{k: Key[()], n: Python float, p: P(w=f32[3, 3], b=i32[3])}"
 
     @fn
     def bad[T](x: f32[T]) -> f32[T]:
         return x[1:]
 
-    with tx.config(checked=False):
+    with expex.config(checked=False):
         assert bad(jnp.ones(3)).shape == (2,)
     with pytest.raises(ShapeError):
         bad(jnp.ones(3))
     with pytest.raises(AttributeError):
-        tx.config(nope=1)
-    assert "checked=True" in repr(tx.config)
+        expex.config(nope=1)
+    assert "checked=True" in repr(expex.config)

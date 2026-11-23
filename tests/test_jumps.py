@@ -7,9 +7,9 @@ import pytest
 import jax
 import jax.numpy as jnp
 
-import typax as tx
-from typax import f32, fn, i32
-from typax._convert import convert
+import expex
+from expex import f32, fn, i32
+from expex._convert import convert
 
 
 def same(f, *args):
@@ -276,4 +276,4 @@ def test_prover_handles_loops_with_jumps():
             total = total + v
         return total
 
-    assert tx.prove(clipped_sum).status == "proved"
+    assert expex.prove(clipped_sum).status == "proved"

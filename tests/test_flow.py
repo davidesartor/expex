@@ -5,8 +5,8 @@ import pytest
 import jax
 import jax.numpy as jnp
 
-import typax as tx
-from typax import StageError, Static, f32, fn, i32
+import expex
+from expex import StageError, Static, f32, fn, i32
 
 
 def both(f, *args, **kw):
@@ -482,7 +482,7 @@ def test_rnn_matches_unconverted_and_stays_small():
     g = jax.grad(lambda w: rnn(xs, w)[0].sum())(w)
     g_ref = jax.grad(lambda w: plain(xs, w)[0].sum())(w)
     assert jnp.allclose(g, g_ref, atol=1e-6)
-    assert tx.prove(rnn).status == "proved"
+    assert expex.prove(rnn).status == "proved"
 
 
 # ---------------------------------------------------------------- conversion
@@ -577,7 +577,7 @@ def test_converted_source_is_inspectable():
             return x
         return -x
 
-    assert "__typax_flow__.if_(" in f.converted_source
+    assert "__expex_flow__.if_(" in f.converted_source
 
 
 def test_loop_lowering_can_be_switched_off(monkeypatch):
@@ -588,7 +588,7 @@ def test_loop_lowering_can_be_switched_off(monkeypatch):
             s = s + v
         return s
 
-    monkeypatch.setattr(tx.config, "lower_loops", False)
+    monkeypatch.setattr(expex.config, "lower_loops", False)
     assert jax.jit(total)(jnp.arange(4.0)) == 6.0
     assert "unrolled (config.lower_loops is off)" in "".join(total.flow.values())
     assert n_eqns(total, jnp.arange(4.0)) > 4
@@ -599,10 +599,10 @@ def test_rows_stack_and_reversed():
     def returns[T](reward: f32[T], done: f32[T], gamma: Static[float] = 0.9) -> f32[T]:
         g = 0.0
         out = []
-        for step in reversed(tx.rows({"r": reward, "d": done})):
+        for step in reversed(expex.rows({"r": reward, "d": done})):
             g = step["r"] + gamma * g * (1 - step["d"])
             out.append({"g": g})
-        return tx.stack(out)["g"][::-1]
+        return expex.stack(out)["g"][::-1]
 
     r = jnp.array([1.0, 2.0, 3.0, 4.0])
     d = jnp.array([0.0, 1.0, 0.0, 0.0])
@@ -619,4 +619,4 @@ def test_rows_stack_and_reversed():
 
     assert both(rev, jnp.arange(4.0)).tolist() == [9.0, 4.0, 1.0, 0.0]
     with pytest.raises(ValueError, match="leading axes differ"):
-        tx.rows((jnp.ones(2), jnp.ones(3)))
+        expex.rows((jnp.ones(2), jnp.ones(3)))

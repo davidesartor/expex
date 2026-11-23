@@ -1,4 +1,4 @@
-"""tx.debug.watch: activation and gradient statistics of every typed call."""
+"""expex.debug.watch: activation and gradient statistics of every typed call."""
 
 import sys
 from pathlib import Path
@@ -9,9 +9,9 @@ import jax.random as jr
 import numpy as np
 import pytest
 
-import typax as tx
-from typax import f32, fn
-from typax._watch import watch
+import expex
+from expex import f32, fn
+from expex._watch import watch
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "examples"))
 from transformer import Transformer  # noqa: E402
@@ -79,7 +79,7 @@ def test_planted_scale_is_flagged(setup):
     assert len(flagged) == len(w.flagged) and "blocks[1].mlp.__call__" in "".join(flagged)
 
 
-@tx.struct
+@expex.struct
 class Logs[D]:
     w: f32[D, D]
 
@@ -87,7 +87,7 @@ class Logs[D]:
         return jnp.log(x @ self.w)
 
 
-@tx.struct
+@expex.struct
 class Net[D]:
     layers: list[Logs[D]]
 

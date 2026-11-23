@@ -36,5 +36,5 @@ def test_mypy():
     cmd = [sys.executable, "-m", "mypy", "--no-incremental"]
     r = subprocess.run([*cmd, str(USAGE)], capture_output=True, text=True, cwd=ROOT)
     assert error_lines(r.stdout) == EXPECTED, r.stdout
-    r = subprocess.run([*cmd, "src/typax"], capture_output=True, text=True, cwd=ROOT)
+    r = subprocess.run([*cmd, "src/expex"], capture_output=True, text=True, cwd=ROOT)
     assert r.returncode == 0, r.stdout

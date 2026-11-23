@@ -2,7 +2,7 @@
 
 Python cannot evaluate ``T + 1`` when ``T`` is a type parameter. Python 3.14
 evaluates annotations lazily, so such an annotation is still available as
-text; typax evaluates that text again with every size, parameter and field of
+text; expex evaluates that text again with every size, parameter and field of
 ``self`` replaced by a :class:`Sym`, which records the arithmetic as an
 expression.
 """
@@ -85,17 +85,17 @@ class _Self:
 
 
 def caller_locals() -> dict[str, Any]:
-    """The local variables where a decorator is being applied (outside typax).
+    """The local variables where a decorator is being applied (outside expex).
 
-    An annotation typax evaluates from its text sees only the module's globals,
+    An annotation expex evaluates from its text sees only the module's globals,
     so a class defined inside a function would not be found. This is what lets
-    typax find it. Inside a class body, the enclosing function's locals are
+    expex find it. Inside a class body, the enclosing function's locals are
     included too.
     """
     import sys
 
     f = sys._getframe(1)
-    while f is not None and f.f_globals.get("__name__", "").split(".")[0] == "typax":
+    while f is not None and f.f_globals.get("__name__", "").split(".")[0] == "expex":
         f = f.f_back  # type: ignore[assignment]
     out: dict[str, Any] = {}
     for _ in range(2):

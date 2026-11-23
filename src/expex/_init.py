@@ -2,7 +2,7 @@
 
 ::
 
-    @tx.struct
+    @expex.struct
     class Linear[I, O]:
         w: f32[O, I] = jax.nn.initializers.lecun_normal(in_axis=-1, out_axis=-2)
         b: f32[O] = 0.0

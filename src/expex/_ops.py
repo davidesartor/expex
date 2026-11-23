@@ -48,7 +48,7 @@ def local_(value: Any, ann: Callable[[], Any], name: str, site: str) -> Any:
             spec = parse(ann())
             if not spec.leafy:
                 spec = None
-        except Exception:  # not a typax annotation, or names not available here
+        except Exception:  # not a expex annotation, or names not available here
             spec = None
         _LOCAL_SPECS[site] = spec
     if spec is None:
