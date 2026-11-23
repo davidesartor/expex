@@ -1,5 +1,7 @@
 """Axes by name: ``x.sum(T)`` and ``axis=T`` inside an ``@fn``."""
 
+from __future__ import annotations
+
 import jax
 import jax.numpy as jnp
 import pytest
@@ -108,14 +110,15 @@ def test_size_names_are_sizes_as_values():
     def init[*B, T](x: f32[*B, T]) -> f32[*B, T]:
         return jnp.zeros((*B, T))
 
-    @fn(U="T + 1")
-    def pad[T, U](x: f32[T]) -> f32[U]:
-        return jnp.zeros(U).at[:T].set(x)
+    @fn
+    def pad[T](x: f32[T]) -> f32[T + 1]:
+        return jnp.zeros(T + 1).at[:T].set(x)
 
-    @fn(H="heads", K="D // heads", where="D % heads == 0")
-    def split[T, D, H, K](x: f32[T, D], heads: int) -> f32[H, T, K]:
-        h: f32[T, H, K] = x.reshape(T, H, K)  # sizes in the reshape, names in the annotation
-        return h.transpose(H, T, K)  # axes in the transpose
+    @fn
+    def split[T, D](x: f32[T, D], heads: int) -> f32[heads, T, D // heads]:
+        assert D % heads == 0
+        h: f32[T, heads, D // heads] = x.reshape(T, heads, D // heads)  # sizes in the reshape and annotation
+        return h.transpose(1, 0, 2)
 
     @fn
     def mean[N, D](x: f32[N, D]) -> f32[D]:

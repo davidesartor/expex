@@ -142,7 +142,9 @@ def _enclosing_class(raw: Callable[..., Any]) -> type | None:
 
 def _annotations(raw: Callable[..., Any], localns: dict[str, Any]) -> dict[str, Any]:
     try:
-        return inspect.get_annotations(raw, eval_str=True)
+        anns = inspect.get_annotations(raw, eval_str=True)
+        if not any(isinstance(v, str) for v in anns.values()):  # e.g. quoted twice
+            return anns
     except Exception:
         pass
     # Some annotation could not be evaluated (e.g. a TYPE_CHECKING-only import).
@@ -210,12 +212,15 @@ class Fn(Generic[P, R]):
             where = [where]
         self.where = [Expr(w, constraint=True) for w in where]
         #: Leading `assert`s on sizes in the body: constraints like `where`.
-        self._asserted: list[Expr] = []
-        for w in getattr(self._impl, "__typax_where__", ()):
+        self._groups: list[list[Expr]] = []
+        for group in getattr(self._impl, "__typax_where__", ()):
             try:
-                self._asserted.append(Expr(w, constraint=True))
+                self._groups.append([Expr(w, constraint=True) for w in group])
             except Exception:
-                pass
+                self._groups.append([])
+        #: Which leading asserts are constraints (the body skips those).
+        self._lifted = {i for i, g in enumerate(self._groups) if g}
+        self._asserted = [e for g in self._groups for e in g]
         self.where += self._asserted
 
         derived = self.defs
@@ -235,6 +240,14 @@ class Fn(Generic[P, R]):
             if isinstance(v, str) and anns.get(k, inspect.Parameter.empty) is inspect.Parameter.empty
         }  # fmt: skip
         self._lazy = bool(self._pending)
+        names = list(self._sig.parameters)
+        if self._pending and not (names and names[0] in ("self", "cls")):
+            # not a method, so no class sizes to wait for: report a misspelt size now
+            glb = getattr(raw, "__globals__", {})
+            scope = {**self._localns, **{p.__name__: p for p in getattr(raw, "__type_params__", ())}}
+            raw_texts = _raw_annotations(raw)
+            for k in self._pending:
+                self._unknown_in(k, raw_texts.get(k), glb, scope, names)
         self._derive = derive
         self.params: dict[str, Param] = {}
         for name, p in self._sig.parameters.items():
@@ -282,8 +295,8 @@ class Fn(Generic[P, R]):
         self.input_names: set[str] = set()
         for prm in self.params.values():
             prm.spec.names(self.input_names)
-        # Static int parameters may be used by name in derived sizes and constraints,
-        # e.g. @fn(H="heads", where="D % heads == 0").
+        # Int parameters may be used by name in sizes and constraints:
+        # -> f32[heads, D // heads], assert D % heads == 0
         used: set[str] = set()
         for expr in [*self.defs.values(), *self.where]:
             used |= expr.names
@@ -308,7 +321,10 @@ class Fn(Generic[P, R]):
         pending_owner = first in ("self", "cls") and not getattr(self, "_resolved", False)
         if self._asserted and not pending_owner:
             # an assert that is not about sizes after all stays an ordinary assert
-            drop = [e for e in self._asserted if not e.names <= known]
+            # (e.g. `assert flag == 1` on a non-int parameter): the body checks it
+            bad = {i for i, g in enumerate(self._groups) if any(not e.names <= known for e in g)}
+            self._lifted -= bad
+            drop = [e for i in bad for e in self._groups[i]]
             self.where = [w for w in self.where if w not in drop]
             self._asserted = [e for e in self._asserted if e not in drop]
             used = set().union(*(e.names for e in [*self.defs.values(), *self.where]))
@@ -318,8 +334,8 @@ class Fn(Generic[P, R]):
         maybe_method = self._owner is None and first in ("self", "cls")
         if unknown and not (maybe_method and not getattr(self, "_resolved", False)):
             raise TypeError(
-                f"{self.name}: {', '.join(sorted(unknown))} used in a derived size or `where` "
-                f"constraint is neither a dimension in the signature nor a Static parameter."
+                f"{self.name}: {', '.join(sorted(unknown))} used in a size or a constraint is "
+                f"neither a size of the signature, nor an int parameter, nor a field of self."
             )
         self.input_names -= set(self.static_refs) | set(self.field_refs)
         self._avail = self.input_names | set(self.static_refs) | set(self.field_refs)
@@ -366,6 +382,7 @@ class Fn(Generic[P, R]):
                 try:
                     spec = parse(_sym.evaluate(text, glb, scope, self.params))
                 except Exception:
+                    self._unknown_in(k, text, glb, scope, self.params)
                     continue
                 spec.names(self._declared)
                 if self.defs:
@@ -432,6 +449,28 @@ class Fn(Generic[P, R]):
             with _rng.child(key):
                 return self._run_checked(args, kwargs, env, force)
         return self._run_checked(args, kwargs, env, force)
+
+    def _unknown_in(
+        self, where: str, text: Any, glb: dict[str, Any], scope: dict[str, Any], params: Any
+    ) -> None:
+        """Raise if an array annotation names something undefined (a misspelt size, say).
+
+        Other unresolvable annotations (a ``TYPE_CHECKING``-only class) are ignored.
+        """
+        if not isinstance(text, str):
+            return
+        try:
+            value, missing = _sym.unknown_names(text, glb, scope, params)
+            leafy = parse(value).leafy
+        except Exception:
+            return
+        if missing and leafy:
+            what = "the result" if where == "return" else f"`{where}`"
+            raise TypeError(
+                f"{self.name}: the annotation of {what} ({text}) uses "
+                f"{', '.join(sorted(missing))}, which is not defined. Sizes are type "
+                f"parameters (def f[T, D](...)), int parameters, or fields of self."
+            )
 
     def _own_key(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
         """For a random function with its own ``key`` parameter: derive the implicit keys from it."""

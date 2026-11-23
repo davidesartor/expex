@@ -140,7 +140,9 @@ def evaluate(text: str, glb: dict[str, Any], scope: dict[str, Any], params: Any 
     Raises if a name is unknown (e.g. a class that is not defined yet).
     """
     try:
-        return eval(text, glb, scope)  # noqa: S307 - as typing.get_type_hints
+        out = eval(text, glb, scope)  # noqa: S307 - as typing.get_type_hints
+        # a quoted annotation in a file with `from __future__ import annotations`
+        return evaluate(out, glb, scope, params) if isinstance(out, str) else out
     except NameError:
         pass  # perhaps a parameter, or self: try symbolically
     except TypeError:
@@ -154,4 +156,25 @@ def evaluate(text: str, glb: dict[str, Any], scope: dict[str, Any], params: Any 
     for p in params:
         sym.setdefault(p, Sym(p))
     sym["self"] = _Self()
-    return eval(text, glb, sym)  # noqa: S307
+    out = eval(text, glb, sym)  # noqa: S307
+    return evaluate(out, glb, scope, params) if isinstance(out, str) else out
+
+
+def unknown_names(text: str, glb: dict[str, Any], scope: dict[str, Any], params: Any = ()) -> tuple[Any, set[str]]:
+    """Evaluate with every unknown name as a size; return the value and those names."""
+    import builtins
+
+    missing: set[str] = set()
+
+    class Loose(dict):  # type: ignore[type-arg]
+        def __missing__(self, name: str) -> Any:
+            if name in glb or hasattr(builtins, name):
+                raise KeyError(name)
+            missing.add(name)
+            return Sym(name)
+
+    ns = Loose({k: (Sym(k, is_dim=True) if isinstance(v, typing.TypeVar) else v) for k, v in scope.items()})
+    for p in params:
+        ns.setdefault(p, Sym(p))
+    ns["self"] = _Self()
+    return eval(text, glb, ns), missing  # noqa: S307

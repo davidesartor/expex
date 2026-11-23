@@ -185,8 +185,8 @@ def test_lift_option_and_forward_references():
 class Poly[*B, K](__import__("typing").NamedTuple):
     c: "f32[*B, K]"
 
-    @fn(M="m")
-    def pad_to[M](self, m: Static[int]) -> "Poly[*B, M]":
+    @fn
+    def pad_to(self, m: Static[int]) -> "Poly[*B, m]":
         extra = jnp.zeros(self.c.shape[:-1] + (m - self.c.shape[-1],))
         return Poly(jnp.concatenate([self.c, extra], -1))
 
@@ -203,8 +203,8 @@ class Poly[*B, K](__import__("typing").NamedTuple):
 def test_methods_can_name_their_own_class():
     p = Poly(jnp.ones((2, 3)))
     assert p.pad_to(5).c.shape == (2, 5)
-    assert "-> Poly[*B, M]" in repr(Poly.pad_to)
-    assert str(Poly.pad_to.ret.fields["c"]) == "f32[*B, m]"  # M is tied to the argument
+    assert "-> Poly[*B, m]" in repr(Poly.pad_to)
+    assert str(Poly.pad_to.ret.fields["c"]) == "f32[*B, m]"  # the size is the argument
     assert Poly.zeros(jnp.ones(4)).c.shape == (4,)
     with pytest.raises(ShapeError, match=r"declared  return.c: f32\[\*B, K\]"):
         p.bad()
@@ -215,8 +215,8 @@ def test_tx_jit_reads_static_arguments_from_the_signature():
     calls = []
 
     @tx.jit
-    @fn(K="N * n")
-    def tile[N, K](x: f32[N], n: int, lr: float, mode: str = "a") -> f32[K]:
+    @fn
+    def tile[N](x: f32[N], n: int, lr: float, mode: str = "a") -> "f32[N * n]":  # quoted: no __future__ import here
         calls.append(1)
         return jnp.tile(x, n) * lr
 

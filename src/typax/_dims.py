@@ -138,8 +138,9 @@ def parse_dim(item: Any, subst: dict[Any, Any]) -> Any:
         return DName(item.__name__)
     if isinstance(item, str):
         raise DimError(
-            f"{item!r}: sizes are type parameters, not strings. Declare it in the "
-            f"signature (def f[T](...)), and a derived size with @tx.fn(U=\"T + 1\")."
+            f"{item!r}: sizes are type parameters, not strings. Declare them in the "
+            f"signature (def f[T](...)) and compute with them directly: f32[T + 1] "
+            f"(Python 3.14, or `from __future__ import annotations` before)."
         )
     raise DimError(
         f"{item!r} is not a valid dimension. Use a type parameter, Literal[n], "

@@ -565,7 +565,7 @@ class _Converter:
         self.n = 0
         self.count = 0
         self.sizes = 0  # uses of size names in the body
-        self.lifted: list[str] = []  # leading asserts on sizes, as constraints
+        self.lifted: list[list[str]] = []  # leading asserts on sizes, as constraints
         self.uses_return_flag = False
         args = fdef.args
         params = [a.arg for a in args.posonlyargs + args.args + args.kwonlyargs]
@@ -1043,7 +1043,7 @@ def _axis_names(raw: Any, fdef: ast.FunctionDef) -> set[str]:
     return out
 
 
-def _size_asserts(fdef: ast.FunctionDef, sizes: set[str]) -> list[str]:
+def _size_asserts(fdef: ast.FunctionDef, sizes: set[str]) -> list[tuple[ast.Assert, list[str]]]:
     """The leading ``assert``s that only compare sizes, parameters and fields of ``self``.
 
     ``assert D % heads == 0`` becomes the constraint ``D % heads == 0``: checked
@@ -1072,7 +1072,7 @@ def _size_asserts(fdef: ast.FunctionDef, sizes: set[str]) -> list[str]:
         def visit_Attribute(self, node: ast.Attribute) -> Any:
             return ast.Name(id=node.attr, ctx=ast.Load())
 
-    out: list[str] = []
+    out: list[tuple[ast.Assert, list[str]]] = []
     body = fdef.body
     start = 1 if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) else 0
     for s in body[start:]:
@@ -1081,7 +1081,7 @@ def _size_asserts(fdef: ast.FunctionDef, sizes: set[str]) -> list[str]:
         tests = s.test.values if isinstance(s.test, ast.BoolOp) and isinstance(s.test.op, ast.And) else [s.test]
         if not all(isinstance(t, ast.Compare) and plain(t) for t in tests):
             break
-        out += [ast.unparse(Unself().visit(copy.deepcopy(t))) for t in tests]
+        out.append((s, [ast.unparse(Unself().visit(copy.deepcopy(t))) for t in tests]))
     return out
 
 
@@ -1199,6 +1199,14 @@ def _rewrite(tree: ast.Module, fdef: ast.FunctionDef, raw: Any) -> tuple[_Conver
     code = raw.__code__
     ast.increment_lineno(tree, code.co_firstlineno - 1)
     lifted = _size_asserts(fdef, _axis_names(raw, fdef))
+    # An assert that became a constraint is checked before the body runs (or
+    # after, if it involves the result): the body skips it then.
+    for i, (stmt, _) in enumerate(lifted):
+        guard = ast.If(
+            test=ast.UnaryOp(op=ast.Not(), operand=_call("lifted_", ast.Constant(i))),
+            body=[stmt], orelse=[],
+        )  # fmt: skip
+        fdef.body[fdef.body.index(stmt)] = _locate(guard, stmt)
     conv = _Converter(fdef, code.co_filename, set(getattr(raw, "__globals__", {})) | set(code.co_freevars))
     conv.rewrite_appends(fdef.body)
     conv.rewrite_inplace(fdef.body)
@@ -1208,7 +1216,7 @@ def _rewrite(tree: ast.Module, fdef: ast.FunctionDef, raw: Any) -> tuple[_Conver
     fdef.body = [exprs.visit(s) for s in fdef.body]
     n_locals += exprs.named  # axes by name need the call's sizes, as checked locals do
     conv.sizes = exprs.named
-    conv.lifted = lifted
+    conv.lifted = [srcs for _, srcs in lifted]
     fdef.body = conv.lower_jumps(fdef.body)
     if any(
         isinstance(s, ast.If) and (_returns_via_ifs(s.body) or _returns_via_ifs(s.orelse))

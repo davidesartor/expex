@@ -1,5 +1,7 @@
 """The prover: shape proofs from annotations alone."""
 
+from __future__ import annotations
+
 from typing import NamedTuple
 
 import pytest
@@ -63,16 +65,16 @@ def test_dtype_mismatch():
 
 
 def test_derived_dims():
-    @fn(U="T + 1")
-    def pad[B, T, U](x: f32[B, T]) -> f32[B, U]:
+    @fn
+    def pad[B, T](x: f32[B, T]) -> f32[B, T + 1]:
         return jnp.pad(x, ((0, 0), (0, 1)))
 
-    @fn(U="2 * T")
-    def half[T, U](x: f32[U]) -> f32[T]:
+    @fn
+    def half[T](x: f32[2 * T]) -> f32[T]:
         return x[::2]
 
-    @fn(U="T + 2")
-    def wrong[B, T, U](x: f32[B, T]) -> f32[B, U]:
+    @fn
+    def wrong[B, T](x: f32[B, T]) -> f32[B, T + 2]:
         return jnp.pad(x, ((0, 0), (0, 1)))
 
     assert status(pad) == "proved"
@@ -82,8 +84,9 @@ def test_derived_dims():
 
 
 def test_where_is_assumed():
-    @fn(where="T >= 2")
+    @fn
     def pairs[T, P](x: f32[T]) -> f32[P]:
+        assert T >= 2
         return x[1:] - x[:-1]
 
     assert status(pairs) == "proved"
@@ -137,8 +140,9 @@ def test_plain_python_parameters_are_static_and_get_automatic_examples():
         heads: int = 2
         scale: float = 1.0
 
-    @fn(H="heads", where="D % heads == 0")
-    def split[T, D, H](x: f32[T, D], heads: int, flip: bool, how: Literal["a", "b"], mode: Mode, cfg: Cfg) -> f32[H, T]:
+    @fn
+    def split[T, D](x: f32[T, D], heads: int, flip: bool, how: Literal["a", "b"], mode: Mode, cfg: Cfg) -> f32[heads, T]:
+        assert D % heads == 0
         y = x.reshape(x.shape[0], heads, x.shape[1] // heads).sum(-1).T
         return -y if flip else y * cfg.scale
 
@@ -149,8 +153,8 @@ def test_plain_python_parameters_are_static_and_get_automatic_examples():
 
 
 def test_failure_names_the_static_case():
-    @fn(examples={"n": [1, 2]}, U="2 * T")
-    def rep[T, U](x: f32[T], n: Static[int]) -> f32[U]:
+    @fn(examples={"n": [1, 2]})
+    def rep[T](x: f32[T], n: Static[int]) -> f32[2 * T]:
         return jnp.tile(x, n)
 
     r = prove(rep)
@@ -164,9 +168,14 @@ def test_reshape_needs_its_constraint():
 
     # Without the constraint the function is wrong for odd D, and the prover says so.
     r = prove(fn(heads))
-    assert r.status == "error" and "where=" in r.detail
+    assert r.status == "error" and ("where=" in r.detail or "assert" in r.detail)
     # With it, the reshape is provably size-preserving.
-    assert status(fn(where="D % 2 == 0")(heads)) == "proved"
+    def heads_even[B, D](x: f32[B, D], n: Static[int] = 2) -> f32[B, D]:
+        assert D % 2 == 0
+        b, d = x.shape
+        return x.reshape(b, n, d // n).reshape(b, d)
+
+    assert status(fn(heads_even)) == "proved"
 
 
 def test_reshape_is_validated_symbolically():
@@ -214,7 +223,13 @@ def test_size_one_is_tried():
         return jnp.max(x[1:] - x[:-1])  # empty for T == 1
 
     assert status(diff_max) == "error"
-    assert status(fn(where="T >= 2")(diff_max.raw)) == "proved"
+
+    @fn
+    def diff_max2[T](x: f32[T]) -> f32:
+        assert T >= 2
+        return jnp.max(x[1:] - x[:-1])
+
+    assert status(diff_max2) == "proved"
 
 
 def test_untraceable_function_is_an_error_with_hint():
@@ -361,8 +376,9 @@ def test_format_reports():
 
 
 def test_sizes_can_refer_to_static_arguments():
-    @fn(H="heads", K="D // heads", where="D % heads == 0", examples={"heads": [1, 2, 4]})
-    def split[T, D, H, K](x: f32[T, D], heads: Static[int]) -> f32[H, T, K]:
+    @fn(examples={"heads": [1, 2, 4]})
+    def split[T, D](x: f32[T, D], heads: Static[int]) -> f32[heads, T, D // heads]:
+        assert D % heads == 0
         t, d = x.shape
         return x.reshape(t, heads, d // heads).transpose(1, 0, 2)
 
@@ -372,16 +388,16 @@ def test_sizes_can_refer_to_static_arguments():
     r = prove(split)
     assert r.status == "proved" and r.cases == 3, r
 
-    @fn(N="n", examples={"n": [3]})
-    def wrong[T, N](x: f32[T], n: Static[int]) -> f32[N, T]:
+    @fn(examples={"n": [3]})
+    def wrong[T](x: f32[T], n: Static[int]) -> f32[n, T]:
         return jnp.stack([x] * (n + 1))
 
     with pytest.raises(tx.ShapeError, match=r"axis 0 should be n = 3 \(with n=3\), but is 4"):
         wrong(jnp.ones(2), 3)
     assert status(wrong) == "failed"
 
-    @fn(N="n")
-    def default[T, N](x: f32[T], n: Static[int] = 2) -> f32[N, T]:
+    @fn
+    def default[T](x: f32[T], n: Static[int] = 2) -> f32[n, T]:
         return jnp.stack([x] * n)
 
     assert default(jnp.ones(3)).shape == (2, 3)
@@ -389,7 +405,7 @@ def test_sizes_can_refer_to_static_arguments():
 
 
 def test_unknown_name_in_expression_is_rejected():
-    with pytest.raises(TypeError, match="Q used in a derived size"):
+    with pytest.raises(TypeError, match="uses Q, which is not defined"):
 
-        @fn(U="Q + 1")
-        def f[T, U](x: f32[T]) -> f32[U]: ...
+        @fn
+        def f[T](x: f32[T]) -> f32[Q + 1]: ...

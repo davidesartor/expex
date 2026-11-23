@@ -45,6 +45,13 @@ def axis_name(v: Any) -> str | None:
     return None
 
 
+def lifted_(i: int) -> bool:
+    """Is the body's ``i``-th leading assert checked as a constraint (so the body skips it)?"""
+    from ._ops import CALLS
+
+    return bool(CALLS.stack) and i in getattr(CALLS.stack[-1][1], "_lifted", ())
+
+
 def size_(name: Any) -> Any:
     """``T`` used as a value inside an ``@fn``: its size in the current call.
 
@@ -71,7 +78,7 @@ def size_(name: Any) -> Any:
         return fn.defs[n](env.dims)  # a derived size, e.g. U = T + 1
     raise ShapeError(
         f"{getattr(fn, 'name', '?')}(): the size {n.lstrip('*')} is not known in this call: only sizes that appear in "
-        f"the arguments, or are derived from them (@fn(U=\"T + 1\")), are known inside "
+        f"the arguments, or are computed from them in an annotation, are known inside "
         f"the body."
     )
 

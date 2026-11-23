@@ -596,7 +596,7 @@ def _prove_case(
         if sym_err is None:
             hint = (
                 "\nThe function is fine for symbolic sizes but not for these. If it is not "
-                "meant to support them, say so: @fn(where=\"...\")."
+                "meant to support them, say so with an `assert` at the top of the body."
             )
         return Report(
             f, ERROR,

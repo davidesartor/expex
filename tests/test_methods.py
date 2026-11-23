@@ -26,8 +26,9 @@ class Linear[I, O]:
     def wrong[B](self, x: f32[B, I]) -> f32[B, I]:
         return x @ self.w.T
 
-    @fn(where="I >= 2")
+    @fn
     def first_two(self, x: f32[I]) -> f32[2]:  # type: ignore[valid-type]
+        assert I >= 2
         return x[:2]
 
 

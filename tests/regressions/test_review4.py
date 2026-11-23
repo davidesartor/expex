@@ -1,5 +1,7 @@
 """Bugs found by the fourth review (composable decorators, plain jax.jit)."""
 
+from __future__ import annotations
+
 import gc
 
 import jax
@@ -80,8 +82,9 @@ def test_old_remat_strings_name_the_replacement():
 
 
 def test_scalar_int_arrays_bind_sizes():
-    @fn(where="D % heads == 0")
+    @fn
     def split[D](x: f32[D], heads: int) -> f32:
+        assert D % heads == 0
         return x.sum()
 
     with pytest.raises(tx.ShapeError, match="D % heads == 0"):
@@ -89,14 +92,15 @@ def test_scalar_int_arrays_bind_sizes():
 
 
 def test_jitted_methods_bound_to_instances_work_with_tools():
-    @tx.struct(where="D >= heads")
+    @tx.struct
     class S[D]:
         w: f32[D]
         heads: int = 2
 
         @jax.jit
-        @fn(H="heads")
-        def jitted[H](self, x: f32[D]) -> f32[H]:
+        @fn
+        def jitted(self, x: f32[D]) -> f32[self.heads]:
+            assert D >= self.heads
             return x[: self.heads] * self.w[: self.heads]
 
         @jax.jit
@@ -184,3 +188,27 @@ def test_number_parameters_check_kind_and_literal_and_enum_values():
 
     with pytest.raises(tx.ShapeError, match="expected an integer scalar"):
         jax.jit(g)(jnp.ones(3), 2.0)  # a float, not "mark it static"
+
+
+def test_constraint_on_an_output_size_is_checked_after_the_call():
+    @fn
+    def top[T, K](x: f32[T]) -> f32[K]:
+        assert K <= T  # K only appears in the result
+        return jnp.concatenate([x, x])
+
+    with pytest.raises(tx.ShapeError, match=r"constraint `K <= T` is violated \(K=6, T=3\)"):
+        top(jnp.ones(3))
+
+
+def test_quoted_annotations_under_future_import_are_read():
+    import typing
+
+    class Poly[*B, K](typing.NamedTuple):
+        c: "f32[*B, K]"
+
+        @fn
+        def pad_to(self, m: tx.Static[int]) -> "Poly[*B, m]":
+            return Poly(jnp.pad(self.c, [(0, 0)] * (self.c.ndim - 1) + [(0, m - self.c.shape[-1])]))
+
+    assert "-> Poly[*B, m]" in repr(Poly.pad_to)
+    assert Poly(jnp.ones((2, 3))).pad_to(5).c.shape == (2, 5)

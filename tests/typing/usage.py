@@ -1,5 +1,7 @@
 """Type-checked by pyright and mypy in tests/test_typing.py; never executed."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Any, Literal, NamedTuple, assert_type
 
@@ -32,8 +34,9 @@ def attend[B, T, D](q: f32[B, T, D], k: f32[B, T, D]) -> f32[B, T, T]:
     return jnp.einsum("btd,bsd->bts", q, k)
 
 
-@fn(U="T + 1", where="T >= 2")
-def pad[B, T, U](x: f32[B, T]) -> f32[B, U]:
+@fn
+def pad[B, T](x: f32[B, T]) -> f32[B, T + 1]:  # type: ignore[valid-type]  # size arithmetic
+    assert T >= 2  # type: ignore[misc]
     return jnp.pad(x, ((0, 0), (0, 1)))
 
 

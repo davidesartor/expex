@@ -1,5 +1,7 @@
 """@tx.struct: typed, immutable modules that JAX can trace."""
 
+from __future__ import annotations
+
 from typing import Callable
 
 import pytest
@@ -162,13 +164,14 @@ def test_lists_of_different_layers_still_unroll():
     assert jax.jit(lambda m, x: m(x))(mlp, jnp.ones((4, 3))).shape == (4, 2)
 
 
-@tx.struct(where="D % heads == 0")
+@tx.struct
 class Heads[D]:
     w: f32[D, D]
     heads: int = 2
 
-    @fn(H="heads", K="D // heads")
-    def split[T, H, K](self, x: f32[T, D]) -> f32[H, T, K]:
+    @fn
+    def split[T](self, x: f32[T, D]) -> f32[self.heads, T, D // self.heads]:
+        assert D % self.heads == 0
         t, d = x.shape
         return x.reshape(t, self.heads, d // self.heads).transpose(1, 0, 2)
 
@@ -199,13 +202,18 @@ def test_invariants_are_checked_and_assumed():
     assert "-> f32[heads, T, D // heads]" in repr(Heads.split)
 
 
+def test_struct_where_is_rejected():
+    with pytest.raises(TypeError, match="@tx.struct got where=.*write invariants as an `assert`"):
+        tx.struct(where="D % heads == 0")
+
+
 def test_module_lift():
     m = Heads(jnp.eye(4) * 2, heads=2)
     assert m.lift(jnp.ones((5, 4))).shape == (5, 4)
     assert jnp.allclose(m.lift(jnp.ones((5, 4))), 2.0)
 
 
-@tx.struct(where="D % heads == 0")
+@tx.struct
 class Attn[D]:
     wq: f32[D, D]
     wo: f32[D, D]
@@ -218,6 +226,7 @@ class Attn[D]:
         self.heads = heads
 
     def __call__[T](self, x: f32[T, D]) -> f32[T, D]:
+        assert D % self.heads == 0
         return x @ self.wq @ self.wo
 
 

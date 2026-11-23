@@ -1,5 +1,7 @@
 """Call-time checking of arguments and return values."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Any, Literal, NamedTuple
 
@@ -192,14 +194,14 @@ def test_two_variadics_rejected():
 
 
 def test_derived_dims():
-    @fn(U="T + 1")
-    def pad[B, T, U](x: f32[B, T]) -> f32[B, U]:
+    @fn
+    def pad[B, T](x: f32[B, T]) -> f32[B, T + 1]:
         return jnp.pad(x, ((0, 0), (0, 1)))
 
     assert pad(jnp.ones((2, 3))).shape == (2, 4)
 
-    @fn(U="T + 1")
-    def wrong[B, T, U](x: f32[B, T]) -> f32[B, U]:
+    @fn
+    def wrong[B, T](x: f32[B, T]) -> f32[B, T + 1]:
         return x
 
     with pytest.raises(ShapeError, match=r"axis 1 should be T \+ 1 = 4 \(with T=3\), but is 3"):
@@ -207,8 +209,8 @@ def test_derived_dims():
 
 
 def test_derived_dim_solved_from_input():
-    @fn(U="2 * T")
-    def half[T, U](x: f32[U]) -> f32[T]:
+    @fn
+    def half[T](x: f32[2 * T]) -> f32[T]:
         return x[::2]
 
     assert half(jnp.ones(6)).shape == (3,)
@@ -216,28 +218,36 @@ def test_derived_dim_solved_from_input():
         half(jnp.ones(7))
 
 
-def test_derived_dim_must_be_in_signature():
-    with pytest.raises(TypeError, match="`U` does not appear"):
+def test_derived_dim_keyword_is_rejected():
+    with pytest.raises(TypeError, match="@tx.fn got U='T \\+ 1': write the size in the annotation instead"):
 
         @fn(U="T + 1")
         def f[T](x: f32[T]) -> f32[T]: ...
 
+    with pytest.raises(TypeError, match="@tx.fn got where='T >= 2': write the constraint as an `assert`"):
+
+        @fn(where="T >= 2")
+        def g[T](x: f32[T]) -> f32[T]: ...
+
 
 def test_where():
-    @fn(where="T >= 2")
+    @fn
     def diff[T](x: f32[T]) -> f32[T]:
+        assert T >= 2
         return x
 
     diff(jnp.ones(2))
     with pytest.raises(ShapeError, match=r"constraint `T >= 2` is violated \(T=1\)"):
         diff(jnp.ones(1))
 
-    @fn(where=["K <= T"])
-    def top[T, K](x: f32[T]) -> f32[K]:
-        return jnp.concatenate([x, x])
+    @fn
+    def top[T, K](x: f32[T], k: f32[K]) -> f32[K]:
+        assert K <= T
+        return k
 
-    with pytest.raises(ShapeError, match="constraint `K <= T` is violated"):
-        top(jnp.ones(3))
+    assert top(jnp.ones(3), jnp.ones(2)).shape == (2,)
+    with pytest.raises(ShapeError, match=r"constraint `K <= T` is violated \(K=6, T=3\)"):
+        top(jnp.ones(3), jnp.ones(6))
 
 
 class Params[D](NamedTuple):
@@ -363,8 +373,8 @@ def test_static():
         jax.jit(zeros)((2, 3))
     assert jax.jit(zeros, static_argnames="shape")((2, 3)).shape == (2, 3)
 
-    @fn(K="n")
-    def first[N, K](x: f32[N], n: int) -> f32[K]:
+    @fn
+    def first[N](x: f32[N], n: int) -> f32[n]:
         return x[:n]
 
     with pytest.raises(StageError, match='`n` sets a size.*static_argnames="n"'):
@@ -554,14 +564,20 @@ def test_hints():
 
 def test_info():
     @tx.lift
-    @fn(U="T + 1", where="T >= 2")
-    def pad[B, T, U](x: f32[B, T]) -> f32[B, U]:
+    @fn
+    def pad[B, T](x: f32[B, T]) -> f32[B, T + 1]:
         return jnp.pad(x, ((0, 0), (0, 1)))
 
     text = pad.info()
-    assert "pad[B, T, U](x: f32[B, T]) -> f32[B, T + 1]" in text
-    assert "U = T + 1" in text and "where T >= 2" in text and "options: lift" in text
+    assert "pad[B, T](x: f32[B, T]) -> f32[B, T + 1]" in text and "options: lift" in text
     assert "not converted (no control flow to convert)" in text
+
+    @fn
+    def diff[T](x: f32[T]) -> f32[T - 1]:
+        assert T >= 2
+        return x[1:]
+
+    assert "where T >= 2" in diff.info()
 
 
 def test_show_and_scoped_config():
