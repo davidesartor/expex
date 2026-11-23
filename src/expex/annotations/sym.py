@@ -185,6 +185,9 @@ def evaluate(text: str, glb: dict[str, Any], scope: dict[str, Any], params: Any 
     for p in params:
         sym.setdefault(p, Sym(p))
     sym["self"] = _Self()
+    from .jaxtyping import stand_ins
+
+    sym.update(stand_ins(text, glb, scope))  # Float[Array, "b t"] with jaxtyping imported only for type checkers
     out = eval(text, glb, sym)  # noqa: S307
     return evaluate(out, glb, scope, params) if isinstance(out, str) else out
 

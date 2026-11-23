@@ -47,6 +47,7 @@ import numpy as np
 
 from ..annotations.errors import coded
 from ..annotations.spec import fn_fixed_sizes
+from ..function import BoundFn, unwrap
 from .trace import Target, resolve, source_of, sub_jaxprs
 
 type Mono = tuple[tuple[str, int], ...]  # ((name, power), ...) sorted by name
@@ -246,10 +247,12 @@ def arrays(tree: Any) -> list[Any]:
     return [x for x in leaves if hasattr(x, "shape") and hasattr(x, "dtype") and not jnp.issubdtype(x.dtype, jax.dtypes.prng_key)]  # fmt: skip
 
 
-def _count(s: Target, n: int) -> tuple[Poly, Poly | None, tuple[str, Poly] | None, list[str], list[str]]:
+def _count(
+    s: Target, n: int, preset: dict[str, int] | None = None
+) -> tuple[Poly, Poly | None, tuple[str, Poly] | None, list[str], list[str]]:
     """Trace once with lists of length ``n``: (flops, parameters, largest value, notes, lists)."""
     f = s.f
-    jaxpr, arguments, lists = s.trace(n)
+    jaxpr, arguments, lists = s.trace(n, preset)
     notes: list[str] = []
     total = flops(jaxpr, notes)
     first = next(iter(f.params))
@@ -297,9 +300,23 @@ def cost(target: Any, config: Any = None, /, **sizes: Any) -> Cost:
     f, sizes, static_kw, notes = s.f, s.sizes, s.static_kw, s.notes
 
     aliases: set[str] = set()
-    fl, params, largest, more, lists = _count(s, 1)
+    preset = None
+    try:
+        fl, params, largest, more, lists = _count(s, 1)
+    except Exception:
+        if not isinstance(unwrap(target), BoundFn):
+            raise
+        # a part whose arrays are not annotated (a layer from another library) keeps its
+        # own sizes: count at the instance's sizes, as numbers
+        preset = {k: v for k, v in sizes.items() if isinstance(v, int) and k not in static_kw}
+        try:
+            fl, params, largest, more, lists = _count(s, 1, preset)
+        except Exception:
+            preset = None
+        if preset is None:
+            raise
     if lists:  # the cost is linear in the length of the lists: extrapolate from 1 and 2
-        fl2, params2, _, _, _ = _count(s, 2)
+        fl2, params2, _, _, _ = _count(s, 2, preset)
         fl += (Poly.of("L") - 1) * (fl2 - fl)
         params = None if params is None or params2 is None else params + (Poly.of("L") - 1) * (params2 - params)  # fmt: skip
         notes.append(f"L = len({', '.join(dict.fromkeys(lists))})")

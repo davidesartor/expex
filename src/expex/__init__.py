@@ -40,6 +40,7 @@ from .decorators import fn, jit, random, remat, vectorize
 from .function import Fn, compile_cache, config
 from .io import load, save
 from .keys import key, rng, seed
+from .masking import mask
 from .modules import ConfigWarning, build, struct
 from .sharding import device_put, shard, shardings
 from .staging.axes import einsum, rearrange
@@ -54,7 +55,7 @@ from .tools.annotate import annotate
 __all__ = [
     # decorate
     "fn", "jit", "vectorize", "random", "remat", "struct", "build", "prove",
-    "save", "load", "shard", "shardings", "device_put", "cost", "diff", "summary", "diagram", "inspect", "eps", "tiny", "huge",
+    "save", "load", "mask", "shard", "shardings", "device_put", "cost", "diff", "summary", "diagram", "inspect", "eps", "tiny", "huge",
     # annotate
     "f16", "f32", "f64", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "c64", "c128",
     "Arr", "Bool", "Int", "UInt", "Float", "Complex", "Inexact", "Num",

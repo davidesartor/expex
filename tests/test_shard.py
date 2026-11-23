@@ -10,6 +10,7 @@ and the in-process copies skip.
 import os
 import subprocess
 import sys
+from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -175,3 +176,88 @@ def test_unknown_mesh_axis(mesh):
         shardings(make(), mesh, B="batch")
     with pytest.raises(TypeError, match="jax.eval_shape"):
         shardings(Model, mesh)
+
+
+class Moments(NamedTuple):  # as an optax state: no annotations, models inside
+    count: Any
+    mu: Any
+    nu: Any
+
+
+@needs8
+def test_extra_leading_axes_are_replicated(mesh):
+    @expex.fn
+    def double[D](x: f32[D]) -> f32[D]:
+        return x * 2
+
+    g = shard(double, mesh, D="model")
+    y = g(jnp.ones((3, 8)))  # mapped over the 3 rows: D is the last axis, not the first
+    assert y.sharding.spec == P(None, "model") and jnp.array_equal(y, 2 * jnp.ones((3, 8)))
+    s = shardings(jnp.ones((3, 8)), mesh, annotation=double.params["x"].spec, D="model")
+    assert s.spec == P(None, "model")
+
+
+@needs8
+def test_structs_inside_unannotated_values(mesh):
+    model = make()
+    state = Moments(jnp.zeros((), jnp.int32), model, jax.tree.map(jnp.zeros_like, model))
+    s = shardings(state, mesh, F="model")
+    assert s.mu.up.w.spec == P(None, "model") and s.nu.blocks[2].w.spec == P("model") and s.count.spec == P()
+
+    @expex.fn
+    def update[B, D](model: Model, opt, x: f32[B, D]) -> tuple[Model, Any, f32[B]]:
+        mu = jax.tree.map(lambda m, p: m + p, opt.mu, model)
+        return model, opt._replace(count=opt.count + 1, mu=mu), model(x)
+
+    g = shard(update, mesh, B="data", F="model")
+    count = jnp.zeros((), jnp.int32)
+    _, out, y = g(model, Moments(count, model, model), jnp.ones((16, 8)))
+    assert out.mu.up.w.sharding.spec == P(None, "model")  # placed and constrained by Model's annotations
+    assert out.nu.blocks[0].w.sharding.spec == P("model")
+    assert int(out.count) == 1 and y.sharding.spec == P("data")
+
+
+@needs8
+def test_donation(mesh):
+    @expex.fn
+    def step[D](w: f32[D], g: f32[D]) -> f32[D]:
+        return w - 0.1 * g
+
+    g = jnp.ones(8)
+    w = jax.device_put(jnp.ones(8), NamedSharding(mesh, P("model")))  # placed already: donated as it is
+    explicit = shard(step, mesh, donate="w", D="model")
+    old = w
+    w = explicit(w, g)
+    assert old.is_deleted() and not g.is_deleted() and w.sharding.spec == P("model")
+
+    auto = shard(step, mesh, donate="auto", D="model")
+    kept = auto(w, g)  # not reassigned: nothing donated
+    assert not w.is_deleted() and jnp.allclose(kept, 0.8)
+    held = w
+    w = auto(w, g)  # reassigned, but `held` holds it too: not donated
+    assert not held.is_deleted()
+    del held
+    old = w.copy()
+    for _ in range(3):
+        w = auto(w, g)  # reassigned and held by nothing else: donated
+    assert jnp.allclose(w, old - 0.3)
+
+    with pytest.raises(TypeError, match="needs the unbound method"):
+        shard(make().up.__call__, mesh, donate="auto", F="model")
+
+
+@needs8
+def test_load_onto_a_mesh(mesh, tmp_path):
+    model = make()
+    state = (model, Moments(jnp.int32(4), model, jax.tree.map(jnp.zeros_like, model)))
+    path = tmp_path / "state.npz"
+    expex.save(state, path)
+    loaded = expex.load(jax.eval_shape(lambda: state), path, mesh=mesh, names={"F": "model"})
+    want = shardings(state, mesh, F="model")
+    for x, s, y in zip(jax.tree.leaves(loaded), jax.tree.leaves(want), jax.tree.leaves(state)):
+        assert x.sharding == s and jnp.array_equal(x, y)
+    assert loaded[0].up.w.sharding.spec == P(None, "model") and loaded[1].count.sharding.spec == P()
+
+    expex.save(model, tmp_path / "model.npz")
+    one = expex.load(Model, tmp_path / "model.npz", mesh=mesh, names={"F": "model", "B": "data"})
+    assert one.blocks[1].w.sharding.spec == P("model") and one.head.sharding.spec == P("model")

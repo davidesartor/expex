@@ -17,7 +17,7 @@ remat are JAX's own. Each module has one job:
 | `messages.py` | Error messages, hints and the notes added to exceptions. |
 | `function.py` | `Fn`: binds arguments, checks them and the result, runs the body; `config`. |
 | `decorators.py` | `@fn`, `@jit` (`donate="auto"` too), `@vectorize`, `@random`, `@remat`. |
-| `batching.py` | Mapping over extra leading axes: `f.vectorize(...)`, and plain calls that need it; eager mapped calls compiled from the second call. |
+| `batching.py` | Mapping over extra leading axes: `f.vectorize(...)`, and plain calls that need it; eager mapped calls compiled from the second call; several batch axes, and nested mapped calls, lowered so that dots see one batch axis. |
 | `keys.py` | Implicit random keys (`expex.key()`). |
 | `modules.py` | `@expex.struct`: modules registered as pytrees whose methods are `@fn`s; the generated constructor (`Module(key, D=64)` builds, `Module(w, b)` takes values, `Module(key, cfg)` takes a config), `expex.build`, `model.sizes`, `model.at[...]` updates. |
 | `io.py` | `expex.save` / `expex.load`: one `.npz` per model, checked against the annotations on load. |

@@ -91,6 +91,52 @@ class DExpr:
 _ANY = DAny()
 
 
+# jaxtyping's broadcastable sizes (``#b``, ``#4``, ``*#batch``): an axis of size 1 also
+# matches. Subclasses, so that everything but matching treats them as the plain kind.
+
+
+class DBroad(DName):
+    """A named size that an axis of size 1 also matches (jaxtyping's ``#b``)."""
+
+    __slots__ = ()
+
+    def __str__(self) -> str:
+        return "#" + self.name
+
+
+class DBroadConst(DConst):
+    """A fixed size that an axis of size 1 also matches (jaxtyping's ``#4``)."""
+
+    __slots__ = ()
+
+    def __str__(self) -> str:
+        return "#" + super().__str__()
+
+
+class DVarBroad(DVar):
+    """Named axes whose occurrences need only broadcast together (jaxtyping's ``*#batch``)."""
+
+    __slots__ = ()
+
+    def __str__(self) -> str:
+        return "*#" + self.name
+
+
+def _broadcast(a: tuple[Any, ...], b: tuple[Any, ...]) -> tuple[Any, ...] | None:
+    """The shape ``a`` and ``b`` broadcast to, or None."""
+    n = max(len(a), len(b))
+    a, b = (1,) * (n - len(a)) + tuple(a), (1,) * (n - len(b)) + tuple(b)
+    out = []
+    for x, y in zip(a, b):
+        if _same(x, y) or _same(y, 1):
+            out.append(x)
+        elif _same(x, 1):
+            out.append(y)
+        else:
+            return None
+    return tuple(out)
+
+
 class DimError(TypeError):
     """An annotation's size is malformed (as opposed to: not an array annotation)."""
 
@@ -413,6 +459,8 @@ def _match_shape(
                         f"*{d.name} is {_tup(have)} (from "
                         f"{env.origin.get('*' + d.name, '?')}), but here it is {_tup(got)}.",
                     )  # fmt: skip
+            elif t is DVarBroad:
+                _match_broadcast_var(d, shape[axis : axis + k], path, env, spec, value)
             axis += k
             continue
         size = shape[axis]
@@ -436,4 +484,36 @@ def _match_shape(
                 raise Mismatch(path, spec, value, f"axis {axis} should be {want}, but is {size}.")
         elif t is DExpr:
             env.deferred.append((d, size, path, spec, value, axis))
+        elif t is DBroad:
+            if not _same(size, 1):
+                have = env.dims.get(d.name)
+                if have is None:
+                    env.dims[d.name] = size
+                    env.origin[d.name] = _From(path, value)  # type: ignore[assignment]
+                elif not _same(have, size):
+                    raise Mismatch(
+                        path, spec, value,
+                        f"{d.name} is {have} (from {env.origin.get(d.name, '?')}), but axis {axis} "
+                        f"of `{path}` is {size}, which is neither {have} nor 1 (`#{d.name}` broadcasts).",
+                    )  # fmt: skip
+        elif t is DBroadConst:
+            if not (_same(size, 1) or _same(d.value, size)):
+                raise Mismatch(path, spec, value, f"axis {axis} should be {d.value} or 1 (`{d}`), but is {size}.")
         axis += 1
+
+
+def _match_broadcast_var(d: DVarBroad, got: tuple[Any, ...], path: str, env: Env, spec: Any, value: Any) -> None:
+    """``*#name``: every occurrence's axes broadcast with the others'; the name holds the result."""
+    have = env.vars.get(d.name)
+    if have is None:
+        env.vars[d.name] = got
+        env.origin["*" + d.name] = _From(path, value)  # type: ignore[assignment]
+        return
+    both = _broadcast(have, got)
+    if both is None:
+        raise Mismatch(
+            path, spec, value,
+            f"*{d.name} is {_tup(have)} (from {env.origin.get('*' + d.name, '?')}), and here it is "
+            f"{_tup(got)}, which does not broadcast with it (`*#{d.name}` broadcasts).",
+        )  # fmt: skip
+    env.vars[d.name] = both

@@ -161,6 +161,8 @@ def summary(model: Any, config: Any = None, /, **sizes: int) -> Summary:
         known["L"] = max(lists.values())
         s.notes.append(f"L = len({', '.join(lists)})")
     params = sum(r.params for r in rows if r.parent < 0 for _ in range(r.count))  # top-level rows
+    if (hidden := sum(a.size for a in arrays(model)) - params) > 0:  # a layer from another library, say
+        s.notes.append(f"{hidden:,} parameters in parts without array annotations are not counted")
     formula = _sum([None if r.formula is None else r.formula * (Poly.of("L") if r.count > 1 else 1) for r in rows if r.parent < 0])  # fmt: skip
     nbytes = sum(r.nbytes * r.count for r in rows if r.parent < 0)
     total = Row("total", 0, cls.__name__, 1, params, formula, nbytes)

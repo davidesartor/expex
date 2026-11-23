@@ -253,7 +253,8 @@ def test_the_transformer_in_bf16(monkeypatch):
 
     text = loss.lower(m16, tokens).as_text()
     dots = [line for line in text.splitlines() if "dot_general" in line]
-    assert len(dots) == 9  # 4 projections, 2 attention products, 2 MLP, the unembedding
+    copies = 2 if expex.config.unroll_layers >= 2 else 1  # the blocks' scan, unrolled when compiled
+    assert len(dots) == 8 * copies + 1  # 4 projections, 2 attention products, 2 MLP per block; the unembedding
     assert all(re.search(r": \(tensor<[0-9x]*xbf16>, tensor<[0-9x]*xbf16>\) -> tensor<[0-9x]*xbf16>", d) for d in dots)
     assert "xbf16>" not in loss.lower(m32, tokens).as_text()
 

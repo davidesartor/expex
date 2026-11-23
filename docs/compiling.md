@@ -147,6 +147,70 @@ out = forward(model, jnp.ones((8 * n, 16))) # x: f32[B, D], and the result, spli
 - A size that its mesh axis cannot split evenly is an error naming the array:
   `Stack.blocks[0].w: f32[D, D] has D = 6 on axis 0, which mesh axis 'model'
   cannot split evenly (4 devices do not divide 6).`
+- Extra leading axes, which a call [maps over](functions.md#vectorising),
+  have no name, so they are replicated: annotate the batch (`x: f32[B, D]`) on
+  the function you shard to split it.
+
+### Training on a mesh
+
+A training step with an optax optimizer, whose state holds the model's moments,
+sharded like the model:
+
+```python
+import optax
+from typing import Any
+
+opt = optax.adam(1e-3)
+
+@expex.fn
+def train_step[B, D](model: Stack, opt_state, x: f32[B, D]) -> tuple[Stack, Any, f32]:
+    loss, grads = jax.value_and_grad(lambda m: (m(x) ** 2).mean())(model)
+    updates, opt_state = opt.update(grads, opt_state)
+    return optax.apply_updates(model, updates), opt_state, loss
+
+step = expex.shard(train_step, mesh, donate="auto", **names)
+opt_state = opt.init(model)
+for _ in range(3):
+    model, opt_state, loss = step(model, opt_state, jnp.ones((8 * n, 16)))  # both donated
+
+expex.save((model, opt_state), "state.npz")
+template = jax.eval_shape(lambda: (model, opt_state))       # in a new process: from the config
+model, opt_state = expex.load(template, "state.npz", mesh=mesh, names=names)
+print(opt_state[0].mu.blocks[0].w.sharding.spec)            # as the model's w
+```
+
+```
+P('model',)
+```
+
+- Unannotated parameters and results (`opt_state`, `Any`) are searched for
+  structs, which are placed and constrained by their own annotations; their
+  other arrays (the step count) keep their placement.
+- `donate=` is as for `@expex.fn(jit=True)`: parameter names, or `"auto"` for
+  what each call site reassigns.
+- `expex.save` takes any pytree holding structs, and `expex.load` reads it
+  back into a template of the same structure, checking every struct against
+  its annotations. With `mesh=` and `names=`, each array goes straight from
+  the file to its devices.
+
+[`examples/multidevice/train.py`](../examples/multidevice/train.py) trains the
+transformer of `examples/` on a 4 × 2 data × model mesh of 8 simulated CPU
+devices with `names = dict(B="data", D="model")`: it prints each array's
+per-device shape, resumes from a checkpoint in a new process, and checks the
+losses against a 1-device run:
+
+```
+  array                      shape          spec                       per device
+  blocks[0].attn.wq [D,D]    (64, 64)       P('model',)                (32, 64)
+  opt mu.blocks[0].attn.wq   (64, 64)       P('model',)                (32, 64)
+  tokens  Int[B, T]          (32, 33)       P('data',)                 (8, 33)
+  hidden  f32[B, T, D]       (32, 33, 64)   P('data', None, 'model')   (8, 33, 32)
+
+step   8 devices   resumed (new process)    1 device   |8 - 1|
+   9    3.599175                            3.599175   0.0e+00
+  10    3.586992         3.586992  exact    3.586992   2.4e-07
+  11    3.479494         3.479494  exact    3.479494   2.4e-07
+```
 
 ---
 

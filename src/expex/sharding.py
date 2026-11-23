@@ -16,9 +16,13 @@ tuple of names (split over their product), or ``None``. Intermediates inside a
 function need nothing: XLA propagates from the inputs and the result, on mesh
 axes of type ``Auto`` (``jax.make_mesh`` makes ``Explicit`` ones by default,
 where JAX asks for an ``out_sharding`` at contractions over a split axis).
+
+Values with no annotation of their own, such as an optax state, are searched
+for structs: an Adam state's moments are models, sharded like the model.
 """
 
 import functools
+import inspect
 import math
 from collections.abc import Callable
 from typing import Any
@@ -28,9 +32,11 @@ from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
 from .annotations.dims import DConst, DName
 from .annotations.errors import coded
-from .annotations.spec import ArraySpec, KeySpec, Spec, _struct_fields, parse, parse_owner
+from .annotations.spec import (
+    ArraySpec, KeySpec, OpaqueSpec, Spec, TupleSpec, _struct_fields, parse, parse_owner,
+)  # fmt: skip
 from .annotations.types import ArrayAnn, DType
-from .decorators import fn, static_argnames
+from .decorators import _AutoDonate, fn, static_argnames
 from .function import BoundFn, Fn, unwrap
 
 
@@ -66,45 +72,123 @@ def device_put(tree: Any, mesh: Mesh, /, *, annotation: Any = None, **names: Any
     return jax.device_put(tree, shardings(tree, mesh, annotation=annotation, **names))
 
 
-def shard(f: Callable[..., Any], mesh: Mesh, /, **names: Any) -> Callable[..., Any]:
+def shard(
+    f: Callable[..., Any], mesh: Mesh, /, *, donate: str | tuple[str, ...] = (), **names: Any
+) -> Callable[..., Any]:
     """``f`` compiled for ``mesh``, with arguments and result sharded by their annotations.
 
     Each call places the array arguments as their annotations say (a no-op if
     they already are) and runs ``jax.jit(f)``, which constrains the result to
     the return annotation's shardings. Static parameters are those of
-    :func:`expex.jit <expex.jit>`; parameters with no array annotation keep their
-    placement. A bound method (``model.__call__``) is compiled with the
-    instance as an argument; a plain function is wrapped with ``@expex.fn`` first.
+    :func:`expex.jit <expex.jit>`. Unannotated parameters and results (``Any``,
+    an optax state) are searched for structs, which are sharded by their own
+    annotations; their other arrays keep their placement. ``donate`` is as in
+    ``@expex.fn(jit=True, donate=...)``: parameter names, or ``"auto"`` to donate
+    what each call site reassigns (``state = step(state, batch)``). A bound
+    method (``model.__call__``) is compiled with the instance as an argument; a
+    plain function is wrapped with ``@expex.fn`` first.
     """
     names = _check_names(mesh, names)
     g = unwrap(f)
     if isinstance(g, BoundFn):
-        return functools.partial(shard(g.fn, mesh, **names), g.obj)
+        if donate == "auto":  # the call site's positions would be off by the instance
+            raise coded("EX801", TypeError(
+                f"expex.shard(..., donate='auto') needs the unbound method: "
+                f"shard({type(g.obj).__name__}.{g.fn.name}, ...), called with the instance first."
+            ))
+        return functools.partial(shard(g.fn, mesh, donate=donate, **names), g.obj)
     g = g if isinstance(g, Fn) else fn(f)
     static = tuple(static_argnames(g))
 
     def body(*args: Any, **kwargs: Any) -> Any:
         out = g(*args, **kwargs)
         put = lambda s, x, path: jax.lax.with_sharding_constraint(x, _leaf(s, x, path, mesh, names))
-        return g.ret.walk(out, "return", put)
+        return _walk(g.ret, out, "return", put)
 
-    compiled = jax.jit(functools.update_wrapper(body, g), static_argnames=static)
+    body = functools.update_wrapper(body, g)
 
-    @functools.wraps(g)
-    def call(*args: Any, **kwargs: Any) -> Any:
-        __tracebackhide__ = True
-        extra = {}
-        if g.random and "key" not in g.params:  # as expex.jit: a fresh key per call
-            from .keys import fresh
+    def variant(how: tuple[str, ...]) -> Callable[..., Any]:
+        compiled = jax.jit(body, static_argnames=static, donate_argnames=how)
 
-            extra["key"] = kwargs.pop("key") if "key" in kwargs else fresh(f"{g.name}()")
-        bound = g._sig.bind(*args, **kwargs)
-        dynamic = {k: v for k, v in bound.arguments.items() if k not in static}
-        place = lambda s, x, path: jax.device_put(x, _leaf(s, x, path, mesh, names))
-        bound.arguments.update(g._walk(dynamic, place))
-        return compiled(*bound.args, **bound.kwargs, **extra)
+        @functools.wraps(g)
+        def call(*args: Any, **kwargs: Any) -> Any:
+            __tracebackhide__ = True
+            extra = {}
+            if g.random and "key" not in g.params:  # as expex.jit: a fresh key per call
+                from .keys import fresh
 
-    return call
+                extra["key"] = kwargs.pop("key") if "key" in kwargs else fresh(f"{g.name}()")
+            bound = g._sig.bind(*args, **kwargs)
+            place = lambda s, x, path: jax.device_put(x, _leaf(s, x, path, mesh, names))
+            for k, v in bound.arguments.items():
+                if k not in static:
+                    bound.arguments[k] = _walk_param(g, k, v, place)
+            return compiled(*bound.args, **bound.kwargs, **extra)
+
+        return call
+
+    if donate == "auto":
+        return _AutoShard(variant, g, static)
+    return variant((donate,) if isinstance(donate, str) else tuple(donate))
+
+
+class _AutoShard(_AutoDonate):
+    """``shard(..., donate="auto")``: the call site decides what is donated, as ``expex.jit``'s."""
+
+    def __init__(self, variant: Callable[[tuple[str, ...]], Any], g: Fn[Any, Any], static: tuple[str, ...]):
+        self.variant = variant
+        super().__init__(variant(()), g, static, {})
+
+    def _variant(self, donate: tuple[str, ...]) -> Any:
+        if donate not in self.compiled:
+            self.compiled[donate] = self.variant(donate)
+        return self.compiled[donate]
+
+
+def _walk_param(g: Fn[Any, Any], name: str, value: Any, visit: Callable[..., Any]) -> Any:
+    """:func:`_walk` for parameter ``name`` of ``g`` (``*args`` and ``**kwargs`` element by element)."""
+    spec = g.params[name].spec
+    kind = g._var_kinds.get(name)
+    if kind is None:
+        return _walk(spec, value, name, visit)
+    if kind is inspect.Parameter.VAR_POSITIONAL:
+        return tuple(_walk(spec, x, f"{name}[{i}]", visit) for i, x in enumerate(value))
+    return {k: _walk(spec, x, k, visit) for k, x in value.items()}
+
+
+def _walk(spec: Spec, value: Any, path: str, visit: Callable[..., Any]) -> Any:
+    """``spec.walk(value, path, visit)``, also into unannotated parts (see :func:`_structs`)."""
+    if isinstance(spec, OpaqueSpec):
+        return _structs(value, path, visit)
+    if isinstance(spec, TupleSpec) and type(value) is tuple and len(value) == len(spec.elems):
+        return tuple(_walk(s, v, f"{path}[{i}]", visit) for i, (s, v) in enumerate(zip(spec.elems, value)))
+    return spec.walk(value, path, visit)
+
+
+def _structs(tree: Any, path: str | None, visit: Callable[..., Any]) -> Any:
+    """``tree`` with each struct in it walked by its own annotations; other leaves as they are.
+
+    The paths of a struct at the root start with its class name (``Model.up.w``),
+    others with ``path`` and the pytree path (``opt_state[0].mu.up.w``).
+    """
+    is_struct = lambda x: _owner(type(x)) is not None
+
+    def one(kp: Any, x: Any) -> Any:
+        if not is_struct(x):
+            return x
+        where = (path or type(x).__name__) if not kp else (path or "tree") + jax.tree_util.keystr(kp)
+        return _owner(type(x)).walk(x, where, visit)  # type: ignore[union-attr]
+
+    return jax.tree_util.tree_map_with_path(one, tree, is_leaf=is_struct)
+
+
+@functools.cache
+def _owner(cls: type) -> Spec | None:
+    """The spec of a struct class that annotates arrays (a model; not an optax NamedTuple), else None."""
+    if _struct_fields(cls) is None:
+        return None
+    spec = parse_owner(cls)
+    return spec if spec.leafy else None
 
 
 def _check_names(mesh: Mesh, names: dict[str, Any]) -> dict[str, tuple[str, ...]]:
@@ -124,22 +208,12 @@ def _check_names(mesh: Mesh, names: dict[str, Any]) -> dict[str, tuple[str, ...]
 
 def _tree(tree: Any, mesh: Mesh, names: dict[str, Any], annotation: Any, path: str | None) -> Any:
     """Shardings for ``tree``: by its annotation, its own struct annotations, or replicated."""
-    spec: Spec | None = None
+    visit = lambda s, x, p: _leaf(s, x, p, mesh, names)
     if annotation is not None:
         spec = annotation if isinstance(annotation, Spec) else parse(annotation)
-    elif _struct_fields(type(tree)) is not None:
-        spec = parse_owner(type(tree))
-        if not spec.leafy:
-            spec = None
-    if spec is not None:
-        visit = lambda s, x, p: _leaf(s, x, p, mesh, names)
-        tree = spec.walk(tree, path or type(tree).__name__, visit)
+        tree = _walk(spec, tree, path or type(tree).__name__, visit)
     else:
-        is_struct = lambda x: x is not tree and _struct_fields(type(x)) is not None
-        sub = lambda kp, x: _tree(x, mesh, names, None, (path or "tree") + jax.tree_util.keystr(kp))
-        tree = jax.tree_util.tree_map_with_path(
-            lambda kp, x: sub(kp, x) if is_struct(x) else x, tree, is_leaf=is_struct
-        )
+        tree = _structs(tree, path, visit)
     # Leaves no annotation reached (unannotated fields, plain containers): replicated.
     repl = NamedSharding(mesh, PartitionSpec())
     return jax.tree.map(lambda x: x if isinstance(x, NamedSharding) else repl, tree)
@@ -158,12 +232,16 @@ def _partition(
 
     A mesh axis is used at most once per array: in ``f32[D, D]`` the first
     ``D`` is split and the second replicated. Axes of a variadic (``*Batch``),
-    computed sizes (``T + 1``) and literals are replicated.
+    computed sizes (``T + 1``) and literals are replicated, and so are extra
+    leading axes that automatic batching maps over (``f32[D]`` given a
+    ``[B, D]`` value is aligned to its last axis).
     """
-    dims = list(spec.dims)
+    dims: list[Any] = list(spec.dims)
     if spec.var_index is not None and shape is not None:  # align to the value's rank
         i = spec.var_index
         dims = dims[:i] + [None] * (len(shape) - len(dims) + 1) + dims[i + 1 :]
+    elif shape is not None and len(shape) > len(dims):
+        dims = [None] * (len(shape) - len(dims)) + dims
     used: set[str] = set()
     out: list[Any] = []
     for axis, d in enumerate(dims):

@@ -13,6 +13,7 @@ import dataclasses
 import inspect
 import types
 import typing
+from collections.abc import MutableSequence
 from typing import Any, Callable, Iterator
 
 import jax
@@ -36,6 +37,7 @@ from .dims import (
     is_symbolic,
     short_dtype,
 )
+from . import jaxtyping as jt
 from .errors import Mismatch, code_of, coded, strip_see
 from .expr import Expr
 from .sym import evaluate, named_sizes, texts
@@ -112,6 +114,11 @@ class ArraySpec(Spec):
     @property
     def core_rank(self) -> int | None:
         return None if self.var_index is not None else len(self.dims)
+
+    @property
+    def ndim(self) -> int:
+        """The number of axes declared (a variadic ``*B`` counts for none): 2 for ``f32[D, D]``."""
+        return len(self.dims) - (self.var_index is not None)
 
     def match(self, value: Any, path: str, env: Env) -> None:
         t = type(value)
@@ -347,8 +354,8 @@ class SeqSpec(Spec):
         return f"list[{self.elem}]" if self.kind is list else f"tuple[{self.elem}, ...]"
 
     def match(self, value: Any, path: str, env: Env) -> None:
-        if not isinstance(value, self.kind):
-            raise Mismatch(
+        if not isinstance(value, self.kind) and not (self.kind is list and isinstance(value, MutableSequence)):
+            raise Mismatch(  # a list, or a list-like container (Flax's nnx.List)
                 path, self, value, f"expected a {self.kind.__name__}, got {describe(value)}."
             )
         seq: Any = value
@@ -485,9 +492,22 @@ def rebuild(obj_or_cls: Any, **values: Any) -> Any:
             return record._replace(**values)
         return cls(**values)
     if not getattr(cls, "__expex_struct__", False):
-        if base is None:
-            return dataclasses.replace(obj_or_cls, **values)  # type: ignore[type-var]
-        return cls(**values)
+        try:
+            if base is None:
+                return dataclasses.replace(obj_or_cls, **values)  # type: ignore[type-var]
+            return cls(**values)
+        except TypeError:
+            # an __init__ written by hand, that does not take the fields (an Equinox
+            # module, say), or no dataclass at all (a Flax NNX module): set them
+            # without it, as JAX does when it rebuilds an Equinox module
+            if not dataclasses.is_dataclass(cls):
+                if not hasattr(obj_or_cls, "__dict__"):
+                    raise
+                new = object.__new__(cls)
+                new.__dict__.update({} if base is not None else vars(obj_or_cls))
+                for k, v in values.items():
+                    object.__setattr__(new, k, v)
+                return new
     new = object.__new__(cls)
     for f in dataclasses.fields(cls):
         if f.name in values:
@@ -625,9 +645,7 @@ class StructSpec(Spec):
         }
         if all(new[n] is getattr(value, n) for n in new):
             return value
-        if dataclasses.is_dataclass(value):
-            return rebuild(value, **new)
-        return value._replace(**new)  # type: ignore[attr-defined]
+        return rebuild(value, **new)  # a dataclass, a NamedTuple, or a plain object
 
     def abstract(self, ctx: Any, path: str) -> Any:
         kwargs = {}
@@ -805,12 +823,13 @@ def parse_owner(cls: type) -> Spec:
     can use them: ``class Linear[I, O]`` with ``def __call__(self, x: f32[I])``.
     """
     names = _struct_fields(cls)
-    if names is None:
-        return OpaqueSpec()
+    anns = _class_annotations(cls)
+    plain = names is None  # a class that is not a dataclass (a Flax NNX module, say):
+    if plain:  # its annotated attributes that are arrays, modules or lists of them
+        names = [n for n in anns if not n.startswith("_")]
     params = getattr(cls, "__type_params__", ()) or getattr(cls, "__parameters__", ())
     inner: dict[Any, Any] = {p: DName(p.__name__) for p in params if isinstance(p, typing.TypeVar)}
     inner.update({p: (DVar(p.__name__),) for p in params if isinstance(p, typing.TypeVarTuple)})
-    anns = _class_annotations(cls)
     fields: dict[str, Spec] = {}
     for n in names:
         try:
@@ -819,9 +838,25 @@ def parse_owner(cls: type) -> Spec:
             raise coded(code_of(e) or "EX401", DimError(f"{cls.__name__}.{n}: {e}")) from None
         except TypeError:
             fields[n] = OpaqueSpec(anns.get(n))
+    if plain:
+        fields = {n: s for n, s in fields.items() if s.leafy and not isinstance(s, StaticSpec)}
     if any(s.leafy for s in fields.values()):
         return StructSpec(cls, fields, cls.__name__, inner)
     return OpaqueSpec()
+
+
+def _jaxtyping(ann: Any) -> Spec | None:
+    """A jaxtyping annotation (see ``jaxtyping.py``) as a spec; None if ``ann`` is not one."""
+    if isinstance(ann, type):
+        ann = jt.from_class(ann)
+    if isinstance(ann, jt.JtPyTree):
+        return OpaqueSpec(ann)  # not checked: expex has no "any pytree of X"
+    if not isinstance(ann, jt.JtArray):
+        return None
+    dims, var = jt.parse_shape(ann.dim_str, ann.written)
+    if ann.dtype == "key":
+        return KeySpec(dims, var)
+    return ArraySpec(ann.dtype, dims, var)
 
 
 def parse(ann: Any, subst: dict[Any, Any] | None = None, _stack: tuple[type, ...] = ()) -> Spec:
@@ -834,11 +869,25 @@ def parse(ann: Any, subst: dict[Any, Any] | None = None, _stack: tuple[type, ...
     if isinstance(ann, DType):
         return ArraySpec(ann, (), None)
     if isinstance(ann, ArrayAnn):
+        if len(ann.items) == 2 and type(ann.items[1]) is str:  # Float[Array, "b t"], expex's Float
+            out = _jaxtyping(jt.from_expex(ann.dtype, ann.items))
+            if out is not None:
+                return out
         dims, var = _parse_dims(ann.items, subst)
         return ArraySpec(ann.dtype, dims, var)
     if isinstance(ann, KeyAnn):
+        if len(ann.items) == 2 and type(ann.items[1]) is str:  # Key[Array, ""], expex's Key
+            out = _jaxtyping(jt.from_expex(ann, ann.items))
+            if out is not None:
+                return out
         dims, var = _parse_dims(ann.items, subst)
         return KeySpec(dims, var)
+    if isinstance(ann, (jt.JtArray, jt.JtPyTree)) or (
+        isinstance(ann, type) and type(ann).__module__.startswith("jaxtyping")
+    ):  # jaxtyping's Float[Array, "b t"], installed or not
+        out = _jaxtyping(ann)
+        if out is not None:
+            return out
     if isinstance(ann, StaticAnn):
         return StaticSpec(ann.inner, explicit=True)
     if isinstance(ann, BatchAnn):
@@ -856,10 +905,15 @@ def parse(ann: Any, subst: dict[Any, Any] | None = None, _stack: tuple[type, ...
             # `Static[int] | None`: the whole value is static
             plain = tuple(a.inner if isinstance(a, StaticAnn) else a for a in args)
             return StaticSpec(typing.Union[plain], explicit=True)  # type: ignore[arg-type]
+        one = jt.union(args)  # jaxtyping's PRNGKeyArray, Float[Array | np.ndarray, "b"]: one annotation
+        if one is not None:
+            return _jaxtyping(one)  # type: ignore[return-value]
         opts = tuple(parse(a, subst, _stack) for a in args)
         if not any(o.leafy for o in opts if not isinstance(o, NoneSpec)):
             return OpaqueSpec(ann)
-        return UnionSpec(opts)
+        # what matches anything goes last, so that the arrays bind their sizes
+        # (`ParameterProperties | Float[Array, "e s"]`); it changes no verdict
+        return UnionSpec(tuple(o for o in opts if o.leafy) + tuple(o for o in opts if not o.leafy))
     if origin is tuple:
         if len(args) == 2 and args[1] is Ellipsis:
             elem = parse(args[0], subst, _stack)
@@ -878,7 +932,10 @@ def parse(ann: Any, subst: dict[Any, Any] | None = None, _stack: tuple[type, ...
     cls = origin if isinstance(origin, type) else ann
     if isinstance(cls, type) and cls not in _stack:
         names = _struct_fields(cls)
-        if names is not None:
+        plain = names is None  # not a dataclass (a Flax NNX module, say): as in parse_owner
+        if plain:
+            names = [n for n in _class_annotations(cls) if not n.startswith("_")]
+        if names:
             params = getattr(cls, "__type_params__", ()) or getattr(cls, "__parameters__", ())
             inner: dict[Any, Any] = {}
             if origin is not None and args:
@@ -902,6 +959,8 @@ def parse(ann: Any, subst: dict[Any, Any] | None = None, _stack: tuple[type, ...
                     raise coded(code_of(e) or "EX401", DimError(f"{cls.__name__}.{n}: {e}")) from None
                 except TypeError:
                     fields[n] = OpaqueSpec(anns.get(n))
+            if plain:
+                fields = {n: s for n, s in fields.items() if s.leafy and not isinstance(s, StaticSpec)}
             if any(s.leafy for s in fields.values()):
                 return StructSpec(cls, fields, label, inner)
     return OpaqueSpec(ann)

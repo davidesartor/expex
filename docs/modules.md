@@ -50,8 +50,11 @@ grads = jax.grad(lambda m: m(jnp.ones((4, 16))).sum())(model)   # a Stack too
   JAX and `.replace(...)` rebuild objects without calling `__init__`.
 - Every method is an `@expex.fn` sharing the class's sizes, so
   `expex.prove(Block.__call__)` works without an instance.
-- A loop over identical layers is one `lax.scan`, so a deep model compiles in
-  the time one layer takes.
+- A loop over identical layers is one `lax.scan`, so a deep model traces in
+  the time one layer takes. Up to 16 layers (`expex.config(unroll_layers=...)`,
+  or `EXPEX_UNROLL_LAYERS`; 0 for never), XLA gets the scan unrolled, which
+  runs faster (activations are not stacked, layers fuse) and compiles a little
+  slower; deeper stacks stay one loop.
 - A method called with extra leading axes on its arguments maps over them, so
   a per-token layer takes a sequence: `self.norm(h)`. `model.vectorize(x)`
   says so explicitly, and also maps over a batch of models (fields with extra
@@ -272,6 +275,12 @@ ShapeError: expex.load(Mamba, 'mamba.npz'):
   structure and static fields: `expex.load(model, "stack.npz")`.
 - Keys missing from the file are an error, and so are extra keys unless you
   pass `strict=False`.
+- A training state saves too: `expex.save((model, opt_state), path)` takes
+  any pytree holding structs, such as an optax state whose moments are
+  models, and `expex.load(template, path)` reads it back into a template of
+  the same structure (`jax.eval_shape` of one will do). `mesh=` and `names=`
+  load each array straight onto its devices
+  ([Sharding](compiling.md#training-on-a-mesh)).
 
 
 ## Comparing models and checkpoints

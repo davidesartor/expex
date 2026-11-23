@@ -140,3 +140,70 @@ def test_plain_vmap_outside_expex_keeps_jax_rule():
     nested = jax.vmap(jax.vmap(f, in_axes=(0, None)), in_axes=(0, None))
     assert [len(lhs) for lhs, _, _ in dots(nested, X, w)] == [3]  # JAX's own rule: [6, 5, 16]
     # (`x @ w` is a jitted jnp function, whose batched form JAX caches: it may be the one built in a mapped call)
+
+
+# ------------------------------------------------- loops over identical layers
+
+
+@expex.struct
+class Block[W]:
+    w: f32[W, W] = jax.nn.initializers.normal(0.3)
+
+    def __call__(self, x: f32[W]) -> f32[W]:
+        return x + jnp.tanh(x @ self.w)
+
+
+@expex.struct
+class Stack[W]:
+    blocks: list[Block[W]]
+
+    def __call__(self, x: f32[W]) -> f32[W]:
+        for block in self.blocks:  # identical layers: traced once, as one lax.scan
+            x = block(x)
+        return x
+
+
+def scans(f, *args) -> list[dict]:
+    return [e.params for e in jax.make_jaxpr(f)(*args).jaxpr.eqns if e.primitive.name == "scan"]
+
+
+def hlo(f, *args) -> str:
+    return jax.jit(f).lower(*args).compile().as_text()
+
+
+def test_short_list_of_layers_is_one_scan_unrolled_when_compiled():
+    model, x = Stack(jr.key(0), W=8, blocks=4), jr.normal(jr.key(1), (8,))
+    (params,) = scans(lambda m, x: m(x), model, x)
+    assert params["length"] == 4 and params["unroll"] == 4  # traced once, unrolled by XLA
+    grad = jax.grad(lambda m, x: m(x).sum())
+    text = hlo(grad, model, x)
+    assert " while(" not in text and "dynamic-update-slice" not in text  # no activations stacked in a loop
+    assert "unrolled when compiled (4 identical layers)" in next(iter(Stack.__call__.flow.values()))
+
+    def plain(m, x):
+        for b in m.blocks:
+            x = x + jnp.tanh(x @ b.w)
+        return x
+
+    np.testing.assert_allclose(model(x), plain(model, x), rtol=1e-6)
+    g, ref = grad(model, x), jax.grad(lambda m, x: plain(m, x).sum())(model, x)
+    for a, b in zip(jax.tree.leaves(g), jax.tree.leaves(ref)):
+        np.testing.assert_allclose(a, b, rtol=1e-5, atol=1e-6)
+
+
+def test_long_lists_and_other_loops_stay_rolled():
+    model, x = Stack(jr.key(0), W=8, blocks=4), jr.normal(jr.key(1), (8,))
+    with expex.config(unroll_layers=3):
+        (params,) = scans(lambda m, x: m(x), model, x)
+        assert params["unroll"] == 1
+        assert " while(" in hlo(lambda m, x: m(x), model, x)
+
+    @fn
+    def cumulative[T](xs: f32[T]) -> f32:
+        total = jnp.float32(0.0)
+        for v in xs:  # an array, not a list of layers: rolled whatever its length
+            total = total * 0.5 + v
+        return total
+
+    (params,) = scans(cumulative, jnp.ones(4))
+    assert params["unroll"] == 1

@@ -8,6 +8,12 @@ or automatically, when the argument check of a plain call fails on exactly that
 Outside any JAX transformation the mapping would be traced and run op by op
 on every call, so from the second call with the same abstract signature it
 runs as one compiled ``jax.jit(vmap(...))`` per function (``_Compiled``).
+
+Lowering: several batch axes of one call are mapped as one flattened axis
+(``_collapsed``), and while a mapped call is traced, a dot whose operand is
+mapped over an axis next to its free axes gets them merged (``_flat_dot``),
+so that nested mapped calls (a per-point layer in a per-ray function) give
+XLA dots with one free axis per operand.
 """
 
 import contextvars
@@ -191,7 +197,10 @@ def _flat_dot(axis_data: Any, args: Any, dims: Any, **params: Any) -> Any:
     while an expex mapped call is traced, an operand mapped over an axis next
     to its free axes is reshaped so that they are one axis, and the result
     reshaped back: same values, one free axis per operand. Anything else, and
-    every ``vmap`` outside expex's mapped calls, goes to JAX's rule.
+    every ``vmap`` outside expex's mapped calls, goes to JAX's rule (JAX caches
+    the batched form of a jitted function such as ``jnp.matmul``, so a plain
+    ``vmap`` may reuse one made here, or the reverse: the values are the same).
+    Trace time only: nothing is added to a compiled call.
     """
     if _MAPPING.get():
         out = _flat_dot_general(args, dims, **params)

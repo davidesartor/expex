@@ -29,7 +29,7 @@ from .annotations import messages, sym
 from .annotations.dims import DExpr, DName, Env, is_symbolic, resolve
 from .annotations.errors import Mismatch, ShapeError, StageError, code_of, coded
 from .annotations.expr import Expr
-from .annotations.spec import ArraySpec, KeySpec, OpaqueSpec, Spec, StaticSpec, _assumptions_of, _struct_fields, parse, parse_owner, static_type
+from .annotations.spec import ArraySpec, KeySpec, OpaqueSpec, Spec, StaticSpec, _assumptions_of, _class_annotations, _struct_fields, parse, parse_owner, static_type
 from .staging import flow, ops
 from .staging.convert import NotConverted
 from .staging.convert import convert as _convert
@@ -334,7 +334,8 @@ class Fn(Generic[P, R]):
         self.static_refs = [n for n in self.static_names if n in used]
         # ... and so may a method's int fields of `self`: @fn(H="heads") for self.heads
         owner = getattr(self, "_owner_cls", None)
-        fields = set(_struct_fields(owner) or ()) if owner is not None else set()
+        # (of a class that is not a dataclass, such as a Flax NNX module: its annotated attributes)
+        fields = set(_struct_fields(owner) or _class_annotations(owner)) if owner is not None else set()
         self.field_refs = sorted((used - dims - set(self.static_names)) & fields)
         known = declared | set(self.defs) | set(self.static_names) | set(self.field_refs)
         first = next(iter(self.params), None)
@@ -739,6 +740,11 @@ class Fn(Generic[P, R]):
         return s
 
     @property
+    def __globals__(self) -> dict[str, Any]:
+        """The function's module globals: decorators that read them (jaxtyping's ``@jaxtyped``) accept an ``Fn``."""
+        return getattr(self.raw, "__globals__", {})
+
+    @property
     def location(self) -> str:
         try:
             code = self.raw.__code__  # type: ignore[attr-defined]
@@ -899,6 +905,11 @@ class BoundFn(Generic[P, R]):
 
     def __repr__(self) -> str:
         return f"<bound {self.fn!r} of {type(self.obj).__name__}>"
+
+
+# A pytree, as Equinox's bound methods are: `eqx.filter_jit(model.f)` traces the instance's
+# arrays instead of freezing them in as constants, and `filter_grad` reaches them.
+jax.tree_util.register_pytree_node(BoundFn, lambda b: ((b.obj,), b.fn), lambda fn, ch: BoundFn(fn, ch[0]))
 
 
 class BoundCompiled(functools.partial):  # type: ignore[type-arg]

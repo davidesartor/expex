@@ -2,7 +2,7 @@
 
 import pathlib
 import sys
-from typing import Callable, NamedTuple
+from typing import Any, Callable, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -214,3 +214,49 @@ def test_bfloat16(tmp_path):
     back = load(Half, p)
     assert back.w.dtype == jnp.bfloat16
     np.testing.assert_array_equal(back.w, jnp.arange(3, dtype=jnp.bfloat16))
+
+
+class Moments(NamedTuple):  # as an optax state: no annotations, models inside
+    count: Any
+    mu: Any
+
+
+def test_pytree_of_structs(net, tmp_path):
+    state = {"model": net, "opt": (Moments(jnp.int32(7), net), jnp.arange(3.0)), "step": jnp.int32(7)}
+    save(state, tmp_path / "s.npz")
+    keys = set(np.load(tmp_path / "s.npz").files)
+    assert {"['model'].proj", "['opt'][0].mu.layers[1].w", "['opt'][0].count", "['opt'][1]", "['step']"} <= keys
+
+    loaded = load(state, tmp_path / "s.npz")
+    assert jax.tree.structure(loaded) == jax.tree.structure(state)
+    for a, b in zip(jax.tree.leaves(loaded), jax.tree.leaves(state)):
+        assert a == b if isinstance(b, str) else isinstance(a, jax.Array) and jnp.array_equal(a, b) and a.dtype == b.dtype
+    assert loaded["opt"][0].mu.layers[0].scale == net.layers[0].scale  # static fields from the template
+
+    other = dict(state, step=jnp.zeros(2))
+    with pytest.raises(expex.ShapeError, match=r"\['step'\]: the template has"):
+        load(other, tmp_path / "s.npz")
+    with pytest.raises(expex.ShapeError, match="missing from the file: \\['extra'\\]"):
+        load(dict(state, extra=jnp.zeros(2)), tmp_path / "s.npz")
+    with pytest.raises(TypeError, match="no struct in dict has a size `Q`"):
+        load(state, tmp_path / "s.npz", Q=3)
+
+    arrays = dict(np.load(tmp_path / "s.npz"))
+    arrays["['opt'][0].mu.proj"] = np.zeros((7, 3), np.float32)  # declared f32[H + 1, D]: H + 1 is 6
+    np.savez(tmp_path / "b.npz", **arrays)
+    with pytest.raises(expex.ShapeError, match=r"\['opt'\]\[0\]\.mu\.proj"):
+        load(state, tmp_path / "b.npz")
+
+
+def test_pytree_into_an_abstract_template(tmp_path):
+    model = mamba.Mamba.create(jr.key(0), vocab=20, d=16, layers=2, state=4)
+    state = (model, Moments(jnp.int32(3), jax.tree.map(jnp.zeros_like, model)))
+    save(state, tmp_path / "m.npz")
+    loaded = load(jax.eval_shape(lambda: state), tmp_path / "m.npz")  # no memory used for the template
+    assert all(jnp.array_equal(a, b) for a, b in zip(jax.tree.leaves(loaded), jax.tree.leaves(state)))
+
+
+def test_names_need_a_mesh(net, tmp_path):
+    save(net, tmp_path / "n.npz")
+    with pytest.raises(TypeError, match="needs mesh="):
+        load(Net, tmp_path / "n.npz", names={"D": "model"})

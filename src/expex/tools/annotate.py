@@ -791,25 +791,110 @@ class Annotation:
         """A unified diff of the function's source file against the annotated version."""
         new = self.source()
         assert self._src is not None
-        try:
-            name = str(self._src.path.resolve().relative_to(pathlib.Path.cwd()))
-        except ValueError:
-            name = self._src.path.name
-        return "".join(
-            difflib.unified_diff(
-                self._src.text.splitlines(keepends=True), new.splitlines(keepends=True), f"a/{name}", f"b/{name}"
-            )
-        )
+        return unified_diff(self._src.path, self._src.text, new)
 
     def apply(self) -> pathlib.Path:
         """Write the annotations into the function's source file; returns its path."""
         new = self.source()
         assert self._src is not None
-        if self._src.path.read_text() != self._src.text:
-            raise coded("EX707", RuntimeError(f"{self._src.path} changed since annotate read it; run annotate again"))
-        self._src.path.write_text(new)
+        write_back(self._src.path, self._src.text, new, "annotate")
         self._src.text = new
         return self._src.path
+
+
+# ------------------------------------------------------------------ edits of a file (also used by migrate.py)
+
+
+def unified_diff(path: pathlib.Path, old: str, new: str) -> str:
+    """``old`` -> ``new`` as a unified diff of ``path``, named relative to the working directory."""
+    try:
+        name = str(path.resolve().relative_to(pathlib.Path.cwd()))
+    except ValueError:
+        name = path.name
+    return "".join(difflib.unified_diff(old.splitlines(keepends=True), new.splitlines(keepends=True), f"a/{name}", f"b/{name}"))
+
+
+def write_back(path: pathlib.Path, old: str, new: str, tool: str) -> None:
+    """Write ``new`` to ``path``, unless the file is no longer ``old`` (edited since ``tool`` read it)."""
+    if path.read_text() != old:
+        raise coded("EX707", RuntimeError(f"{path} changed since {tool} read it; run {tool} again"))
+    path.write_text(new)
+
+
+def offset(lines: Sequence[str], line: int, col: int) -> int:
+    """Character offset of an ast (line, byte column) position in the file of ``lines`` (kept ends)."""
+    before = sum(len(x) for x in lines[: line - 1])
+    return before + len(lines[line - 1].encode()[:col].decode(errors="ignore"))
+
+
+def defined(tree: ast.Module) -> set[str]:
+    """Names a module defines or imports at the top level."""
+    out: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            out |= {(a.asname or a.name).split(".")[0] for a in node.names}
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            out.add(node.name)
+        elif isinstance(node, ast.Assign):
+            out |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+    return out
+
+
+#: Names of ``expex`` that edits may use, and import when they do.
+EXPEX_NAMES = (
+    "f16", "f32", "f64", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "c64", "c128",
+    "Int", "UInt", "Float", "Complex", "Inexact", "Num", "Bool", "Key", "Arr",
+)  # fmt: skip
+
+
+def import_edits(
+    tree: ast.Module,
+    text: str,
+    used: str,
+    need_expex: bool,
+    wanted: Sequence[str] = EXPEX_NAMES,
+    have: set[str] | None = None,
+) -> list[tuple[int, int, str]]:
+    """Edits adding ``import expex`` (if ``need_expex``) and ``from expex import ...`` for the names of
+    ``wanted`` that the new code ``used`` mentions and the module does not have yet (``have``,
+    by default the names it defines or imports)."""
+    lines = text.splitlines(keepends=True)
+    have = defined(tree) if have is None else have
+    names = [w for w in wanted if w not in have and re.search(rf"(?<![\w.]){w}\b", used)]
+    need_expex = need_expex and "expex" not in have
+    edits: list[tuple[int, int, str]] = []
+    for node in tree.body:  # one `from expex import ...` line already there: extend it
+        if names and isinstance(node, ast.ImportFrom) and node.module == "expex" and not node.level:
+            seg = ast.get_source_segment(text, node) or ""
+            if node.lineno == node.end_lineno and "(" not in seg:
+                have_names = [a.name if a.asname is None else f"{a.name} as {a.asname}" for a in node.names]
+                st = offset(lines, node.lineno, node.col_offset)
+                en = offset(lines, node.lineno, node.end_col_offset or 0)
+                edits.append((st, en, f"from expex import {', '.join(have_names + names)}"))
+                names = []
+    new_lines = []
+    if need_expex:
+        new_lines.append("import expex\n")
+    if names:
+        new_lines.append(f"from expex import {', '.join(names)}\n")
+    if not new_lines:
+        return edits
+    last = None
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            last = node
+        elif last is not None or not (isinstance(node, ast.Expr) and isinstance(getattr(node, "value", None), ast.Constant)):
+            break
+    at = offset(lines, (last.end_lineno or last.lineno) + 1, 0) if last is not None else 0
+    return edits + [(at, at, "".join(new_lines))]
+
+
+def apply_edits(text: str, edits: Sequence[tuple[int, int, str]]) -> str:
+    """``text`` with each ``(start, end, replacement)`` applied (offsets into the original)."""
+    out = text
+    for st, en, txt in sorted(edits, key=lambda x: (x[0], x[1]), reverse=True):
+        out = out[:st] + txt + out[en:]
+    return out
 
 
 # ------------------------------------------------------------------ the source
@@ -853,23 +938,14 @@ class _Source:
 
     def defined(self) -> set[str]:
         """Names the module defines or imports at the top level."""
-        out: set[str] = set()
-        for node in self.tree.body:
-            if isinstance(node, (ast.Import, ast.ImportFrom)):
-                out |= {(a.asname or a.name).split(".")[0] for a in node.names}
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                out.add(node.name)
-            elif isinstance(node, ast.Assign):
-                out |= {t.id for t in node.targets if isinstance(t, ast.Name)}
-        return out
+        return defined(self.tree)
 
     def seg(self, node: Any) -> str:
         return ast.get_source_segment(self.text, node) or ast.unparse(node)
 
     def offset(self, line: int, col: int) -> int:
         """Character offset of an ast (line, byte column) position."""
-        before = sum(len(x) for x in self.lines[: line - 1])
-        return before + len(self.lines[line - 1].encode()[:col].decode(errors="ignore"))
+        return offset(self.lines, line, col)
 
     def header_span(self) -> tuple[int, int]:
         """Character offsets of ``def ...:`` (from ``def`` to its colon)."""
@@ -977,10 +1053,7 @@ class _Source:
             if c.kind != "struct":
                 edits += self._class_edits(c)
         edits += self._imports(a)
-        out = self.text
-        for st_, en_, txt in sorted(edits, key=lambda x: (x[0], x[1]), reverse=True):
-            out = out[:st_] + txt + out[en_:]
-        return out
+        return apply_edits(self.text, edits)
 
     def _class_edits(self, st: Struct) -> list[tuple[int, int, str]]:
         """Type parameters and field annotations for a NamedTuple / dataclass defined in this file."""
@@ -1010,34 +1083,9 @@ class _Source:
 
     def _imports(self, a: Annotation) -> list[tuple[int, int, str]]:
         text = a.signature + "".join(s.source() for s in a.structs) + "".join(loc.annotation for loc in a.locals)
-        have = self.defined()
+        need_expex = any(s.kind == "struct" for s in a.structs)
         wanted = ["f16", "f32", "f64", "u8", "u16", "u32", "u64", "c64", "c128", "Int", "Float", "Bool", "Key", "Arr"]
-        names = [w for w in wanted if w not in have and re.search(rf"(?<![\w.]){w}\b", text)]
-        need_expex = any(s.kind == "struct" for s in a.structs) and "expex" not in have
-        edits: list[tuple[int, int, str]] = []
-        for node in self.tree.body:  # one `from expex import ...` line already there: extend it
-            if names and isinstance(node, ast.ImportFrom) and node.module == "expex" and not node.level:
-                if node.lineno == node.end_lineno and "(" not in self.seg(node):
-                    have_names = [a.name if a.asname is None else f"{a.name} as {a.asname}" for a in node.names]
-                    st = self.offset(node.lineno, node.col_offset)
-                    en = self.offset(node.lineno, node.end_col_offset or 0)
-                    edits.append((st, en, f"from expex import {', '.join(have_names + names)}"))
-                    names = []
-        lines = []
-        if need_expex:
-            lines.append("import expex\n")
-        if names:
-            lines.append(f"from expex import {', '.join(names)}\n")
-        if not lines:
-            return edits
-        last = None
-        for node in self.tree.body:
-            if isinstance(node, (ast.Import, ast.ImportFrom)):
-                last = node
-            elif last is not None or not (isinstance(node, ast.Expr) and isinstance(getattr(node, "value", None), ast.Constant)):
-                break
-        at = self.offset((last.end_lineno or last.lineno) + 1, 0) if last is not None else 0
-        return edits + [(at, at, "".join(lines))]
+        return import_edits(self.tree, self.text, text, need_expex, wanted)
 
 
 def _reads(fn: Any, name: str) -> Iterator[tuple[Any, Any, list[str]]]:
