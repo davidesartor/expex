@@ -5,8 +5,6 @@ For static type checkers these are plain aliases (``f32[B, T]`` is a
 without plugins. At runtime they are small marker objects that ``@fn`` reads.
 """
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import jax

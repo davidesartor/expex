@@ -22,13 +22,13 @@ def from_reference(ref: dict) -> Mamba:
     d = p["model.norm_f.weight"].shape[0]
 
     def norm(prefix: str) -> RMSNorm:
-        return RMSNorm(d).replace(weight=p[f"{prefix}.weight"], bias=p[f"{prefix}.bias"])
+        return RMSNorm(p[f"{prefix}.weight"], p[f"{prefix}.bias"])
 
     blocks = []
     i = 0
     while f"model.layers[{i}].norm.weight" in p:
         m = f"model.layers[{i}].mixer"
-        mixer = Mixer(jax.random.key(0), d).replace(
+        mixer = Mixer(
             in_proj=p[f"{m}.in_proj.weight"],
             conv_weight=p[f"{m}.conv1d.weight"][:, 0, :],
             conv_bias=p[f"{m}.conv1d.bias"][:, 0],
@@ -41,8 +41,7 @@ def from_reference(ref: dict) -> Mamba:
         )
         blocks.append(Block(norm(f"model.layers[{i}].norm"), mixer))
         i += 1
-    model = Mamba(jax.random.key(0), vocab=p["lm_head.weight"].shape[0], d=d, layers=len(blocks))
-    return model.replace(
+    return Mamba(
         embedding=p["model.embedding.weight"], layers=blocks, norm_f=norm("model.norm_f"),
         lm_head=p["lm_head.weight"],
     )  # fmt: skip

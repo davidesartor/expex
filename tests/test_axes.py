@@ -1,7 +1,5 @@
 """Axes by name: ``x.sum(T)`` and ``axis=T`` inside an ``@fn``."""
 
-from __future__ import annotations
-
 import jax
 import jax.numpy as jnp
 import pytest

@@ -5,8 +5,6 @@ and ``reversed_`` stand in for the builtins so that a loop over them can be
 staged; ``rows`` and ``stack`` are the public helpers for pytrees.
 """
 
-from __future__ import annotations
-
 from typing import Any, Callable
 
 import jax

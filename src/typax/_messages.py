@@ -6,8 +6,6 @@ the usual fix (a missing ``lift``, permuted axes, a dtype conversion);
 ``@fn``, and ``_stage_hint`` explains JAX's tracer errors.
 """
 
-from __future__ import annotations
-
 import linecache
 import os
 from typing import TYPE_CHECKING, Any

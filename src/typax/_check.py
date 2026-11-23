@@ -11,8 +11,6 @@ inconclusive for symbolic sizes) the prover falls back to a few concrete
 sizes and says so: that is a spot check, not a proof.
 """
 
-from __future__ import annotations
-
 import dataclasses
 import importlib
 import inspect
@@ -234,6 +232,10 @@ def _choices(f: Fn[Any, Any], examples: dict[str, Any]) -> dict[str, list[Any]]:
             out[name] = auto
         elif isinstance(p.spec, StaticSpec) or not p.spec.leafy:
             if p.default is inspect.Parameter.empty:
+                owner = getattr(f, "_owner_cls", None)
+                if name == "cls" and name == next(iter(f.params)) and owner is not None:
+                    out[name] = [owner]  # a classmethod: the class itself
+                    continue
                 if name in ("self", "cls") and name == next(iter(f.params)):
                     raise _Unchecked(
                         "it is a method, so it needs an instance: "

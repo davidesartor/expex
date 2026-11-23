@@ -1,7 +1,5 @@
 """Bugs found by the fourth review (composable decorators, plain jax.jit)."""
 
-from __future__ import annotations
-
 import gc
 
 import jax
@@ -76,9 +74,10 @@ def test_lift_takes_one_key_per_example():
     assert jnp.allclose(out[1], noise(jnp.zeros(2), key=ks[1]))
 
 
-def test_old_remat_strings_name_the_replacement():
-    with pytest.raises(TypeError, match="jax.checkpoint"):
-        fn(remat="dots")
+def test_remat_policies_by_name():
+    for policy in ("dots", "dots_no_batch", "nothing", "everything", True):
+        f = fn(remat=policy)(lambda x: x * 2)
+        assert jax.grad(lambda x: f(x).sum())(jnp.ones(3)).tolist() == [2.0, 2.0, 2.0]
 
 
 def test_scalar_int_arrays_bind_sizes():

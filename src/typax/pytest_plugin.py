@@ -6,8 +6,6 @@ Enable with ``pytest --typax mypackage`` or in the config file::
     typax = ["mypackage"]
 """
 
-from __future__ import annotations
-
 from typing import Any
 
 import pytest

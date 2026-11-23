@@ -1,7 +1,5 @@
 """Type-checked by pyright and mypy in tests/test_typing.py; never executed."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Any, Literal, NamedTuple, assert_type
 

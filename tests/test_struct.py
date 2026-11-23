@@ -1,7 +1,5 @@
 """@tx.struct: typed, immutable modules that JAX can trace."""
 
-from __future__ import annotations
-
 from typing import Callable
 
 import pytest

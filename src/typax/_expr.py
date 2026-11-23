@@ -5,8 +5,6 @@ sizes. Sizes are usually ints, but may be JAX symbolic dimensions, which
 overload the same arithmetic operators.
 """
 
-from __future__ import annotations
-
 import ast
 import operator
 from typing import Any, Mapping

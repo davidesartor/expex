@@ -18,8 +18,6 @@
     on each line (symbolic sizes when called without arguments).
 """
 
-from __future__ import annotations
-
 import inspect
 import linecache
 import statistics

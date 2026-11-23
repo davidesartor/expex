@@ -1,7 +1,5 @@
 """The prover: shape proofs from annotations alone."""
 
-from __future__ import annotations
-
 from typing import NamedTuple
 
 import pytest

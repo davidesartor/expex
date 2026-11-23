@@ -5,8 +5,6 @@ arrays, and of collections of arrays, and the library does the rest by reading
 your annotations. Put the shapes in the signature:
 
 ```python
-from __future__ import annotations   # only before Python 3.14: lets annotations do arithmetic
-
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -24,7 +22,7 @@ data, and used to vectorise the function. Inside `@fn`, plain `if` / `for` /
 `jax.grad`, `jax.vmap` and `jax.checkpoint` take an `@fn` like any function.
 
 ```
-pip install -e .                               # Python 3.14 (or 3.12+, see above), JAX 0.12+
+pip install -e .                               # Python 3.14+, JAX 0.12+
 python examples/tour.py                        # see everything run
 python -m typax examples/transformer.py        # prove a small transformer's shapes
 ```
@@ -38,7 +36,10 @@ python -m typax examples/transformer.py        # prove a small transformer's sha
 | [Vectorising](#vectorising) | `f.lift(...)` and `@tx.lift` map over extra leading axes |
 | [Modules](#modules) | `@tx.struct`: typed, immutable classes that JAX can trace |
 | [Random keys](#random-keys) | `@tx.random` and `tx.key()`, no key threading |
-| [Compiling and gradients](#compiling-and-gradients) | `@tx.jit` reads static arguments from the signature; `jax.grad`, `jax.checkpoint` unchanged |
+| [Compiling and gradients](#compiling-and-gradients) | `@tx.fn(jit=True, lift=True, random=True, remat=True)`, or JAX's own transformations |
+| [Sharding](#sharding) | `tx.shard(f, mesh, B="data", D="model")`: shardings from axis names |
+| [Cost estimates](#cost-estimates) | FLOPs and parameters as formulas in the sizes |
+| [Precision constants](#precision-constants) | `tx.eps`, `tx.tiny`, `tx.huge` in the dtype they meet |
 | [Debugging](#debugging) | where a NaN appeared, shapes line by line, memory, timing |
 
 ## Checked calls
@@ -99,9 +100,8 @@ def heads_first[T, D](x: f32[T, D], heads: int) -> f32[H, T, K]:
 ```
 
 Only names used in the signature are definitions; other assignments are
-ordinary local variables. (Arithmetic in annotations needs Python 3.14, which evaluates
-annotations lazily; before that, `from __future__ import annotations` at the
-top of the file.)
+ordinary local variables. (Arithmetic in annotations works because Python 3.14
+evaluates annotations lazily: typax reads them as written.)
 
 ## Sizes and axes by name
 
@@ -273,13 +273,9 @@ from typing import Callable
 
 @tx.struct
 class Block[D]:
-    w: f32[D, D]
-    b: f32[D]
+    w: f32[D, D] = jax.nn.initializers.normal(0.1)   # how to make it
+    b: f32[D] = 0.0
     act: Callable = jax.nn.gelu          # plain Python types are static fields
-
-    def __init__(self, key, d: int):
-        self.w = 0.1 * jr.normal(key, (d, d))
-        self.b = jnp.zeros(d)
 
     def __call__[B](self, x: f32[B, D]) -> f32[B, D]:
         return x + self.act(x @ self.w + self.b)
@@ -288,24 +284,27 @@ class Block[D]:
 class Stack[D]:
     blocks: list[Block[D]]
 
-    def __init__(self, key, d: int, depth: int):
-        self.blocks = [Block(k, d) for k in jr.split(key, depth)]
-
     def __call__[B](self, x: f32[B, D]) -> f32[B, D]:
         for block in self.blocks:      # identical blocks: one lax.scan, not 24 copies
             x = block(x)
         return x
 
-model = Stack(jr.key(0), d=16, depth=24)
+model = Stack.init(jr.key(0), D=16, blocks=24)  # every array built from its annotation
 y = jax.jit(lambda m, x: m(x))(model, jnp.ones((4, 16)))
 grads = jax.grad(lambda m: m(jnp.ones((4, 16))).sum())(model)   # a Stack too
 ```
 
 - A struct is a frozen dataclass and a pytree. Fields with array annotations
   are traced, fields with plain Python types are static.
-- `__init__` is optional. With one, assign the fields as usual. The result is
-  checked against the annotations, and JAX and `.replace(...)` rebuild objects
-  without calling it.
+- `Stack.init(key, <sizes>)` builds every array from its annotation. An array
+  field's default says how: a JAX initializer (any function of `(key, shape,
+  dtype)`) or a number to fill it with. Nested modules are built the same way;
+  a list of them takes its length (`blocks=24`); other settings reach nested
+  modules too (`heads=8`), and any field can be passed instead of built.
+- The constructor takes the values themselves: `Block(w, b)`. A hand-written
+  `__init__` also works: assign the fields as usual, and the result is checked
+  against the annotations. JAX and `.replace(...)` rebuild objects without
+  calling it.
 - Every method is an `@fn` sharing the class's sizes, so
   `tx.prove(Block.__call__)` works without an instance.
 - A loop over identical layers is one `lax.scan`, so a deep model compiles in
@@ -332,6 +331,36 @@ Heads(jnp.eye(8)).split(jnp.ones((5, 8))).shape      # (4, 5, 2)
 print(tx.prove(Heads.split).ok)                      # True
 ```
 
+
+### Saving and loading
+
+```python
+tx.save(model, "stack.npz")
+model = tx.load(Stack, "stack.npz")            # no __init__ call, no key needed
+model = tx.load(Stack, "stack.npz", D=16)      # and D must be 16
+```
+
+```
+>>> tx.load(Mamba, "mamba.npz")
+ShapeError: tx.load(Mamba, 'mamba.npz'):
+
+    layers[2].mixer.x_proj: declared f32[R + 2 * N, E], file has f32[40, 128]
+
+    axis 0 should be R + 2 * N = 36 (with N=16, R=4), but is 40.
+```
+
+- One `.npz` file, one array per field under a readable key
+  (`layers[2].mixer.x_proj`), so other tools can read it with `np.load`.
+- The structure comes from the class's annotations: nested structs, lists of
+  structs, NamedTuples, `X | None`. Every array is checked against its
+  annotation, with sizes shared across the whole model, as in a call.
+- Static fields that are plain data (numbers, strings, `None`, tuples and
+  lists of those) are saved too. Others, such as `act: Callable`, take the
+  class default. Without one, load into an existing model, which supplies the
+  structure and static fields: `tx.load(model, "stack.npz")`.
+- Keys missing from the file are an error, and so are extra keys unless you
+  pass `strict=False`.
+
 ## Random keys
 
 ```python
@@ -354,31 +383,113 @@ would be frozen into the compiled function.
 
 ## Compiling and gradients
 
-`@tx.jit` is `jax.jit` with the static arguments read from the signature:
-plain Python types (`int`, `str`, tuples, callables, enums) and `Static[...]`
-are static; arrays and `float` numbers are traced, so a new learning rate does
-not recompile.
+The common transformations are options of `@tx.fn`, in any combination:
 
 ```python
-@tx.jit
+@fn(jit=True, remat="dots")
 def repeat[N](x: f32[N], n: int, scale: float) -> f32[N * n]:
     return jnp.tile(x, n) * scale
 
 repeat(jnp.ones(3), 4, 0.5).shape                       # (12,)
-noisy = tx.jit(dropout)                                 # a fresh key on every call
-noisy(jnp.ones(6)), noisy(jnp.ones(6), key=jr.key(2))
 ```
 
-Everything else is JAX's own. `jax.jit(f, static_argnames=...)` works as usual
-(a random function then takes `key=`), and so do `jax.grad`, `jax.vmap` and
-`jax.checkpoint`:
+| Option | |
+|---|---|
+| `jit=True` | compile; static arguments are read from the signature |
+| `lift=True` | plain calls take extra leading batch axes |
+| `random=True` | `tx.key()` inside gives a fresh key on every call |
+| `remat=True` | recompute in the backward pass (`jax.checkpoint`); or a policy: `"dots"`, `"dots_no_batch"`, `"everything"` |
+| `donate=("state",)` | with `jit`: reuse these arguments' buffers |
 
-```python
-layer = jax.checkpoint(Block.__call__)                   # remat a layer
-jax.grad(lambda m, x: layer(m, x).sum())(Block(jr.key(0), 16), jnp.ones((4, 16)))
-```
+Each is also a decorator of its own (`@tx.jit`, `@tx.lift`, `@tx.random`,
+`@tx.remat`). Static arguments are the ones with plain Python types (`int`,
+`str`, tuples, callables, enums) and `Static[...]`; arrays and `float`
+numbers are traced, so a new learning rate does not recompile. A compiled
+random function draws a fresh key on every call, or takes `key=`.
+
+JAX's own transformations work on any `@fn` too: `jax.jit(f,
+static_argnames=...)`, `jax.grad`, `jax.vmap`, `jax.checkpoint`.
 
 `tx.compile_cache(path)` keeps compiled programs on disk across runs.
+
+## Sharding
+
+Every array's axes are named in its annotation, so say once which sizes are
+split over which mesh axes, and every array gets its sharding: no
+`PartitionSpec`s by hand.
+
+```python
+from jax.sharding import AxisType
+
+n = jax.device_count()                    # e.g. 8 devices: make_mesh((2, 4), ...)
+mesh = jax.make_mesh((n, 1), ("data", "model"), axis_types=(AxisType.Auto,) * 2)
+names = dict(B="data", D="model")
+
+print(tx.shardings(model, mesh, **names).blocks[0].w.spec)   # P('model',): w is f32[D, D]
+
+model = tx.device_put(model, mesh, **names)
+forward = tx.shard(Stack.__call__, mesh, **names)
+out = forward(model, jnp.ones((8 * n, 16))) # x: f32[B, D], and the result, split as B, D
+```
+
+- `tx.shardings(tree, mesh, **names)` gives the `NamedSharding`s of a model
+  (or of `jax.eval_shape(...)` of one, before any memory is used), with lists
+  of layers and nested modules; `tx.device_put` places a tree by them.
+- `tx.shard(f, mesh, **names)` is `tx.jit(f)` with the arguments placed and
+  the result constrained by their annotations. Intermediates need nothing:
+  XLA propagates on `Auto` mesh axes. (`jax.make_mesh` makes `Explicit` ones
+  by default, where JAX asks for an `out_sharding` at contractions over a
+  split axis.)
+- Sizes not named are replicated, and so is a repeated one after its first
+  axis (`f32[D, D]` is `P("model", None)`). A mapping is a mesh axis, a tuple
+  of them, or `None`.
+- A size that its mesh axis cannot split evenly is an error naming the array:
+  `Stack.blocks[0].w: f32[D, D] has D = 6 on axis 0, which mesh axis 'model'
+  cannot split evenly (4 devices do not divide 6).`
+
+## Cost estimates
+
+`tx.cost` counts a function's FLOPs, and a module's parameters, as formulas in
+its sizes. Like the prover, it needs no data:
+
+```python
+print(tx.cost(Stack.__call__))
+print(tx.cost(Stack.__call__, B=64, D=1024, blocks=24))
+```
+
+```
+Stack.__call__   (sizes: B, D, L)
+  flops        2·B·D²·L + 10·B·D·L
+  parameters   D²·L + D·L
+  largest      f32[B,D] (B·D elements)
+  note: L = len(self.blocks)
+Stack.__call__   (sizes: B=64, D=1024, L=24)
+  flops        3236954112   = 3.24 GFLOP
+  parameters   25190400   = 25.2 M
+```
+
+Dominant terms come first. For the transformer in `examples/`, the four
+`D × D` projections give `8·T·D²·L`, the MLP `4·T·D·F·L`, attention
+`4·T²·D·L` and the unembedding `2·T·D·Vocab`. Matrix products and loops are
+exact (a `for` over `T` multiplies its body by `T`); elementwise operations
+count one flop per element, reshapes and gathers are free, and a `while`
+loop counts one iteration and says so.
+
+## Precision constants
+
+`tx.eps`, `tx.tiny` and `tx.huge` are the limits of whatever floating dtype
+they meet, so the same code is right in bfloat16, float32 and float64:
+
+```python
+@fn
+def entropy_safe[N](p: f32[N]) -> f32:
+    return -(p * jnp.log(p + tx.tiny)).sum()       # tiny of p's dtype
+
+x = jnp.ones(3, jnp.bfloat16)
+x + tx.eps                                         # bfloat16's epsilon: 0.0078125
+x / (x.sum() + 1e3 * tx.eps)                       # scaled, still in x's dtype
+jnp.maximum(x, tx.tiny(x))                         # as an argument: give it the array
+```
 
 ## Debugging
 
@@ -476,7 +587,7 @@ originals:
 - **[mamba-jax](https://github.com/vvvm23/mamba-jax) Mamba** (`examples/mamba/`):
   the selective scan is a plain `for` loop over time, sizes are used by name
   (`xz[:, :E]`, `jnp.zeros((E, N))`), and generation is a loop carrying the
-  layers' states. Logits match the original to 2e-7, gradients to 7e-7
+  layers' states. Logits match the original to 6e-7, gradients to 8e-7
   (relative) and sampled tokens exactly; all 11 functions are proved. On a
   2048-token sequence on CPU it runs 4.5x faster forward and 3x faster for
   gradients (the original materialises the full `T x E x N` decay before

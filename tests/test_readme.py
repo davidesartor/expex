@@ -7,7 +7,8 @@ import runpy
 ROOT = pathlib.Path(__file__).parent.parent
 
 
-def test_readme_blocks_run(tmp_path, capsys):
+def test_readme_blocks_run(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # the examples save files
     text = (ROOT / "README.md").read_text()
     blocks = re.findall(r"```python\n(.*?)```", text, flags=re.S)
     assert len(blocks) >= 8

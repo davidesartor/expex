@@ -20,8 +20,6 @@ checked against the annotations, with the class's own dimensions shared.
 ``module.replace(field=...)`` returns a modified copy.
 """
 
-from __future__ import annotations
-
 import dataclasses
 import functools
 import inspect
@@ -32,7 +30,7 @@ from jax.core import Tracer
 
 from ._dims import Env, resolve
 from ._errors import Mismatch, ShapeError, StageError
-from . import _sym
+from . import _init, _sym
 from ._fn import Fn, fn, unwrap
 from ._spec import _class_annotations, parse_owner, rebuild, static_type
 
@@ -71,6 +69,7 @@ def struct(cls: Any = None, /, **moved: Any) -> Any:
             cls.__typax_localns__ = localns
         params = vars(cls).get("__dataclass_params__")  # not a parent's
         if not (isinstance(cls, type) and params is not None and params.frozen):
+            _init.mark(cls, _class_annotations(cls))  # array defaults are initializers
             cls = dataclasses.dataclass(frozen=True)(cls)
         anns = _class_annotations(cls)
         data: list[str] = []
@@ -80,6 +79,10 @@ def struct(cls: Any = None, /, **moved: Any) -> Any:
         _register(cls, tuple(data), tuple(meta))
         if custom_init:
             _wrap_init(cls)
+        else:
+            _check_built(cls)
+        if "init" not in vars(cls):
+            cls.init = classmethod(_init.init)
 
         fields = {f.name for f in dataclasses.fields(cls)}
         for name, value in list(vars(cls).items()):
@@ -197,6 +200,7 @@ def _wrap_init(cls: Any) -> None:
                 missing.append(f.name)
         if missing:
             raise TypeError(f"{cls.__name__}.__init__ did not set {', '.join(missing)}")
+        _init.unbuilt(cls, self)
         _check_new(cls, self)
 
     def __setattr__(self: Any, name: str, value: Any) -> None:
@@ -207,6 +211,20 @@ def _wrap_init(cls: Any) -> None:
 
     cls.__init__ = __init__
     cls.__setattr__ = __setattr__
+
+
+def _check_built(cls: Any) -> None:
+    """The dataclass constructor refuses to leave an initializer in place of an array."""
+    if not any(isinstance(f.default, (_init.Initializer, _init._Required)) for f in dataclasses.fields(cls)):
+        return
+    generated = cls.__init__
+
+    @functools.wraps(generated)
+    def __init__(self: Any, *args: Any, **kwargs: Any) -> None:
+        generated(self, *args, **kwargs)
+        _init.unbuilt(cls, self)
+
+    cls.__init__ = __init__
 
 
 def _check_new(cls: Any, obj: Any) -> None:

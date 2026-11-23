@@ -5,8 +5,6 @@ updates (``x[i] += v`` becomes ``x.at[i].add(v)``); ``assert``, ``raise``,
 ``print``, ``min``, ``max``; and checks of annotated local variables.
 """
 
-from __future__ import annotations
-
 import operator
 import threading
 from typing import Any, Callable

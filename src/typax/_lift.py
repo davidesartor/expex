@@ -1,7 +1,5 @@
 """``f.lift(...)``: call an ``@fn`` on arguments with extra leading batch axes."""
 
-from __future__ import annotations
-
 import inspect
 from typing import TYPE_CHECKING, Any, Callable
 

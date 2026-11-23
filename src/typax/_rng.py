@@ -15,8 +15,6 @@ consumed outside of JAX transformations; inside ``jit`` it would be baked into
 the compiled function as a constant.
 """
 
-from __future__ import annotations
-
 import contextlib
 import threading
 from typing import Any, Iterator

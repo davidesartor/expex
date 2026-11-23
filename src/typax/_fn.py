@@ -1,7 +1,5 @@
 """``@fn``: the decorator that reads a signature and puts it to work."""
 
-from __future__ import annotations
-
 import copy
 import dataclasses
 import functools
@@ -206,6 +204,9 @@ class Fn(Generic[P, R]):
         self.prove = prove
         self.examples = dict(examples or {})
         self._sig = _sym.signature(raw)
+        # what inspect.signature (and so jax.jit) sees: evaluating the raw
+        # annotations would fail on size arithmetic such as f32[n] or f32[T + 1]
+        self.__signature__ = self._sig
 
         defs = {**getattr(self._impl, "__typax_defs__", {}), **(defs or {})}  # H = heads in the body
         self.defs = {k: Expr(v) for k, v in defs.items()}
@@ -739,6 +740,7 @@ class BoundFn(Generic[P, R]):
         self.fn = fn
         self.obj = obj
         self.__wrapped__ = fn.raw.__get__(obj)  # type: ignore[attr-defined]
+        self.__signature__ = fn._sig.replace(parameters=list(fn._sig.parameters.values())[1:])
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
         __tracebackhide__ = True
@@ -796,12 +798,26 @@ def _field_names(cls: Any) -> set[str]:
 def fn(f: Callable[P, R], /) -> Fn[P, R]: ...
 @overload
 def fn(
-    *, examples: dict[str, Any] | None = None, prove: bool = True, convert: bool = True, **moved: Any
+    *,
+    jit: bool = False,
+    lift: bool = False,
+    random: bool = False,
+    remat: Any = False,
+    donate: str | tuple[str, ...] = (),
+    examples: dict[str, Any] | None = None,
+    prove: bool = True,
+    convert: bool = True,
+    **moved: Any,
 ) -> Callable[[Callable[P, R]], Fn[P, R]]: ...
 def fn(
     f: Any = None,
     /,
     *,
+    jit: bool = False,
+    lift: bool = False,
+    random: bool = False,
+    remat: Any = False,
+    donate: str | tuple[str, ...] = (),
     examples: dict[str, Any] | None = None,
     prove: bool = True,
     convert: bool = True,
@@ -821,9 +837,20 @@ def fn(
     ``if`` / ``while`` / ``for`` work on traced values. Sizes can be computed in
     the annotations from other sizes, int parameters and fields of ``self``.
     ``assert``s on sizes at the top of the body are constraints: checked before
-    the body runs, and assumed by the prover. (Size arithmetic in annotations
-    needs Python 3.14, or ``from __future__ import annotations``.)
+    the body runs, and assumed by the prover.
 
+    ``jit``
+        Compile, as :func:`typax.jit`: static arguments read from the signature.
+    ``lift``
+        Plain calls take extra leading batch axes, as :func:`typax.lift`.
+    ``random``
+        An implicit PRNG key, ``tx.key()``, as :func:`typax.random`.
+    ``remat``
+        Gradient checkpointing, as :func:`typax.remat`: ``True``, or a policy
+        (``"dots"``, ``"dots_no_batch"``, ``"everything"`` or a JAX policy).
+    ``donate``
+        With ``jit``: parameters whose buffers the call may reuse, e.g. the
+        state of a training step.
     ``examples``
         Values the prover should try for parameters it cannot guess,
         as ``{"name": [value, ...]}``.
@@ -836,11 +863,8 @@ def fn(
     own transformations.
     """
     hints = {
-        "jit": "decorate with @tx.jit, or call jax.jit(f)",
-        "remat": "use jax.checkpoint(f, policy=...)",
-        "random": "decorate with @tx.random",
-        "lift": "decorate with @tx.lift",
         "checked": "use `with tx.config(checked=False):`",
+        "vectorize": "the option is called lift=True",
         "where": "write the constraint as an `assert` at the top of the body: assert T >= 2",
     }
     for k, v in moved.items():
@@ -857,7 +881,18 @@ def fn(
             raw = raw.raw
         out = Fn(raw, prove=prove, convert=convert, examples=examples)
         vars(out).update(flags)
-        return out
+        if random:
+            out.random = True
+        if lift:
+            out.auto_lift = True
+        result: Any = out
+        if remat:
+            result = _remat(out, remat)
+        if jit:
+            result = _jit(result, donate_argnames=(donate,) if isinstance(donate, str) else tuple(donate))
+        elif donate:
+            raise TypeError("@tx.fn(donate=...) only applies with jit=True")
+        return result
 
     if f is not None:
         return wrap(f)
@@ -905,6 +940,10 @@ def lift(f: Callable[P, R], /) -> Fn[P, R]:
 
 
 def jit(f: Callable[P, R] | None = None, /, **options: Any) -> Any:
+    return _jit(f, **options)
+
+
+def _jit(f: Any = None, /, **options: Any) -> Any:
     """``jax.jit``, with the static arguments read from the signature.
 
     ::
@@ -920,17 +959,16 @@ def jit(f: Callable[P, R] | None = None, /, **options: Any) -> Any:
     A plain function is wrapped with :func:`fn` first.
     """
     if f is None:
-        return lambda g: jit(g, **options)
+        return lambda g: _jit(g, **options)
     if isinstance(f, (staticmethod, classmethod)):
-        return type(f)(jit(f.__func__, **options))
-    g = f if isinstance(f, Fn) else fn(f)
-    static = [
-        n for n, p in g.params.items()
-        if isinstance(p.spec, StaticSpec) and (p.spec.explicit or p.spec.inner not in (float, complex))
-    ]  # fmt: skip
+        return type(f)(_jit(f.__func__, **options))
+    if not isinstance(unwrap(f), Fn):
+        f = fn(f)
+    g: Any = unwrap(f)
+    static = _static_names(g)
     given = options.pop("static_argnames", ())
     static += [given] if isinstance(given, str) else list(given)
-    compiled = jax.jit(g, static_argnames=tuple(dict.fromkeys(static)), **options)
+    compiled = jax.jit(f, static_argnames=tuple(dict.fromkeys(static)), **options)
     if not g.random:
         return compiled
 
@@ -942,6 +980,66 @@ def jit(f: Callable[P, R] | None = None, /, **options: Any) -> Any:
         return compiled(*args, **kwargs)
 
     return call
+
+
+def _static_names(g: Any) -> list[str]:
+    """Parameters that must be static: plain Python types and Static[...], not float/complex."""
+    return [
+        n for n, p in g.params.items()
+        if isinstance(p.spec, StaticSpec) and (p.spec.explicit or p.spec.inner not in (float, complex))
+    ]  # fmt: skip
+
+
+_POLICIES = {
+    "nothing": jax.checkpoint_policies.nothing_saveable,
+    "everything": jax.checkpoint_policies.everything_saveable,
+    "dots": jax.checkpoint_policies.dots_saveable,
+    "dots_no_batch": jax.checkpoint_policies.dots_with_no_batch_dims_saveable,
+}
+
+
+def remat(f: Any = None, /, *, policy: Any = None) -> Any:
+    """Gradient checkpointing (``jax.checkpoint``) that knows the static arguments.
+
+    In the backward pass, recompute this function's intermediates instead of
+    storing them. ``policy`` chooses what is kept anyway: ``"dots"`` (matrix
+    products), ``"dots_no_batch"``, ``"everything"``, or a
+    ``jax.checkpoint_policies`` policy. Arguments with plain Python types stay
+    Python values, as under :func:`jit`.
+    """
+    if f is None:
+        return lambda g: remat(g, policy=policy)
+    if isinstance(f, (staticmethod, classmethod)):
+        return type(f)(remat(f.__func__, policy=policy))
+    return _remat(f if isinstance(unwrap(f), Fn) else fn(f), True if policy is None else policy)
+
+
+def _remat(f: Any, how: Any) -> Any:
+    g: Any = unwrap(f)
+    if isinstance(how, str) and how not in _POLICIES:
+        raise ValueError(f"remat must be True, a JAX policy or one of {sorted(_POLICIES)}, not {how!r}")
+    policy = None if how is True else _POLICIES.get(how, how) if isinstance(how, str) else how
+    static = set(_static_names(g))
+    sig = g._sig
+
+    @functools.wraps(f)
+    def call(*args: Any, **kwargs: Any) -> Any:
+        __tracebackhide__ = True
+        ba = sig.bind(*args, **kwargs)
+        fixed = {n: v for n, v in ba.arguments.items() if n in static}
+        dyn = {n: v for n, v in ba.arguments.items() if n not in static}
+
+        def body(dyn: dict[str, Any]) -> Any:
+            b = inspect.BoundArguments(sig, {n: fixed[n] if n in fixed else dyn[n] for n in ba.arguments})  # type: ignore[arg-type]
+            return f(*b.args, **b.kwargs)
+
+        return jax.checkpoint(body, policy=policy)(dyn)
+
+    call.__signature__ = sig  # type: ignore[attr-defined]
+    return call
+
+
+jit.__doc__ = _jit.__doc__
 
 
 def random(f: Callable[P, R], /) -> Fn[P, R]:

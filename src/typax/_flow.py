@@ -12,8 +12,6 @@ modules share; ``for`` lives in ``_loops.py``, operators and builtins in
 ``_ops.py``. Generated code reaches all of them through ``_runtime.py``.
 """
 
-from __future__ import annotations
-
 import threading
 from collections.abc import Sequence
 from typing import Any, Callable

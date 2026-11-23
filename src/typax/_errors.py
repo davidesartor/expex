@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 
 class ShapeError(TypeError):
     """A value does not match the shape/dtype annotation it was declared with."""

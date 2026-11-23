@@ -9,8 +9,6 @@ can then
 * ``abstract`` itself into example inputs for the prover.
 """
 
-from __future__ import annotations
-
 import dataclasses
 import inspect
 import types

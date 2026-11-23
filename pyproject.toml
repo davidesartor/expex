@@ -7,15 +7,13 @@ name = "typax"
 version = "0.1.0"
 description = "Shape-typed functions for JAX: annotations that are proved, checked and used."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 license = "MIT"
 license-files = ["LICENSE"]
 keywords = ["jax", "shapes", "typing", "machine-learning"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering",
     "Typing :: Typed",
@@ -42,4 +40,4 @@ testpaths = ["tests"]
 
 [tool.pyright]
 include = ["src", "tests/typing"]
-pythonVersion = "3.12"
+pythonVersion = "3.14"

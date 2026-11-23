@@ -1,13 +1,11 @@
 """Size arithmetic written directly in annotations: ``f32[T + 1]``, ``f32[D // heads]``.
 
-Python cannot evaluate ``T + 1`` when ``T`` is a type parameter, so an
-annotation like that only exists as text: with lazy annotations (Python 3.14,
-or ``from __future__ import annotations``). typax evaluates that text again
-with every size, parameter and field of ``self`` replaced by a :class:`Sym`,
-which records the arithmetic as an expression.
+Python cannot evaluate ``T + 1`` when ``T`` is a type parameter. Python 3.14
+evaluates annotations lazily, so such an annotation is still available as
+text; typax evaluates that text again with every size, parameter and field of
+``self`` replaced by a :class:`Sym`, which records the arithmetic as an
+expression.
 """
-
-from __future__ import annotations
 
 import inspect
 import typing
@@ -89,10 +87,10 @@ class _Self:
 def caller_locals() -> dict[str, Any]:
     """The local variables where a decorator is being applied (outside typax).
 
-    With ``from __future__ import annotations`` an annotation is text that
-    Python would evaluate in the module's globals, so a class defined inside a
-    function would not be found. This is what lets typax find it. Inside a
-    class body, the enclosing function's locals are included too.
+    An annotation typax evaluates from its text sees only the module's globals,
+    so a class defined inside a function would not be found. This is what lets
+    typax find it. Inside a class body, the enclosing function's locals are
+    included too.
     """
     import sys
 
@@ -141,7 +139,7 @@ def evaluate(text: str, glb: dict[str, Any], scope: dict[str, Any], params: Any 
     """
     try:
         out = eval(text, glb, scope)  # noqa: S307 - as typing.get_type_hints
-        # a quoted annotation in a file with `from __future__ import annotations`
+        # an annotation written in quotes, read from its text: quoted twice
         return evaluate(out, glb, scope, params) if isinstance(out, str) else out
     except NameError:
         pass  # perhaps a parameter, or self: try symbolically

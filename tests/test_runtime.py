@@ -1,7 +1,5 @@
 """Call-time checking of arguments and return values."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Any, Literal, NamedTuple
 

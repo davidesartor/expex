@@ -15,6 +15,11 @@ on the same `Fn` object, so they stack in any order. `@tx.jit` is `jax.jit` with
 | `_axes.py` | Axes by name: `x.sum(T)`, `axis=T`, resolved from annotations or sizes. |
 | `_lift.py` | `f.lift(...)`: mapping over extra leading axes. |
 | `_messages.py` | Error messages, hints and the notes added to exceptions. |
+| `_consts.py` | `tx.eps`, `tx.tiny`, `tx.huge`: dtype limits resolved against the array they meet. |
+| `_cost.py` | `tx.cost`: FLOPs and parameters as polynomials in the sizes, from a symbolic trace. |
+| `_init.py` | `Module.init(key, D=64)`: parameters built from the field annotations. |
+| `_io.py` | `tx.save` / `tx.load`: one `.npz` per model, checked against the annotations on load. |
+| `_shard.py` | `tx.shard`, `tx.shardings`: shardings from axis names mapped to mesh axes. |
 | `_struct.py` | `@tx.struct`: modules registered as pytrees whose methods are `@fn`s. |
 | `_rng.py` | Implicit random keys (`tx.key()`). |
 | `_convert.py` | Rewrites a function's source so plain Python works on traced values. |

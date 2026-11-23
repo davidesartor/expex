@@ -4,30 +4,25 @@
     python examples/transformer.py              # train a few steps
 """
 
-from __future__ import annotations  # size arithmetic in annotations (built in on Python 3.14)
-
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 
 import typax as tx
-from typax import Dim, Int, Key, f32
+from typax import Dim, Int, f32
 
 
 class Vocab(Dim): ...
 
 
-def dense(key, i: int, o: int):
-    return jr.normal(key, (i, o)) / jnp.sqrt(i)
+# weights are used as x @ w: variance 1 / (input size)
+dense = jax.nn.initializers.variance_scaling(1.0, "fan_in", "normal")
 
 
 @tx.struct
 class LayerNorm[D]:
-    scale: f32[D]
-    bias: f32[D]
-
-    def __init__(self, d: int):
-        self.scale, self.bias = jnp.ones(d), jnp.zeros(d)
+    scale: f32[D] = 1.0
+    bias: f32[D] = 0.0
 
     def __call__(self, x: f32[D]) -> f32[D]:
         return (x - x.mean()) / (x.std() + 1e-5) * self.scale + self.bias
@@ -35,16 +30,11 @@ class LayerNorm[D]:
 
 @tx.struct
 class Attention[D]:
-    wq: f32[D, D]
-    wk: f32[D, D]
-    wv: f32[D, D]
-    wo: f32[D, D]
+    wq: f32[D, D] = dense
+    wk: f32[D, D] = dense
+    wv: f32[D, D] = dense
+    wo: f32[D, D] = dense
     heads: int = 4
-
-    def __init__(self, key: Key, d: int, heads: int = 4):
-        kq, kk, kv, ko = jr.split(key, 4)
-        self.wq, self.wk, self.wv, self.wo = (dense(k, d, d) for k in (kq, kk, kv, ko))
-        self.heads = heads
 
     def split[T](self, x: f32[T, D]) -> f32[H, T, K]:
         H, K = self.heads, D // self.heads
@@ -67,12 +57,8 @@ class Attention[D]:
 
 @tx.struct
 class MLP[D, F]:
-    w1: f32[D, F]
-    w2: f32[F, D]
-
-    def __init__(self, key: Key, d: int, f: int):
-        k1, k2 = jr.split(key)
-        self.w1, self.w2 = dense(k1, d, f), dense(k2, f, d)
+    w1: f32[D, F] = dense
+    w2: f32[F, D] = dense
 
     def __call__(self, x: f32[D]) -> f32[D]:
         return jax.nn.gelu(x @ self.w1) @ self.w2
@@ -85,11 +71,6 @@ class Block[D, F]:
     norm2: LayerNorm[D]
     mlp: MLP[D, F]
 
-    def __init__(self, key: Key, d: int, f: int, heads: int):
-        ka, km = jr.split(key)
-        self.norm1, self.attn = LayerNorm(d), Attention(ka, d, heads)
-        self.norm2, self.mlp = LayerNorm(d), MLP(km, d, f)
-
     def __call__[T](self, x: f32[T, D]) -> f32[T, D]:
         x = x + self.attn(self.norm1.lift(x))
         return x + self.mlp.lift(self.norm2.lift(x))
@@ -97,16 +78,10 @@ class Block[D, F]:
 
 @tx.struct
 class Transformer[D, F]:
-    embed: f32[Vocab, D]
+    embed: f32[Vocab, D] = dense
     blocks: list[Block[D, F]]
     norm: LayerNorm[D]
-    unembed: f32[D, Vocab]
-
-    def __init__(self, key: Key, vocab: int, d: int, f: int, layers: int, heads: int):
-        ke, ku, *kb = jr.split(key, 2 + layers)
-        self.embed, self.unembed = dense(ke, vocab, d), dense(ku, d, vocab)
-        self.blocks = [Block(k, d, f, heads) for k in kb]
-        self.norm = LayerNorm(d)
+    unembed: f32[D, Vocab] = dense
 
     def __call__[T](self, tokens: Int[T]) -> f32[T, Vocab]:
         x = self.embed[tokens]
@@ -121,7 +96,7 @@ class Transformer[D, F]:
 
 
 if __name__ == "__main__":
-    model = Transformer(jr.key(0), vocab=50, d=32, f=64, layers=4, heads=4)
+    model = Transformer.init(jr.key(0), Vocab=50, D=32, F=64, blocks=4, heads=4)
     data = jr.randint(jr.key(1), (16, 24), 0, 50)
 
     @jax.jit

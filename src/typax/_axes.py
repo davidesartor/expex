@@ -12,8 +12,6 @@ axis. The converter routes calls that use one as an axis through
    asking for an annotation.
 """
 
-from __future__ import annotations
-
 import typing
 from typing import Any
 

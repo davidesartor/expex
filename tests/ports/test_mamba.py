@@ -32,4 +32,4 @@ def test_matches_the_original():
 def test_every_shape_is_proved():
     reports = tx.prove(mamba)
     assert all(r.status == "proved" for r in reports), str(reports)
-    assert len(reports) == 11
+    assert len(reports) == 12

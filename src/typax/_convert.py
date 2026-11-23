@@ -22,8 +22,6 @@ statements using ``global`` / ``nonlocal`` / ``del`` / ``yield``, nested
 function definitions, and generators / async functions.
 """
 
-from __future__ import annotations
-
 import ast
 import copy
 import inspect

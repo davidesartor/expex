@@ -12,8 +12,6 @@ written:
 - no einops strings, no `jax.vmap(layer)` for per-token layers: `.lift`
 """
 
-from __future__ import annotations  # size arithmetic in annotations (built in on Python 3.14)
-
 import math
 
 import jax
@@ -26,12 +24,9 @@ from typax import Int, Key, f32, fn
 
 @tx.struct
 class RMSNorm[D]:
-    weight: f32[D]
-    bias: f32[D]
+    weight: f32[D] = 1.0
+    bias: f32[D] = 0.0
     eps: float = 1e-5
-
-    def __init__(self, d: int, eps: float = 1e-5):
-        self.weight, self.bias, self.eps = jnp.ones(d), jnp.zeros(d), eps
 
     def __call__(self, x: f32[D]) -> f32[D]:
         return self.weight * (jax.lax.rsqrt(jnp.mean(x**2) + self.eps) * x) + self.bias
@@ -58,33 +53,34 @@ class State[E, N, K]:
     ssm: f32[E, N]
 
 
+# weights are used as w @ x: uniform with variance 1 / (3 input size), as Equinox's Linear
+linear = jax.nn.initializers.variance_scaling(1 / 3, "fan_in", "uniform", in_axis=-1, out_axis=-2)
+
+
+def dt_bias(key: Key, shape: tuple[int, ...], dtype=jnp.float32):
+    """Biases whose softplus is a step size between 0.001 and 0.1, spread log-uniformly."""
+    dt = jnp.exp(jr.uniform(key, shape, dtype) * (math.log(0.1) - math.log(1e-3)) + math.log(1e-3))
+    return dt + jnp.log(-jnp.expm1(-dt))
+
+
+def s4d_real(key: Key, shape: tuple[int, ...], dtype=jnp.float32):
+    """log A for A = 1, 2, ..., N along the state axis (S4D real)."""
+    return jnp.log(jnp.broadcast_to(jnp.arange(1, shape[-1] + 1, dtype=dtype), shape))
+
+
 @tx.struct
 class Mixer[D, E, N, R, K]:
     """The Mamba block: model width D, inner width E, state N, dt rank R, conv width K."""
 
-    in_proj: f32[2 * E, D]
-    conv_weight: f32[E, K]
-    conv_bias: f32[E]
-    x_proj: f32[R + 2 * N, E]
-    dt_weight: f32[E, R]
-    dt_bias: f32[E]
-    A_log: f32[E, N]
-    skip: f32[E]
-    out_proj: f32[D, E]
-
-    def __init__(self, key: Key, d: int, state: int = 16, conv: int = 4, expand: int = 2):
-        e, r = expand * d, math.ceil(d / 16)
-        k = jr.split(key, 6)
-        self.in_proj = jr.uniform(k[0], (2 * e, d), minval=-1, maxval=1) / math.sqrt(d)
-        self.conv_weight = jr.uniform(k[1], (e, conv), minval=-1, maxval=1) / math.sqrt(conv)
-        self.conv_bias = jnp.zeros(e)
-        self.x_proj = jr.uniform(k[2], (r + 2 * state, e), minval=-1, maxval=1) / math.sqrt(e)
-        self.dt_weight = jr.uniform(k[3], (e, r), minval=-1, maxval=1) / math.sqrt(r)
-        dt = jnp.exp(jr.uniform(k[4], (e,)) * (math.log(0.1) - math.log(1e-3)) + math.log(1e-3))
-        self.dt_bias = dt + jnp.log(-jnp.expm1(-dt))  # softplus(dt_bias) = dt
-        self.A_log = jnp.log(jnp.tile(jnp.arange(1.0, state + 1), (e, 1)))  # S4D real
-        self.skip = jnp.ones(e)
-        self.out_proj = jr.uniform(k[5], (d, e), minval=-1, maxval=1) / math.sqrt(e)
+    in_proj: f32[2 * E, D] = linear
+    conv_weight: f32[E, K] = linear
+    conv_bias: f32[E] = 0.0
+    x_proj: f32[R + 2 * N, E] = linear
+    dt_weight: f32[E, R] = linear
+    dt_bias: f32[E] = dt_bias
+    A_log: f32[E, N] = s4d_real
+    skip: f32[E] = 1.0
+    out_proj: f32[D, E] = linear
 
     def __call__[T](self, x: f32[T, D]) -> f32[T, D]:
         xz = x @ self.in_proj.T
@@ -133,18 +129,18 @@ class Block[D, E, N, R, K]:
 class Mamba[V, P, D, E, N, R, K]:
     """A language model: vocabulary V (embedding table padded to P rows), width D."""
 
-    embedding: f32[P, D]
+    embedding: f32[P, D] = jax.nn.initializers.normal(1.0)
     layers: list[Block[D, E, N, R, K]]
     norm_f: RMSNorm[D]
-    lm_head: f32[V, D]
+    lm_head: f32[V, D] = linear
 
-    def __init__(self, key: Key, vocab: int, d: int, layers: int, state: int = 16, conv: int = 4, expand: int = 2):
-        ke, kh, *kl = jr.split(key, layers + 2)
+    @classmethod
+    def create(cls, key: Key, vocab: int, d: int, layers: int, state: int = 16, conv: int = 4, expand: int = 2):
+        """The original's sizes from its settings: inner width, dt rank, padded vocabulary."""
         padded = -(-vocab // 8) * 8
-        self.embedding = jr.normal(ke, (padded, d))
-        self.layers = [Block(RMSNorm(d), Mixer(k, d, state, conv, expand)) for k in kl]
-        self.norm_f = RMSNorm(d)
-        self.lm_head = jr.uniform(kh, (vocab, d), minval=-1, maxval=1) / math.sqrt(d)
+        return cls.init(
+            key, V=vocab, P=padded, D=d, E=expand * d, N=state, R=math.ceil(d / 16), K=conv, layers=layers
+        )
 
     def __call__[T](self, tokens: Int[T]) -> f32[T, V]:
         h = self.embedding[tokens]
@@ -180,7 +176,7 @@ class Mamba[V, P, D, E, N, R, K]:
 
 
 if __name__ == "__main__":
-    model = Mamba(jr.key(0), vocab=100, d=64, layers=3)
+    model = Mamba.create(jr.key(0), vocab=100, d=64, layers=3)
     tokens = jr.randint(jr.key(1), (24,), 0, 100)
     print("logits", model(tokens).shape, " loss", float(model.loss(tokens)))
     print("sampled", model.generate(tokens[:8], 8, jr.key(2)))

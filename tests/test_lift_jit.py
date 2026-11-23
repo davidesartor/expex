@@ -116,10 +116,74 @@ def test_checks_run_once_per_trace_under_jax_jit():
         step(jnp.ones((3, 3)), 0.5, 2)
 
 
-def test_old_options_point_to_their_replacements():
-    for opt, hint in [("jit", "jax.jit"), ("remat", "jax.checkpoint"), ("random", "tx.random")]:
-        with pytest.raises(TypeError, match=hint):
-            fn(**{opt: True})
+def test_fn_options():
+    calls = []
+
+    @fn(jit=True)
+    def tile[N](x: f32[N], n: int, lr: float) -> f32[N * n]:
+        calls.append(1)
+        return jnp.tile(x, n) * lr
+
+    tile(jnp.ones(3), 2, 0.1)
+    tile(jnp.ones(3), 2, 0.5)
+    assert len(calls) == 1 and tx.prove(tile).ok
+
+    @fn(jit=True, random=True, lift=True)
+    def noise[D](x: f32[D]) -> f32[D]:
+        return x + jr.normal(tx.key(), x.shape)
+
+    a = noise(jnp.zeros((2, 3)))
+    assert a.shape == (2, 3) and not jnp.allclose(a[0], a[1])
+    assert not jnp.allclose(a, noise(jnp.zeros((2, 3))))
+
+    @fn(remat="dots", jit=True)
+    def layer[B, D](x: f32[B, D], w: f32[D, D], depth: int) -> f32[B, D]:
+        for _ in range(depth):
+            x = jnp.tanh(x @ w)
+        return x
+
+    def loss(w):
+        return layer(jnp.ones((4, 8)), w, 3).sum()
+
+    g = jax.grad(loss)(jnp.eye(8) * 0.5)
+    plain = jax.grad(lambda w: jnp.tanh(jnp.tanh(jnp.tanh(jnp.ones((4, 8)) @ w) @ w) @ w).sum())(jnp.eye(8) * 0.5)
+    assert jnp.allclose(g, plain, atol=1e-6) and tx.prove(layer).ok
+
+    @fn(jit=True, donate="state")
+    def step[N](state: f32[N], grad: f32[N]) -> f32[N]:
+        return state - 0.1 * grad
+
+    assert step(jnp.ones(3), jnp.ones(3)).tolist() == pytest.approx([0.9] * 3)
+    with pytest.raises(TypeError, match="only applies with jit"):
+        fn(donate="x")(lambda x: x)
+    with pytest.raises(TypeError, match="called lift=True"):
+        fn(vectorize=True)
+    with pytest.raises(ValueError, match="remat must be"):
+        fn(remat="sometimes")(lambda x: x)
+
+
+def test_options_on_struct_methods():
+    @tx.struct
+    class Lin[I, O]:
+        w: f32[O, I]
+
+        @fn(jit=True, lift=True)
+        def __call__(self, x: f32[I]) -> f32[O]:
+            return self.w @ x
+
+    assert Lin(jnp.ones((2, 3)))(jnp.ones((5, 3))).shape == (5, 2)
+    assert tx.prove(Lin.__call__).ok
+
+
+def test_print_works_under_jit(capfd):
+    @fn(jit=True)
+    def show[N](x: f32[N]) -> f32[N]:
+        print("x =", x)
+        return x * 2
+
+    show(jnp.arange(3.0))
+    jax.effects_barrier()
+    assert "x = [0. 1. 2.]" in capfd.readouterr().out
 
 
 def test_nested_lift_traces_each_function_once_per_example_shape():
@@ -216,7 +280,7 @@ def test_tx_jit_reads_static_arguments_from_the_signature():
 
     @tx.jit
     @fn
-    def tile[N](x: f32[N], n: int, lr: float, mode: str = "a") -> "f32[N * n]":  # quoted: no __future__ import here
+    def tile[N](x: f32[N], n: int, lr: float, mode: str = "a") -> "f32[N * n]":  # quoted forward reference
         calls.append(1)
         return jnp.tile(x, n) * lr
 

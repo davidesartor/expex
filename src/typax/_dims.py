@@ -5,8 +5,6 @@ checks them against an actual shape, and ``resolve`` settles derived sizes.
 ``describe`` / ``show`` print values as ``f32[3, 4]``.
 """
 
-from __future__ import annotations
-
 import typing
 from typing import Any
 
@@ -140,7 +138,7 @@ def parse_dim(item: Any, subst: dict[Any, Any]) -> Any:
         raise DimError(
             f"{item!r}: sizes are type parameters, not strings. Declare them in the "
             f"signature (def f[T](...)) and compute with them directly: f32[T + 1] "
-            f"(Python 3.14, or `from __future__ import annotations` before)."
+            f"(annotations are evaluated lazily, so this works as written)."
         )
     raise DimError(
         f"{item!r} is not a valid dimension. Use a type parameter, Literal[n], "
