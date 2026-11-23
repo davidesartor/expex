@@ -15,5 +15,6 @@ The full reference, one page per topic. Every example on these pages runs
 | [Porting JAX code](porting.md) | `expex.annotate`: annotations proposed for plain JAX functions from a run on examples |
 | [Errors](errors.md) | every error by its code (`EX101`): what triggers it, an example, and the fix |
 | [Equinox, Flax, Optax and Orbax](interop.md) | expex in Equinox and Flax modules, optimizers and masks (`expex.mask`), checkpoints with Orbax or `expex.save` |
+| [The design of expex](design.md) | the essay behind the library: why shapes in the signature, how it works, what the ports measured, limits, related work |
 
 The short version is the [front page](../README.md).

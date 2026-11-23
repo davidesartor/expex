@@ -6,6 +6,7 @@
     python benchmarks/run.py --quick                  # small configs, about a minute in all on CPU
     python benchmarks/run.py --config readme,realistic --only llama
     python benchmarks/run.py --out results/a100.json  # default: results/<device>-<date>[-quick].json
+    python benchmarks/run.py --compile-only           # compile times only (trace and XLA), best of --repeats
     python benchmarks/run.py --list                   # ports, configs and claims
 
 Each (port, config) runs in its own Python process, so that jit caches,
@@ -41,7 +42,8 @@ def load_port(name: str):
 # ------------------------------------------------------------------ worker
 
 
-def worker(port: str, config: str, out: str, quick: bool, rounds: int | None, device: str) -> None:
+def worker(port: str, config: str, out: str, quick: bool, rounds: int | None, device: str,
+           compile_only: bool = False, repeats: int = 3) -> None:
     import harness
 
     if device != "auto":
@@ -53,7 +55,9 @@ def worker(port: str, config: str, out: str, quick: bool, rounds: int | None, de
     module = load_port(port)
     cfg = module.CONFIGS[config]
     settings = harness.Settings.quick() if quick else harness.Settings()
-    if rounds:
+    if compile_only:
+        settings = harness.Settings.compile(repeats)
+    elif rounds:
         settings.rounds = rounds
     env = harness.environment()
     print(f"[{port}/{config}] {cfg}", flush=True)
@@ -74,6 +78,7 @@ def worker(port: str, config: str, out: str, quick: bool, rounds: int | None, de
         "wall_s": time.perf_counter() - start,
         "load_average_before": env["load_average"],
         "load_average_after": os.getloadavg() if hasattr(os, "getloadavg") else None,
+        "unroll_layers": os.environ.get("EXPEX_UNROLL_LAYERS"),
         "environment": env,
         "measures": results,
     }
@@ -92,18 +97,23 @@ def main() -> None:
     parser.add_argument("--rounds", type=int, help="timed rounds per measure (default 15, quick 5)")
     parser.add_argument("--out", help="JSON file (default: benchmarks/results/<device>-<date>[-quick].json)")
     parser.add_argument("--timeout", type=float, default=3600, help="seconds per (port, config) process")
+    parser.add_argument("--compile-only", action="store_true", help="time compiles only (trace and XLA), no runs")
+    parser.add_argument("--repeats", type=int, default=3, help="cold compiles per measure with --compile-only (best kept)")
     parser.add_argument("--list", action="store_true", help="list ports, configs and claims")
     parser.add_argument("--worker", nargs=3, metavar=("PORT", "CONFIG", "OUT"), help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     if args.worker:
-        worker(*args.worker, quick=args.quick, rounds=args.rounds, device=args.device)
+        worker(*args.worker, quick=args.quick, rounds=args.rounds, device=args.device,
+               compile_only=args.compile_only, repeats=args.repeats)
         return
 
     names = args.only.split(",") if args.only else port_names()
     unknown = set(names) - set(port_names())
     if unknown:
         sys.exit(f"unknown ports: {', '.join(sorted(unknown))} (have {', '.join(port_names())})")
+    if args.compile_only and not args.only:
+        names = [n for n in names if n != "overhead"]  # nothing to compile there
     ports = {n: load_port(n) for n in names}
 
     if args.list:
@@ -123,7 +133,7 @@ def main() -> None:
                                capture_output=True, text=True, env=env)  # fmt: skip
         kind = "gpu" if probe.stdout.strip() == "gpu" else "cpu"
     label = "gpu" if "gpu" in (args.device, kind) else "cpu"
-    out = pathlib.Path(args.out) if args.out else HERE / "results" / f"{label}-{time.strftime('%Y-%m-%d')}{'-quick' if args.quick else ''}.json"
+    out = pathlib.Path(args.out) if args.out else HERE / "results" / f"{label}-{time.strftime('%Y-%m-%d')}{'-quick' if args.quick else ''}{'-compile' if args.compile_only else ''}.json"
     if not out.is_absolute() and not out.parent.exists() and (HERE / out).parent.exists():
         out = HERE / out  # `--out results/x.json` from the repository root
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -143,6 +153,8 @@ def main() -> None:
                 cmd.append("--quick")
             if args.rounds:
                 cmd += ["--rounds", str(args.rounds)]
+            if args.compile_only:
+                cmd += ["--compile-only", "--repeats", str(args.repeats)]
             t = time.perf_counter()
             try:
                 proc = subprocess.run(cmd, env=env, timeout=args.timeout, stderr=subprocess.PIPE, text=True)

@@ -97,12 +97,51 @@ _CMP = {
 }  # fmt: skip
 
 
+def _sym_eq(a: Any, b: Any, op: str) -> bool:
+    """``a == b`` (``op`` "Eq") or ``a != b`` on symbolic sizes, decided soundly.
+
+    JAX answers ``T == 6`` with False because the expressions differ, which holds
+    for some sizes only: the prover would then take one branch of ``if T == 6`` as
+    the only one. Decided here from the bounds JAX can prove; otherwise it is
+    inconclusive, like ``T > 1``, and the prover splits on it.
+    """
+    from jax._src.export.shape_poly import InconclusiveDimensionOperation
+
+    def decide(f: Callable[[], Any]) -> bool | None:
+        try:
+            return bool(f())
+        except InconclusiveDimensionOperation:
+            return None
+
+    ge, le = decide(lambda: a >= b), decide(lambda: a <= b)
+    if ge is False or le is False:
+        eq = False
+    elif ge and le:
+        eq = True
+    else:
+        sign = "==" if op == "Eq" else "!="
+        raise InconclusiveDimensionOperation(f"Symbolic dimension comparison '{a}' {sign} '{b}' is inconclusive.")
+    return eq if op == "Eq" else not eq
+
+
+def _symbolic(v: Any) -> bool:
+    return type(v) not in (int, bool) and not isinstance(v, (Tracer, jax.Array, np.ndarray)) and jax.export.is_symbolic_dim(v)
+
+
 def cmp_(left: Any, ops: tuple[str, ...], *rights: Callable[[], Any]) -> Any:
-    """A chained comparison ``a < b < c``: each operand is evaluated once."""
+    """A comparison ``a < b`` or ``a < b < c``: each operand is evaluated once.
+
+    Converted where a comparison may meet a symbolic size (the prover's ``T``):
+    ``T == 6`` is then decided soundly, or inconclusive (see :func:`_sym_eq`).
+    """
     acc: Any = None
+    r: Any = True
     for op, thunk in zip(ops, rights):
         right = thunk()
-        r = _CMP[op](left, right)
+        if op in ("Eq", "NotEq") and (_symbolic(left) or _symbolic(right)):
+            r = _sym_eq(left, right, op)
+        else:
+            r = _CMP[op](left, right)
         if acc is not None:
             r = jnp.logical_and(acc, r)
         if isinstance(r, Tracer) or jnp.ndim(r) > 0:
@@ -110,7 +149,7 @@ def cmp_(left: Any, ops: tuple[str, ...], *rights: Callable[[], Any]) -> Any:
         elif not r:
             return r
         left = right
-    return True if acc is None else acc
+    return r if acc is None else acc
 
 
 def not_(x: Any) -> Any:

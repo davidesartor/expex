@@ -17,6 +17,7 @@ import itertools
 import math
 import pkgutil
 import random
+import re
 import sys
 import types
 from dataclasses import dataclass, field
@@ -317,21 +318,14 @@ def _prove_case(
 ) -> Report:
     # 1. Symbolic sizes: a proof of the declared output, for all sizes at once.
     try:
-        jaxpr, _, sym_err = trace.attempt(
-            f,
-            fixed,
-            abstract,
-            lambda: trace.Sizes(
-                export.SymbolicScope(constraints), None, var_rank, statics, multiples=trace.multiples(f, statics)
-            ),
-        )
+        jaxprs, sym_err = _symbolic(f, fixed, abstract, var_rank, constraints, statics)
     except Unsynthesizable as u:
         return Report(
             f, UNCHECKED,
             f"the prover cannot invent a value for `{u}`. "
             f"Add @fn(examples={{...}}) for that parameter.", code="EX701",
         )  # fmt: skip
-    unproven = _unproven_reshapes(jaxpr) if jaxpr is not None else []
+    unproven = list(dict.fromkeys(u for j in jaxprs for u in _unproven_reshapes(j)))
 
     # 2. Concrete sizes: confirms failures, and validates what symbolic tracing
     #    cannot (JAX defers some checks when sizes are symbolic).
@@ -380,6 +374,71 @@ def _prove_case(
         f"holds at sizes {at}, but could not be proved for all sizes:\n" + _indent(reason),
         code=code_of(sym_err) or "EX702",  # the reason's own code, when it has one
     )  # fmt: skip
+
+
+_INCONCLUSIVE = re.compile(r"comparison '(.+?)' (>=|>|<=|<|==|!=) '(.+?)' is inconclusive")
+_MAX_SPLITS = 16
+
+
+def _regions(a: str, op: str, b: str) -> list[list[str]]:
+    """Constraints (in ``jax.export`` syntax) for regions that together cover every size,
+    in each of which ``a op b`` has one answer."""
+    if op in ("<", "<="):
+        a, b, op = b, a, {"<": ">", "<=": ">="}[op]
+    if op == ">":
+        return [[f"{a} >= {b} + 1"], [f"{b} >= {a}"]]
+    if op == ">=":
+        return [[f"{a} >= {b}"], [f"{b} >= {a} + 1"]]
+    # == / !=: above, below, and equal (JAX takes `term == expression` only)
+    return [[f"{a} >= {b} + 1"], [f"{b} >= {a} + 1"], [f"{a} == {b}", f"{b} == {a}"]]
+
+
+def _symbolic(
+    f: Fn[Any, Any],
+    fixed: dict[str, Any],
+    abstract: list[str],
+    var_rank: dict[str, int],
+    constraints: list[str],
+    statics: dict[str, int],
+) -> tuple[list[Any], BaseException | None]:
+    """Trace on symbolic sizes: (jaxprs, error).
+
+    A comparison of sizes that is true for some sizes and false for others
+    (``if T > 1``) splits the sizes into regions (``T >= 2``, ``1 >= T``), each traced
+    with its constraint added, where the comparison has one answer. The function is
+    proved when every region is; a region with no sizes at all is vacuous.
+    """
+    jaxprs: list[Any] = []
+    todo = [list(constraints)]
+    splits = 0
+    while todo:
+        cs = todo.pop()
+        jaxpr, _, err = trace.attempt(
+            f, fixed, abstract,
+            lambda cs=cs: trace.Sizes(export.SymbolicScope(cs), None, var_rank, statics, multiples=trace.multiples(f, statics)),
+        )  # fmt: skip
+        if err is None:
+            jaxprs.append(jaxpr)
+            continue
+        if isinstance(err, ValueError) and "Unsatisfiable constraint" in str(err):
+            continue  # no sizes in this region
+        m = _INCONCLUSIVE.search(str(err))
+        if m is None or splits >= _MAX_SPLITS:
+            return jaxprs, err
+        splits += 1
+        for region in _regions(*m.groups()):
+            for c in region:  # the first form of the constraint that JAX accepts
+                try:
+                    export.SymbolicScope([*cs, c])
+                except ValueError as e:
+                    if "Unsatisfiable" in str(e):
+                        break  # an empty region
+                    continue
+                todo.append([*cs, c])
+                break
+            else:
+                return jaxprs, err  # a region that cannot be written as a constraint
+    return jaxprs, None
 
 
 class Reports(list):  # type: ignore[type-arg]

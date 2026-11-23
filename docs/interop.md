@@ -1,6 +1,6 @@
 # Equinox, Flax, Optax and Orbax
 
-[← Errors](errors.md) · [Contents](README.md)
+[← Errors](errors.md) · [Contents](README.md) · [The design of expex →](design.md)
 
 expex works on pytrees and plain JAX calls, so it can be adopted one module or
 one function at a time: annotate an Equinox or Flax module's arrays and
@@ -473,4 +473,4 @@ sharded over several, or holding layers whose arrays expex cannot see.
 
 ---
 
-[← Errors](errors.md) · [Contents](README.md)
+[← Errors](errors.md) · [Contents](README.md) · [The design of expex →](design.md)

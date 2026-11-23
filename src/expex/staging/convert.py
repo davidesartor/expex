@@ -360,8 +360,16 @@ class _Exprs(ast.NodeTransformer):
         return ast.copy_location(self._with_call(call), node)
 
     def visit_Compare(self, node: ast.Compare) -> Any:
+        # `if T > 1`, `if T == 6`: a size may be symbolic (under the prover), where
+        # a plain comparison is inconclusive or, for `==`, wrongly False (see ops.cmp_)
+        sized = len(node.ops) == 1 and any(
+            (isinstance(m, ast.Name) and m.id in self.axis_names)
+            or (isinstance(m, ast.Attribute) and m.attr == "shape")
+            or (isinstance(m, ast.Call) and isinstance(m.func, ast.Name) and m.func.id == "len")
+            for m in ast.walk(node)
+        )
         self.generic_visit(node)
-        if self.plain or len(node.ops) < 2 or _has_walrus(node):
+        if self.plain or (len(node.ops) < 2 and not sized) or _has_walrus(node):
             return node
         ops = ast.Tuple(elts=[ast.Constant(type(o).__name__) for o in node.ops], ctx=ast.Load())
         return ast.copy_location(

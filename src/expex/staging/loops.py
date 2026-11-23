@@ -69,7 +69,9 @@ def _as_iter(it: Any) -> _Iter | None:
     if isinstance(it, (list, tuple)) and len(it) >= 2:
         stacked = _stack_alike(it)
         if stacked is not None:  # e.g. a list of identical layers: one scan, not n copies
-            return _Iter(len(it), stacked, lambda x, i: x, lambda: it, layers=True)
+            r = _Iter(len(it), stacked, lambda x, i: x, lambda: it, layers=True)
+            r.items = list(it)
+            return r
     return None
 
 
@@ -360,7 +362,15 @@ def _lower_for(
         LOG[site] = f"for -> lax.scan (carries {', '.join(names[j] for j in carry_idx)})"
         if unroll:
             LOG[site] += f", unrolled when compiled ({n} identical layers)"
-        final, (ys, lasts) = lax.scan(step, init, (it.xs, idx), unroll=unroll)
+        if unroll and VARIANT["mode"] in ("replay", "barrier"):
+            final, (ys, lasts) = _replay_layers(step, init, it, n)
+        elif unroll and VARIANT["mode"] == "scanbar":
+            def barred(c, xi):
+                c2, y = step(c, xi)
+                return lax.optimization_barrier(c2), y
+            final, (ys, lasts) = lax.scan(barred, init, (it.xs, idx), unroll=unroll)
+        else:
+            final, (ys, lasts) = lax.scan(step, init, (it.xs, idx), unroll=unroll)
 
     out = list(state)
     for j, v in zip(carry_idx, final):
@@ -379,6 +389,30 @@ def _lower_for(
                     f"`{names[j]}` receives values of different shapes in one iteration"
                 ) from None
     return tuple(out)
+
+
+import os
+VARIANT = {"mode": os.environ.get("PROTO", "scan")}
+
+
+def _replay_layers(step, init, it, n):
+    import numpy as np
+    from jax.extend.core import jaxpr_as_fun
+    idt = jax.dtypes.canonicalize_dtype(np.int64)
+    item = lambda l: jax.tree.map(lambda a: a[l], it.xs) if getattr(it, "items", None) is None else it.items[l]
+    closed, shape = jax.make_jaxpr(step, return_shape=True)(init, (item(0), np.asarray(0, idt)))
+    carry = init
+    ys_all, last = [], None
+    for l in range(n):
+        flat = jax.tree.leaves((carry, (item(l), np.asarray(l, idt))))
+        out = jax.tree.unflatten(jax.tree.structure(shape), jax.core.eval_jaxpr(closed.jaxpr, closed.consts, *flat))
+        carry, (ys, last) = out
+        if VARIANT["mode"] == "barrier" and l < n - 1:
+            carry = lax.optimization_barrier(carry)
+        ys_all.append(ys)
+    ys = jax.tree.map(lambda *a: jnp.stack(a), *ys_all) if ys_all and jax.tree.leaves(ys_all[0]) else ys_all[0]
+    lasts = jax.tree.map(lambda a: a[None], last)
+    return carry, (ys, lasts)
 
 
 def _unroll(it: _Iter) -> bool:

@@ -67,6 +67,12 @@ def render_file(result: dict) -> str:
     lines.append(f"`{result['command']}` ({result['wall_s'] / 60:.1f} min)")
     lines.append("")
     ports = [r for r in result["runs"] if r["port"] != "overhead"]
+    compile_only = bool(ports) and all(
+        "run" not in e for r in ports if "error" not in r for m in r["measures"] for e in m["impls"].values()
+    )
+    if compile_only:
+        lines += compile_table(ports)
+        return "\n".join(lines)
     if ports:
         lines += [
             "| Port | Config | Measure | Original | Port | Speedup best (median; IQR range) | Port throughput | Compile orig → port | README claim | Same result |",
@@ -118,6 +124,35 @@ def render_file(result: dict) -> str:
         "(for callables that are not one `jax.jit`)."
     )
     return "\n".join(lines)
+
+
+def compile_table(runs: list[dict]) -> list[str]:
+    """Compile times only (from `run.py --compile-only`): trace + lower and XLA, original and port."""
+    lines = [
+        "| Port | Config | Measure | Original trace | Original XLA | Original total | Port trace | Port XLA | Port total | Port / original |",
+        "|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for run in runs:
+        if "error" in run:
+            lines.append(f"| {run['port']} | {run['config']} | **failed** | {' '.join(run['error'][-1:])} | | | | | | |")
+            continue
+        for m in run["measures"]:
+            cells, totals = [], []
+            for label in m.get("labels", ["original", "port"]):
+                c = m["impls"].get(label, {}).get("compile")
+                if not c:
+                    cells += ["–"] * 3
+                    totals.append(None)
+                    continue
+                cells += [f"{c['trace_s']:.2f} s", f"{c['xla_s']:.2f} s", f"**{c['best_s']:.2f} s**"]
+                totals.append(c["best_s"])
+            ratio = f"{totals[1] / totals[0]:.2f}x" if None not in totals and totals[0] else ""
+            lines.append(f"| {run['port']} | {run['config']} | {m['name']} | " + " | ".join(cells) + f" | {ratio} |")
+    lines.append("")
+    lines.append("Trace = `jit(f).lower(*args)` (tracing and lowering to StableHLO), XLA = `.compile()`, each from "
+                 "cold caches (`jax.clear_caches()`), best of the repeats.")
+    lines.append("")
+    return lines
 
 
 def render(results: list[dict]) -> str:

@@ -12,6 +12,7 @@ modules share; ``for`` lives in ``_loops.py``, operators and builtins in
 ``_ops.py``. Generated code reaches all of them through ``_runtime.py``.
 """
 
+import math
 import threading
 from collections.abc import Sequence
 from typing import Any, Callable
@@ -164,9 +165,9 @@ def _cond(
         jaxprs.append(closed)
     plan = _plan(recs, names, site)
 
-    def replay(k: int) -> Callable[[], tuple[Any, ...]]:
+    def replay(k: int, consts: list[Any] | None = None) -> Callable[[], tuple[Any, ...]]:
         def run() -> tuple[Any, ...]:
-            values = iter(eval_jaxpr(jaxprs[k].jaxpr, jaxprs[k].consts))
+            values = iter(eval_jaxpr(jaxprs[k].jaxpr, jaxprs[k].consts if consts is None else consts))
             out: list[Any] = []
             for i, (kind, v) in enumerate(recs[k]):
                 p = plan.get(i)
@@ -186,8 +187,11 @@ def _cond(
 
         return run
 
+    how = _selectable(pred, jaxprs)
+    res = _select(pred, jaxprs, replay, masked=how == "masked") if how else None
     try:
-        res = lax.cond(pred, replay(0), replay(1))
+        if res is None:
+            res = lax.cond(pred, replay(0), replay(1))
     except TypeError as e:
         e.add_note(f"expex: in the `if` at {site}; variables it assigns: {', '.join(names)}")
         raise
@@ -210,6 +214,101 @@ def _cond(
                 f"and dtype."
             ))
     return tuple(out)
+
+
+#: A branch this small is computed outright rather than put in a ``lax.cond`` (see ``_selectable``).
+_SELECT_EQNS = 32
+_SELECT_ELEMENTS = 4096
+#: Primitives that make a branch worth skipping at run time (or that ``_cheap`` cannot see into).
+_COSTLY = {"while", "scan", "cond", "dot_general", "conv_general_dilated", "custom_jvp_call", "custom_vjp_call"}
+
+try:  # private, but there is no public way to ask "is this value being vmapped?"
+    from jax._src.interpreters.batching import BatchTracer as _BatchTracer
+except Exception:  # pragma: no cover
+    _BatchTracer = ()  # type: ignore[assignment,misc]
+
+
+def _selectable(pred: Any, jaxprs: list[Any]) -> str | None:
+    """Whether a traced two-way choice is emitted as a ``select`` of both branches rather than a ``lax.cond``.
+
+    Only where the ``cond`` would give the same values, gradients and effects:
+
+    * the condition is one ``lax.cond`` takes (a boolean or an integer), and
+      neither branch has effects (``print``, ``assert``, ``raise``, callbacks);
+    * ``"masked"``: the condition is mapped over (``vmap``, a mapped call). JAX
+      then turns the ``cond`` into this same ``select`` of both branches, each
+      branch's inputs masked with ``stop_gradient`` where it is not taken (the
+      NaN-safe gradient); building it here saves tracing and batching the
+      ``cond``, and masks only the float inputs (the others carry no gradient);
+    * ``"plain"``: every value the branches give is a boolean or an integer, so
+      no gradient flows through the choice, and both branches are small, so
+      computing both is no slower than branching. The common case is ``a and
+      b`` on traced conditions, as in ``while 0 <= r < R and board[r, c] == x:``.
+    """
+    kind = getattr(getattr(pred, "dtype", None), "kind", None)
+    if kind not in ("b", "i", "u") or any(closed.effects for closed in jaxprs):
+        return None
+    if isinstance(pred, _BatchTracer) and getattr(pred, "batch_dim", None) is not None:
+        return "masked"
+    for closed in jaxprs:
+        if any(getattr(a, "dtype", None) is None or a.dtype.kind not in "biu" for a in closed.out_avals):
+            return None
+    budget = [_SELECT_EQNS, _SELECT_ELEMENTS]
+    return "plain" if all(_cheap(closed.jaxpr, budget) for closed in jaxprs) else None
+
+
+def _cheap(jaxpr: Any, budget: list[int]) -> bool:
+    """Whether ``jaxpr`` fits in ``budget`` (equations, output elements), which it uses up."""
+    for e in jaxpr.eqns:
+        if e.primitive.name in _COSTLY:
+            return False
+        budget[0] -= 1
+        budget[1] -= sum(math.prod(getattr(v.aval, "shape", ())) for v in e.outvars)
+        if budget[0] < 0 or budget[1] < 0:
+            return False
+        for p in e.params.values():
+            sub = getattr(p, "jaxpr", p)
+            if hasattr(sub, "eqns") and not _cheap(sub, budget):
+                return False
+    return True
+
+
+def _select(
+    pred: Any, jaxprs: list[Any], replay: Callable[..., Callable[[], tuple[Any, ...]]], masked: bool
+) -> tuple[Any, ...] | None:
+    """Both branches' values and a ``select`` between them (see ``_selectable``); None if their types differ."""
+    taken = _truth(pred)
+    if masked:  # as JAX's batching rule of `cond`: a branch's inputs carry no gradient where it is not taken
+        branches = [
+            replay(k, [_mask(on, c) for c in jaxprs[k].consts])() for k, on in ((0, taken), (1, ~taken))
+        ]
+    else:
+        branches = [replay(0)(), replay(1)()]
+    out: list[Any] = []
+    for a, b in zip(*branches):
+        la, ta = jax.tree.flatten(a)
+        lb, tb = jax.tree.flatten(b)
+        if ta != tb:
+            return None
+        xs = []
+        for x, y in zip(la, lb):
+            x, y = _array(x), _array(y)
+            if jnp.shape(x) != jnp.shape(y) or x.dtype != y.dtype or _weak(x) != _weak(y):
+                return None
+            xs.append(lax.select(taken, x, y))
+        out.append(jax.tree.unflatten(ta, xs))
+    return tuple(out)
+
+
+def _mask(on: Any, x: Any) -> Any:
+    if isinstance(x, Tracer) and jnp.issubdtype(x.dtype, jnp.inexact):
+        return lax.select(on, x, lax.stop_gradient(x))
+    return x
+
+
+def _array(x: Any) -> Any:
+    """A value replayed from a jaxpr as an array: a literal comes back as a Python or NumPy scalar."""
+    return x if isinstance(x, (jax.Array, Tracer)) else jnp.asarray(x)
 
 
 def _plan(recs: list[list[tuple[str, Any]]], names: tuple[str, ...], site: str) -> dict[int, Any]:
@@ -389,7 +488,7 @@ def if_(
         return r
 
     LOG[site] = "if -> lax.cond"
-    return _cond(pred, (run(true_fn, taken), run(false_fn, ~taken)), names, site)
+    return _cond(pred, (run(true_fn, taken), run(false_fn, lambda: ~taken)), names, site)  # `not` only if read
 
 
 def ifexp(pred: Any, a: Callable[[], Any], b: Callable[[], Any], site: str) -> Any:
@@ -414,7 +513,7 @@ def _select_expr(pred: Any, a: Callable[[], Any], b: Callable[[], Any], site: st
 
         return r
 
-    return _cond(pred, (side(a, taken), side(b, ~taken)), ("<the expression>",), site)[0]
+    return _cond(pred, (side(a, taken), side(b, lambda: ~taken)), ("<the expression>",), site)[0]
 
 
 # ------------------------------------------------------------- traced depth

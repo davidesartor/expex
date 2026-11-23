@@ -41,7 +41,7 @@ from .dims import (
 from . import jaxtyping as jt
 from .errors import Mismatch, code_of, coded, strip_see
 from .expr import Expr
-from .sym import evaluate, named_sizes, texts
+from .sym import dropped, evaluate, import_hint, named_sizes, texts
 from .types import ArrayAnn, BatchAnn, DType, KeyAnn, StaticAnn
 
 # --------------------------------------------------------------------------
@@ -739,6 +739,14 @@ def _class_annotations(cls: type) -> dict[str, Any]:
                 try:
                     v = evaluate(text, glb, scope)
                 except Exception:
+                    # a class defined further down is skipped, but `f32[D]` without
+                    # `f32` imported must not leave the field unchecked
+                    if dtypes := dropped(text, glb, scope):
+                        raise coded("EX402", TypeError(
+                            f"{cls.__name__}: the annotation of the field `{k}` ({text}) uses "
+                            f"{', '.join(sorted(dtypes))}, which is not defined, so it could not "
+                            f"be checked. Import it{import_hint(dtypes)}."
+                        )) from None
                     continue
             out[k] = v
     return out

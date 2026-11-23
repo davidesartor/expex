@@ -223,7 +223,8 @@ def _rows(hook: _Hook, grad_ratio: float, growth: float) -> list[Row]:
     for r in rows:
         groups.setdefault(r.group, []).append(r)
     for layers in (g for g in groups.values() if len(g) > 1):
-        med = statistics.median(r.grad["rms"] for r in layers if r.grad)
+        grads = [r.grad["rms"] for r in layers if r.grad]  # none when the loss does not reach these calls
+        med = statistics.median(grads) if grads else 0.0
         for prev, r in zip([None, *layers], layers):
             if r.grad and med > 0 and r.grad["rms"] > grad_ratio * med:
                 r.flags.append(f"gradient exploding: RMS {r.grad['rms'] / med:.2g}× the layers' median")

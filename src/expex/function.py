@@ -185,6 +185,13 @@ def _annotations(raw: Callable[..., Any], localns: dict[str, Any]) -> dict[str, 
     return out
 
 
+def _leafy(ann: Any) -> bool:
+    try:
+        return parse(ann).leafy
+    except Exception:
+        return True  # an error of its own, raised where it is parsed
+
+
 class Fn(Generic[P, R]):
     """A function whose shape annotations are checked, provable and usable.
 
@@ -275,6 +282,12 @@ class Fn(Generic[P, R]):
             raw_texts = sym.texts(raw)
             for k in self._pending:
                 self._unknown_in(k, raw_texts.get(k), glb, scope, names)
+        if not (names and names[0] in ("self", "cls")):
+            # read as something else (`Int` as jaxtyping's, with nothing imported): not dropped silently
+            glb = getattr(raw, "__globals__", {})
+            for k, text in sym.texts(raw).items():
+                if isinstance(text, str) and k not in self._pending and not _leafy(anns.get(k)):
+                    self._unknown_in(k, text, glb, _scope(raw, self._localns), names)
         self._derive = derive
         self.params: dict[str, Param] = {}
         for name, p in self._sig.parameters.items():
@@ -411,6 +424,8 @@ class Fn(Generic[P, R]):
                 except Exception:
                     self._unknown_in(k, text, glb, scope, self.params)
                     continue
+                if not spec.leafy:
+                    self._unknown_in(k, text, glb, scope, self.params)
                 spec.names(self._declared)
                 if self.defs:
                     spec = spec.replace_dims(self._derive)
@@ -535,7 +550,17 @@ class Fn(Generic[P, R]):
         except ExprError:
             raise  # size arithmetic that is not supported (T / 2, T ** 2): say so, don't skip the check
         except Exception:
-            return
+            missing, leafy = set(), False
+        # `f32[T]` without `f32` imported, `f32[*B]` without `B` declared: array
+        # annotations all the same, not ones to skip like a TYPE_CHECKING-only class
+        if not leafy and (names := sym.dropped(text, glb, scope, params)):
+            what = "the result" if where == "return" else f"`{where}`"
+            raise coded("EX402", TypeError(
+                f"{self.name}: the annotation of {what} ({text}) uses "
+                f"{', '.join(sorted(names))}, which is not defined, so it could not be "
+                f"checked. Import it{sym.import_hint(names)}, or declare the size "
+                f"(def f[*B, T](...))."
+            ))
         if missing and leafy:
             what = "the result" if where == "return" else f"`{where}`"
             raise coded("EX402", TypeError(

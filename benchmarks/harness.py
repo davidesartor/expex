@@ -104,10 +104,15 @@ class Settings:
     min_sample_s: float = 0.05
     compile_repeats: int = 3
     budget_s: float = 240.0  # per measure: stop adding rounds after this (at least 3 rounds)
+    compile_only: bool = False  # time compiles only: no warm-up, check or timed rounds
 
     @classmethod
     def quick(cls) -> Settings:
         return cls(rounds=5, min_sample_s=0.02, compile_repeats=1, budget_s=20.0)
+
+    @classmethod
+    def compile(cls, repeats: int = 3) -> Settings:
+        return cls(rounds=0, compile_repeats=repeats, compile_only=True)
 
 
 def _block(x):
@@ -128,12 +133,13 @@ def _compile(f: Fn) -> tuple[dict, Any] | None:
     if not hasattr(f.call, "lower"):
         return None
     jax.clear_caches()
-    t0 = time.perf_counter()
+    t0, c0 = time.perf_counter(), time.process_time()
     lowered = f.call.lower(*f.args)
-    t1 = time.perf_counter()
+    t1, c1 = time.perf_counter(), time.process_time()
     compiled = lowered.compile()
-    t2 = time.perf_counter()
-    return {"trace": t1 - t0, "xla": t2 - t1, "total": t2 - t0}, compiled
+    t2, c2 = time.perf_counter(), time.process_time()
+    # process CPU seconds too: on a loaded machine they change less than wall time
+    return {"trace": t1 - t0, "xla": t2 - t1, "total": t2 - t0, "trace_cpu": c1 - c0, "xla_cpu": c2 - c1}, compiled
 
 
 def summarize(samples: list[float]) -> dict:
@@ -155,7 +161,7 @@ def summarize(samples: list[float]) -> dict:
 def run_measure(m: Measure, settings: Settings, log=print) -> dict:
     impls = {m.labels[0]: m.original, m.labels[1]: m.port}
     impls = {k: v for k, v in impls.items() if v is not None}
-    out: dict[str, Any] = {"name": m.name, "items": m.items, "unit": m.unit, "note": m.note, "impls": {}}
+    out: dict[str, Any] = {"name": m.name, "items": m.items, "unit": m.unit, "note": m.note, "labels": list(m.labels), "impls": {}}
 
     # compile, from cold caches, interleaved
     compiles: dict[str, list[dict]] = {k: [] for k in impls}
@@ -166,6 +172,17 @@ def run_measure(m: Measure, settings: Settings, log=print) -> dict:
             if c is not None:
                 compiles[label].append(c[0])
                 impls[label] = Fn(c[1], impls[label].args)  # run the executable just compiled
+
+    if settings.compile_only:
+        for label in impls:
+            if compiles[label]:
+                out["impls"][label] = {"compile": _compile_entry(compiles[label])}
+        line = f"  {m.name:22s} compile"
+        for label, e in out["impls"].items():
+            c = e["compile"]
+            line += f"  {label} {c['best_s']:.2f} s (trace {c['trace_s']:.2f}, xla {c['xla_s']:.2f}; cpu {c['trace_cpu_s']:.2f} + {c['xla_cpu_s']:.2f})"
+        log(line)
+        return out
 
     # warm up, record the first call
     first: dict[str, float] = {}
@@ -200,15 +217,7 @@ def run_measure(m: Measure, settings: Settings, log=print) -> dict:
         stats = summarize(samples[label])
         entry: dict[str, Any] = {"run": stats, "inner": inner[label], "first_call_s": first[label]}
         if compiles[label]:
-            totals = [c["total"] for c in compiles[label]]
-            entry["compile"] = {
-                "method": "aot",
-                "cold_s": totals[0],
-                "best_s": min(totals),
-                "trace_s": min(c["trace"] for c in compiles[label]),
-                "xla_s": min(c["xla"] for c in compiles[label]),
-                "all_s": totals,
-            }
+            entry["compile"] = _compile_entry(compiles[label])
         elif m.compile:
             entry["compile"] = {"method": "first call - median", "cold_s": first[label] - stats["median"]}
         entry["throughput"] = m.items / stats["best"]
@@ -232,6 +241,22 @@ def run_measure(m: Measure, settings: Settings, log=print) -> dict:
         line += f"  -> {out['speedup']['best']:.2f}x best, {out['speedup']['median']:.2f}x median"
     log(line)
     return out
+
+
+def _compile_entry(compiles: list[dict]) -> dict:
+    totals = [c["total"] for c in compiles]
+    return {
+        "method": "aot",
+        "cold_s": totals[0],
+        "best_s": min(totals),
+        "trace_s": min(c["trace"] for c in compiles),
+        "xla_s": min(c["xla"] for c in compiles),
+        "all_s": totals,
+        "all_trace_s": [c["trace"] for c in compiles],
+        "all_xla_s": [c["xla"] for c in compiles],
+        "trace_cpu_s": min(c["trace_cpu"] for c in compiles),
+        "xla_cpu_s": min(c["xla_cpu"] for c in compiles),
+    }
 
 
 def fmt_time(s: float) -> str:

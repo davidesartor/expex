@@ -11,7 +11,7 @@ import jax.random as jr
 ROOT = pathlib.Path(__file__).parent.parent
 
 
-GUIDE = ["functions", "modules", "compiling", "cost-and-diagrams", "debugging", "reference", "tools", "porting", "errors", "interop"]
+GUIDE = ["functions", "modules", "compiling", "cost-and-diagrams", "debugging", "reference", "tools", "porting", "errors", "interop", "design"]
 
 
 def run_blocks(doc: str | list[str], tmp_path: pathlib.Path) -> dict:
@@ -90,3 +90,6 @@ def test_guide_blocks_run(tmp_path, capsys, monkeypatch):
     assert "lookup(tokens: Int[batch, seq], table: Float[vocab, d]) -> Float[batch, seq, d]" in out  # jaxtyping
     assert "EX101 expected dtype Int, got f32." in out
     assert type(ns["grads"]).__name__ == "Stack" and ns["y"].shape == (4, 16)
+    # design.md
+    assert "flops        4·D·F + 9·F + D" in out and "MLP(up=True, bias=False, down=True)" in out
+    assert "['f32[1024,64,8]', 'f32[8,3]']\n['f32[65536,8]', 'f32[8,3]']" in out

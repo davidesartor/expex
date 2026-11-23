@@ -192,6 +192,68 @@ def evaluate(text: str, glb: dict[str, Any], scope: dict[str, Any], params: Any 
     return evaluate(out, glb, scope, params) if isinstance(out, str) else out
 
 
+#: Names that only mean an array annotation: expex's dtypes and categories, jaxtyping's.
+ANNOTATION_NAMES = frozenset(
+    "f16 f32 f64 bf16 i8 i16 i32 i64 u8 u16 u32 u64 c64 c128 Arr Bool Int UInt Float Complex "
+    "Inexact Num Key Static Batch Shaped Real Integer Array Float16 Float32 Float64 Int32 Int64 "
+    "BFloat16 PRNGKeyArray".split()
+)
+_DTYPE_LIKE = re.compile(r"(bf|[fiuc])(8|16|32|64|128)")
+
+
+def dropped(text: str, glb: dict[str, Any], scope: dict[str, Any], params: Any = ()) -> set[str]:
+    """The undefined names that keep an array annotation from being checked.
+
+    For an annotation that did not evaluate to an array annotation: ``f32[T]`` with
+    ``f32`` not imported, ``Float[Array, "b t"]`` with neither jaxtyping nor its
+    names, or ``f32[*B]`` with ``B`` not declared. It was meant to be checked, so it
+    must not be skipped as an unknown class is (a ``TYPE_CHECKING``-only import, or
+    a class defined further down). Empty for those.
+    """
+    from .types import DType
+
+    try:
+        tree = ast.parse(text, mode="eval")
+    except SyntaxError:
+        return set()
+    if isinstance(tree.body, ast.Constant) and isinstance(tree.body.value, str):  # quoted
+        return dropped(tree.body.value, glb, scope, params)
+    missing = undefined(text, glb, scope, params)
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in missing:
+            if node.id in ANNOTATION_NAMES or _DTYPE_LIKE.fullmatch(node.id):
+                out.add(node.id)
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
+            head = scope.get(node.value.id, glb.get(node.value.id))
+            if isinstance(head, DType):  # f32[*B]: an array annotation with an unknown size
+                out |= {m.id for m in ast.walk(node.slice) if isinstance(m, ast.Name) and m.id in missing}
+    return out
+
+
+def undefined(text: str, glb: dict[str, Any], scope: dict[str, Any], params: Any = ()) -> set[str]:
+    """The names ``text`` reads that are defined nowhere it could take them from."""
+    import builtins
+
+    try:
+        tree = ast.parse(text, mode="eval")
+    except SyntaxError:
+        return set()
+    known = set(glb) | set(scope) | set(params) | {"self"}
+    return {
+        n.id for n in ast.walk(tree)
+        if isinstance(n, ast.Name) and n.id not in known and not hasattr(builtins, n.id)
+    }  # fmt: skip
+
+
+def import_hint(names: set[str]) -> str:
+    """Where the undefined annotation names come from: ``: from expex import f32``."""
+    from . import types as t
+
+    ours = sorted(n for n in names if n in t.__all__)
+    return f": from expex import {', '.join(ours)}" if ours and len(ours) == len(names) else ""
+
+
 def unknown_names(text: str, glb: dict[str, Any], scope: dict[str, Any], params: Any = ()) -> tuple[Any, set[str]]:
     """Evaluate with every unknown name as a size; return the value and those names."""
     import builtins
@@ -209,7 +271,10 @@ def unknown_names(text: str, glb: dict[str, Any], scope: dict[str, Any], params:
     for p in params:
         ns.setdefault(p, Sym(p))
     ns["self"] = _Self()
-    return eval(text, glb, ns), missing  # noqa: S307
+    out = eval(text, glb, ns)  # noqa: S307
+    while isinstance(out, str):  # an annotation written in quotes, read from its text: quoted twice
+        out = eval(out, glb, ns)  # noqa: S307
+    return out, missing
 
 
 # --------------------------------------------------------------------------
