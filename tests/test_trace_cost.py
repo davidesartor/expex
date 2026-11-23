@@ -63,7 +63,7 @@ def test_and_of_small_traced_conditions_is_a_select_not_a_cond():
     assert int(jax.jit(run_length)(BOARD, 3, 2)) == 3
     assert int(jax.jit(run_length)(BOARD, 2, 2)) == 1
     assert int(jax.jit(run_length)(BOARD, 5, 2)) == 1  # r = 6: `board[r, col]` is not reached in Python
-    assert jax.vmap(run_length, (None, 0, None))(BOARD, jnp.arange(6), 0).tolist() == [1, 1, 1, 3, 2, 1]
+    assert jax.vmap(run_length, (None, 0, None))(BOARD, jnp.arange(6), 0).tolist() == [3, 2, 1, 3, 2, 1]
 
 
 def test_and_or_values_are_python_s():
@@ -114,8 +114,9 @@ def test_if_on_a_mapped_condition_is_one_select_with_masks_on_float_inputs():
     xs = jnp.array([4.0, 0.0, -1.0])
     counts = primitives(jax.vmap(safe_sqrt), xs)
     assert counts["cond"] == 0  # JAX's batching rule would turn it into the same select
-    assert counts["select_n"] == 3  # the result, and x masked in each branch
-    assert counts["stop_gradient"] == 2
+    assert counts["select_n"] == 2  # the result, and x masked in the branch that reads it
+    assert counts["stop_gradient"] == 1
+    assert counts["not"] == 0
     assert counts["convert_element_type"] == counts["eq"] == 0  # JAX's rule compares an index per branch
     # the gradient is still NaN-free, in every order of the transformations
     for g in (jax.vmap(jax.grad(safe_sqrt)), jax.jit(jax.vmap(jax.grad(safe_sqrt))),

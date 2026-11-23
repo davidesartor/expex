@@ -279,9 +279,15 @@ def _select(
     """Both branches' values and a ``select`` between them (see ``_selectable``); None if their types differ."""
     taken = _truth(pred)
     if masked:  # as JAX's batching rule of `cond`: a branch's inputs carry no gradient where it is not taken
-        branches = [
-            replay(k, [_mask(on, c) for c in jaxprs[k].consts])() for k, on in ((0, taken), (1, ~taken))
-        ]
+        branches = []
+        for k, on in ((0, lambda: taken), (1, lambda: ~taken)):
+            consts = list(jaxprs[k].consts)
+            masks = [i for i, c in enumerate(consts) if isinstance(c, Tracer) and jnp.issubdtype(c.dtype, jnp.inexact)]
+            if masks:
+                where = on()
+                for i in masks:
+                    consts[i] = lax.select(where, consts[i], lax.stop_gradient(consts[i]))
+            branches.append(replay(k, consts)())
     else:
         branches = [replay(0)(), replay(1)()]
     out: list[Any] = []
@@ -298,12 +304,6 @@ def _select(
             xs.append(lax.select(taken, x, y))
         out.append(jax.tree.unflatten(ta, xs))
     return tuple(out)
-
-
-def _mask(on: Any, x: Any) -> Any:
-    if isinstance(x, Tracer) and jnp.issubdtype(x.dtype, jnp.inexact):
-        return lax.select(on, x, lax.stop_gradient(x))
-    return x
 
 
 def _array(x: Any) -> Any:

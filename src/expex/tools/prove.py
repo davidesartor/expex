@@ -393,6 +393,28 @@ def _regions(a: str, op: str, b: str) -> list[list[str]]:
     return [[f"{a} >= {b} + 1"], [f"{b} >= {a} + 1"], [f"{a} == {b}", f"{b} == {a}"]]
 
 
+def _pinned_equal(cs: list[str], a: str, b: str) -> list[str]:
+    """``cs``, with ``a == b`` added where ``cs`` already forces it (``1 >= T`` for ``T >= 1``).
+
+    JAX compares sizes by their expressions: ``T - 1`` is not ``0`` unless the scope
+    says ``T == 1`` in so many words.
+    """
+    try:
+        scope = export.SymbolicScope(cs)
+        ea, eb = export.symbolic_shape(f"{a}, {b}", scope=scope)
+        if not (ea >= eb and eb >= ea):
+            return cs
+    except Exception:
+        return cs
+    for c in (f"{a} == {b}", f"{b} == {a}"):
+        try:
+            export.SymbolicScope([*cs, c])
+            return [*cs, c]
+        except ValueError:
+            continue
+    return cs
+
+
 def _symbolic(
     f: Fn[Any, Any],
     fixed: dict[str, Any],
@@ -434,7 +456,7 @@ def _symbolic(
                     if "Unsatisfiable" in str(e):
                         break  # an empty region
                     continue
-                todo.append([*cs, c])
+                todo.append(_pinned_equal([*cs, c], *m.group(1, 3)))
                 break
             else:
                 return jaxprs, err  # a region that cannot be written as a constraint
