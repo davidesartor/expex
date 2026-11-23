@@ -143,6 +143,107 @@ FLOPs of a call, as formulas in the sizes and as numbers. `expex.summary(Stack,
 D=16, blocks=24)` gives the same without building the model. In a notebook,
 or with `.save("summary.html")`, it is a collapsible, sortable table.
 
+### One page for a model
+
+`expex.inspect` puts the summary, the diagram, the cost of each module, the
+activations and the line profile in one page, with a tab each:
+
+```python
+x = jnp.ones((8, 16))
+page = expex.inspect(model, x)                                    # x: example inputs of model(x)
+page = expex.inspect(model, x, loss=lambda m, x: (m(x) ** 2).mean())   # gradients too
+page.save("model.html")                                           # in a notebook, it shows itself
+print(page)
+```
+
+```
+<expex.inspect Stack: summary, diagram, cost, activations, profile>
+```
+
+- The inputs fix the call's sizes (`B=8` here) and give the **Activations**
+  tab: `expex.debug.watch` of `loss(model, *args)`, or of the forward call
+  alone (no gradients) without a loss. Without inputs, sizes go by keyword
+  (`expex.inspect(model, B=64)`), and `expex.inspect(Stack, D=16, blocks=24,
+  B=64)` builds nothing, as `expex.summary` does.
+- Each tab is the tool's own view: `summary`, `diagram`, `cost` (one card per
+  module, formula and number; modules with the same estimate share one),
+  `debug.watch`, `debug.profile`. Clicking a module in any of them selects it
+  everywhere: its summary row is highlighted, the diagram opens and centres
+  it, and the cost cards, activation rows and profile sections are filtered
+  to it and the modules inside it (Esc shows everything again).
+- One self-contained file, light or dark with the system or a toggle; the
+  diagram's page is embedded gzipped. A tool that fails leaves its error
+  in its tab (`page.errors`), with the diagram of a `ShapeError`.
+
+In a notebook, structs, `ShapeError`s, `expex.prove` reports and `expex.cost`
+estimates also display themselves: a struct as a tree of its fields with their
+shapes and parameter counts (`Stack[D=16]  6,528 parameters`; arrays are not
+printed), an error with its diagram (traced when shown, not when raised), a
+proof as a table whose failures open. Nothing is computed until then.
+
+## Sizes from a config
+
+One config object can drive the constructor and the tools, in place of the
+same keywords written out each time. It goes right after the key (or the
+target, for the tools); keywords given as well override it:
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class StackConfig:
+    D: int = 16
+    blocks: int = 4
+    lr: float = 3e-4      # not a size or a field: building ignores it
+    steps: int = 1000
+
+config = StackConfig()
+built = Stack(jr.key(0), config)                  # or expex.build(Stack, jr.key(0), config)
+wide = Stack(jr.key(0), config, D=32)             # keywords override the config
+print(built.sizes, wide.sizes)
+print(expex.cost(Stack.__call__, config, B=8))    # also expex.summary(Stack, config), expex.diagram(Stack.__call__, config)
+assert expex.cost(built.__call__, built.sizes, B=8).flops == expex.cost(Stack.__call__, config, B=8).flops
+```
+
+```
+{'D': 16, 'blocks': 4} {'D': 32, 'blocks': 4}
+Stack.__call__   (sizes: D=16, L=4, B=8)
+  flops        21504   = 21.5 kFLOP
+  parameters   1088   = 1.09 k
+  largest      f32[B,D] (128 elements)
+  note: L = len(self.blocks)
+```
+
+- A config is a `dict`, a dataclass or `NamedTuple` instance, a class whose
+  attributes are the settings (`class Small: D: int = 64`, passed as it is),
+  an `argparse.Namespace`, or an object with `model_dump()` (pydantic) or
+  `to_dict()` (ml_collections). Its entries are read as the keywords would be:
+  sizes, lengths of lists of modules by field name, fields at any depth
+  (`heads`).
+- Entries that are none of those (a learning rate, a number of steps) are
+  ignored, so one config can hold the whole run. One named almost like a size
+  or a field (`haeds`, `Blocks`, `d` for `D`) is ignored with an
+  `expex.ConfigWarning` that names it: `Stack(key, {"d": 16, "blocks": 4})`
+  warns *the config's `d` is not a size or field, so it is ignored; did you
+  mean `D`?* before failing for want of `D`. `Stack(key, **cfg)` stays strict:
+  there, an unknown keyword is an error.
+- `model.sizes` reads the sizes back from the model's arrays, with the lengths
+  of its lists of modules and its int fields by field name, as the constructor
+  takes them: `Stack(key, model.sizes)` builds a model of the same shape, and
+  it is what to store next to a checkpoint.
+- The tools take from a config what they use: `expex.cost` and
+  `expex.diagram` the sizes and the call's own sizes and static parameters
+  (for a bound method, the instance fixes its sizes, so only the call's are
+  read); `expex.summary(Stack, config)` builds from it, abstractly. A field
+  that the unbound method cannot vary, such as `heads` with a value other
+  than the class default, is applied by building the model abstractly from
+  the config, so the counts are those of that model.
+- Why after the key, and not `config=`: a key first already takes no other
+  value by position, so `Stack(key, config)` cannot be mistaken for field
+  values, reads like `Stack(key, **config)`, and is the same in every tool
+  (`expex.cost(f, config, T=128)`); a `config=` keyword would claim a name
+  that models use for fields of their own.
+
 ## Saving and loading
 
 ```python

@@ -72,6 +72,8 @@ def _values(x: Any) -> str:
 
 
 def _short(v: Any, n: int = 60) -> str:
+    if callable(v) and hasattr(v, "__qualname__"):  # <function gelu>, not its address
+        return f"<{'class' if isinstance(v, type) else 'function'} {v.__qualname__}>"
     try:
         text = repr(v)
     except Exception:

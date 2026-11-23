@@ -36,7 +36,7 @@ class _Undefined:
         return "<undefined>"
 
     def __bool__(self) -> bool:
-        raise coded("EX212", NameError("this variable is not defined on every path that reaches here"))
+        raise NameError("this variable is not defined on every path that reaches here")
 
 
 UNDEF = _Undefined()

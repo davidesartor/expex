@@ -22,6 +22,8 @@ interface Diagnostic {
   end_column: number;
   severity: "error" | "warning" | "information";
   message: string;
+  code?: string | null; // "EX102": the section of docs/errors.md that explains the error
+  href?: string; // the link to that section
 }
 
 interface Result {
@@ -123,6 +125,9 @@ function show(uri: vscode.Uri, result: Result): void {
       const range = new vscode.Range(d.line - 1, d.column, d.line - 1, d.end_column);
       const diag = new vscode.Diagnostic(range, d.message, SEVERITY[d.severity] ?? vscode.DiagnosticSeverity.Error);
       diag.source = "expex";
+      if (d.code) {
+        diag.code = d.href ? { value: d.code, target: vscode.Uri.parse(d.href) } : d.code;
+      }
       return diag;
     })
   );

@@ -10,7 +10,9 @@ on every call, so from the second call with the same abstract signature it
 runs as one compiled ``jax.jit(vmap(...))`` per function (``_Compiled``).
 """
 
+import contextvars
 import inspect
+import math
 import re
 import weakref
 from typing import TYPE_CHECKING, Any, Callable
@@ -20,6 +22,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
 from jax.core import Tracer
+from jax.interpreters import batching as batching_rules
 
 from . import keys
 from .annotations.dims import describe
@@ -133,21 +136,113 @@ def vectorize(f: Fn[Any, Any], args: tuple[Any, ...], kwargs: dict[str, Any], au
         return f._run(b2.args, b2.kwargs, key=k)
 
     g: Callable[..., Any] = core_fn
-    for level in reversed(range(n)):
-        in_axes = tuple(0 if level in lv else None for lv in levels)
-        if any(a is not None for a in in_axes):
-            g = jax.vmap(g, in_axes=in_axes)
-        else:
-            g = jax.vmap(g, in_axes=in_axes, axis_size=bshape[level])
-    if not auto:
-        return g(*prepared)
+    if n > 1 and all(not lv or len(lv) == n for lv in levels):
+        # every argument has all the batch axes or none: map over them as one
+        # axis, so that each op inside sees one batch axis (see _flat_dot)
+        g = _collapsed(core_fn, bshape, [bool(lv) for lv in levels])
+    else:
+        for level in reversed(range(n)):
+            in_axes = tuple(0 if level in lv else None for lv in levels)
+            if any(a is not None for a in in_axes):
+                g = jax.vmap(g, in_axes=in_axes)
+            else:
+                g = jax.vmap(g, in_axes=in_axes, axis_size=bshape[level])
+    token = _MAPPING.set(True)
     try:
         return g(*prepared)
     except ShapeError as e:
+        if not auto:
+            raise
         failed = getattr(e, "_expex_arguments", None)
         if failed is None or failed[0] is not f:
             raise
         raise _per_element(f, e, failed[1], leaves, batches) from None
+    finally:
+        _MAPPING.reset(token)
+
+
+def _collapsed(core_fn: Callable[..., Any], bshape: tuple[Any, ...], batched: list[bool]) -> Callable[..., Any]:
+    """``core_fn`` mapped over the leading axes ``bshape`` of the batched arguments, as one flattened axis."""
+    n, size = len(bshape), math.prod(bshape)
+    mapped = jax.vmap(core_fn, in_axes=tuple(0 if b else None for b in batched))
+
+    def g(*lv: Any) -> Any:
+        flat = [jnp.reshape(v, (size, *jnp.shape(v)[n:])) if b else v for v, b in zip(lv, batched)]
+        return jax.tree.map(lambda y: jnp.reshape(y, (*bshape, *jnp.shape(y)[1:])), mapped(*flat))
+
+    return g
+
+
+# ---------------------------------------------- dots under nested mapped calls
+
+#: Whether an expex mapped call is being traced (see ``_flat_dot``).
+_MAPPING: contextvars.ContextVar[bool] = contextvars.ContextVar("expex_mapping", default=False)
+
+
+def _flat_dot(axis_data: Any, args: Any, dims: Any, **params: Any) -> Any:
+    """JAX's batching rule of ``dot_general``, which merges the mapped axis into the free axes it is next to.
+
+    A layer written for one element and mapped over several axes (a per-point
+    MLP in a per-ray function, each mapped over its batch) gets ``x @ w`` with
+    ``x: [rays, points, I]``: JAX's rule makes the mapped axis one more free
+    axis of the dot. Its gradient for ``w`` then contracts over two axes,
+    which XLA:CPU computes by transposing the whole activation first, at about
+    twice the cost of contracting a flattened ``[rays * points, I]``. Here,
+    while an expex mapped call is traced, an operand mapped over an axis next
+    to its free axes is reshaped so that they are one axis, and the result
+    reshaped back: same values, one free axis per operand. Anything else, and
+    every ``vmap`` outside expex's mapped calls, goes to JAX's rule.
+    """
+    if _MAPPING.get():
+        out = _flat_dot_general(args, dims, **params)
+        if out is not None:
+            return out
+    return _jax_dot_rule(axis_data, args, dims, **params)
+
+
+def _flat_dot_general(args: Any, dims: Any, *, dimension_numbers: Any, **params: Any) -> Any:
+    (lc, rc), (lb, rb) = dimension_numbers
+    if lb or rb or (dims[0] is None) == (dims[1] is None):
+        return None  # dot batch axes, or both operands mapped: JAX's rule makes the axis a batch axis
+    if params.get("out_sharding") is not None or params.get("reduction_order") is not None:
+        return None
+    side = 0 if dims[0] is not None else 1
+    x, bd = args[side], dims[side]
+    if type(bd) is not int:
+        return None
+    contract = lc if side == 0 else rc
+    rank = jnp.ndim(x) - 1  # without the mapped axis
+    free = [d for d in range(rank) if d not in contract]
+    if not free:
+        return None  # one free axis after mapping already
+    # the mapped axis and the free axes, in x's own axis order: they must be adjacent
+    group = sorted([bd] + [d + (d >= bd) for d in free])
+    start = group[0]
+    if group != list(range(start, start + len(group))):
+        return None
+    shape = jnp.shape(x)
+    sizes = shape[start : start + len(group)]
+    merged = jnp.reshape(x, (*shape[:start], math.prod(sizes), *shape[start + len(group) :]))
+    k = len(group) - 1
+    new_contract = tuple(c + (c >= bd) for c in contract)
+    new_contract = tuple(c if c < start else c - k for c in new_contract)
+    if side == 0:
+        numbers = ((new_contract, rc), ((), ()))
+        out = jax.lax.dot_general(merged, args[1], numbers, precision=params.get("precision"),
+                                  preferred_element_type=params.get("preferred_element_type"))  # fmt: skip
+        at = 0  # the lhs's one free axis comes first
+    else:
+        numbers = ((lc, new_contract), ((), ()))
+        out = jax.lax.dot_general(args[0], merged, numbers, precision=params.get("precision"),
+                                  preferred_element_type=params.get("preferred_element_type"))  # fmt: skip
+        at = jnp.ndim(out) - 1  # after the lhs's free axes
+    oshape = jnp.shape(out)
+    out = jnp.reshape(out, (*oshape[:at], *sizes, *oshape[at + 1 :]))
+    return out, at + group.index(bd)
+
+
+_jax_dot_rule = batching_rules.fancy_primitive_batchers[jax.lax.dot_general_p]
+batching_rules.fancy_primitive_batchers[jax.lax.dot_general_p] = _flat_dot
 
 
 def batch_plan(

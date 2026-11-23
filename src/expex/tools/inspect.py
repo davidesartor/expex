@@ -42,6 +42,7 @@ import jax.numpy as jnp
 import jax.random as jr
 
 from ..annotations.dims import Env
+from ..annotations.errors import coded
 from ..annotations.spec import join, parse_owner
 from ..function import Fn, unwrap
 from . import pages
@@ -104,15 +105,13 @@ def inspect(model: Any, /, *args: Any, loss: Any = None, **sizes: int) -> Inspec
     adds the gradients. Other keywords are sizes of the call (``T=128``), for the
     FLOP counts when no inputs are given. See the module docstring.
     """
-    from ..annotations.errors import ShapeError
-
     if isinstance(model, type):
         model, sizes = _build(model, sizes)
         if args or loss is not None:
-            raise TypeError("expex.inspect: a class has no arrays to run; pass an instance for activations")
+            raise coded("EX705", TypeError("expex.inspect: a class has no arrays to run; pass an instance for activations"))
     cls = type(model)
     if not getattr(cls, "__expex_struct__", False):
-        raise TypeError(f"expex.inspect: {cls.__name__} is not an @expex.struct")
+        raise coded("EX705", TypeError(f"expex.inspect: {cls.__name__} is not an @expex.struct"))
     call = unwrap(getattr(cls, "__call__", None))
     sizes = {**_call_sizes(model, args), **sizes} if args else dict(sizes)
     parts: dict[str, Any] = {}
@@ -121,9 +120,7 @@ def inspect(model: Any, /, *args: Any, loss: Any = None, **sizes: int) -> Inspec
     def attempt(tab: str, make: Any) -> None:
         try:
             parts[tab] = make()
-        except ShapeError as e:  # the page shows it, with its diagram
-            errors[tab] = e
-        except Exception as e:
+        except Exception as e:  # the tab shows it (a ShapeError with its diagram); the others are drawn
             errors[tab] = e
 
     from .summary import _call_sizes as seen_sizes
@@ -193,7 +190,7 @@ def _with_sizes(make: Any, sizes: dict[str, int]) -> Any:
     try:
         return make(**sizes)
     except TypeError as e:
-        if not sizes or "unknown size" not in str(e):
+        if not sizes or not (getattr(e, "code", None) == "EX706" or "unknown size" in str(e)):
             raise
         return make()
 

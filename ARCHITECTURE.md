@@ -13,7 +13,7 @@ remat are JAX's own. Each module has one job:
 | `expr.py` | Size arithmetic and constraints (`"T + 1"`, `"D % heads == 0"`). |
 | `sym.py` | Size arithmetic written in annotations (`f32[T + 1]`), read from their text. |
 | `spec.py` | Annotations parsed into specs, values matched against them, structs included; `fields()` walks a value's parts with their paths (`blocks[2].mlp.w1`). |
-| `errors.py` | `ShapeError`, `StageError`. |
+| `errors.py` | `ShapeError`, `StageError`; the error codes (`CODES`), and `coded`, which gives an error its code and the link to its section of `docs/errors.md`. |
 | `messages.py` | Error messages, hints and the notes added to exceptions. |
 | `function.py` | `Fn`: binds arguments, checks them and the result, runs the body; `config`. |
 | `decorators.py` | `@fn`, `@jit` (`donate="auto"` too), `@vectorize`, `@random`, `@remat`. |

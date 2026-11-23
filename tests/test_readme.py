@@ -10,7 +10,7 @@ import jax.random as jr
 ROOT = pathlib.Path(__file__).parent.parent
 
 
-GUIDE = ["functions", "modules", "compiling", "cost-and-diagrams", "debugging", "reference", "tools", "porting"]
+GUIDE = ["functions", "modules", "compiling", "cost-and-diagrams", "debugging", "reference", "tools", "porting", "errors"]
 
 
 def run_blocks(doc: str | list[str], tmp_path: pathlib.Path) -> dict:

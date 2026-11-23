@@ -377,7 +377,8 @@ def _prove_case(
     reason = _summ(sym_err) if sym_err is not None else "\n".join(unproven)
     return Report(
         f, SPOT,
-        f"holds at sizes {at}, but could not be proved for all sizes:\n" + _indent(reason), code="EX702",
+        f"holds at sizes {at}, but could not be proved for all sizes:\n" + _indent(reason),
+        code=code_of(sym_err) or "EX702",  # the reason's own code, when it has one
     )  # fmt: skip
 
 

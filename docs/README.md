@@ -13,5 +13,6 @@ The full reference, one page per topic. Every example on these pages runs
 | [Reference](reference.md) | annotation syntax, ported projects, limitations |
 | [Command line and editors](tools.md) | `python -m expex`, watch mode, shapes in the editor (VS Code) |
 | [Porting JAX code](porting.md) | `expex.annotate`: annotations proposed for plain JAX functions from a run on examples |
+| [Errors](errors.md) | every error by its code (`EX101`): what triggers it, an example, and the fix |
 
 The short version is the [front page](../README.md).

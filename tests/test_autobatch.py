@@ -89,7 +89,8 @@ def test_inconsistent_extra_axes_are_named():
         "so they cannot be mapped over.\n\n"
         "    x: f32[5, 3]  = batch [5] + f32[D]\n"
         "    y: f32[4, 3]  = batch [4] + f32[D]\n\n"
-        "    add[D](x: f32[D], y: f32[D]) -> f32[D]"
+        "    add[D](x: f32[D], y: f32[D]) -> f32[D]\n"
+        "  see https://github.com/davidesartor/expex/blob/main/docs/errors.md#ex105"
     )
 
 

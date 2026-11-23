@@ -43,6 +43,7 @@ changed (also ``.add``, ``.multiply``, ``.apply`` and ``.get``), checked
 against the annotations.
 """
 
+import copy
 import dataclasses
 import functools
 import inspect
@@ -149,6 +150,8 @@ def struct(cls: Any = None, /, *, compute: Any = None, **moved: Any) -> Any:
             if compute is not None and method.compute is None:
                 precision.install(method, compute)
             setattr(cls, name, wrapper(method) if wrapper else method)
+        if compute is not None:
+            _inherit_compute(cls, compute)
 
         if isinstance(unwrap(getattr(cls, "__call__", None)), Fn) and "vectorize" not in vars(cls):
 
@@ -189,6 +192,30 @@ def _repr_pretty(self: Any, p: Any, cycle: bool) -> None:
     from .tools.display import struct_text
 
     p.text(f"{type(self).__name__}(...)" if cycle else struct_text(self))
+
+
+def _inherit_compute(cls: Any, compute: Any) -> None:
+    """``@expex.struct(compute=...)`` on a subclass: its inherited methods compute in it too.
+
+    Each inherited ``@fn`` method without a setting of its own is copied onto
+    the subclass with the setting (the parent's method is left as it is).
+    Methods wrapped in ``jax.jit`` are not copied: decorate them in the subclass.
+    """
+    for base in cls.__mro__[1:]:
+        if not getattr(base, "__expex_struct__", False):
+            continue
+        for name, value in vars(base).items():
+            if name in vars(cls) or name in _SKIP or (name.startswith("__") and name != "__call__"):
+                continue
+            wrapper = type(value) if isinstance(value, (staticmethod, classmethod)) else None
+            method = value.__func__ if wrapper else value
+            if not isinstance(method, Fn) or method.compute is not None:
+                continue
+            if method._lazy:
+                method._resolve_owner()
+            own = copy.copy(method)
+            precision.install(own, compute)
+            setattr(cls, name, wrapper(own) if wrapper else own)
 
 
 def _invariants(cls: Any) -> tuple[Any, ...]:
@@ -820,7 +847,8 @@ def _user_level() -> int:
     import sys
 
     here = os.path.dirname(os.path.abspath(__file__))
-    frame, level = sys._getframe(1), 1
+    frame: Any = sys._getframe(1)
+    level = 1
     while frame is not None and (frame.f_code.co_filename.startswith(here) or frame.f_code.co_filename == "<string>"):
         frame, level = frame.f_back, level + 1
     return level
@@ -978,7 +1006,8 @@ def call_config(target: Any, config: Any, sizes: dict[str, Any], who: str) -> tu
                 import warnings
 
                 try:
-                    built = jax.eval_shape(lambda: build(owner, jr.key(0), {k: v for k, v in entries.items() if k in model}))
+                    cls: Any = owner
+                    built = jax.eval_shape(lambda: build(cls, jr.key(0), {k: v for k, v in entries.items() if k in model}))
                 except Exception as e:
                     warnings.warn(
                         f"{who}: the config sets {', '.join(changed)}, fields that only a model "
@@ -1056,7 +1085,8 @@ def _counts(obj: Any, out: dict[str, int]) -> None:
     spec = parse_owner(type(obj))
     specs = getattr(spec, "fields", {})
     for f in dataclasses.fields(obj):
-        v, s = getattr(obj, f.name, None), specs.get(f.name)
+        v: Any = getattr(obj, f.name, None)
+        s = specs.get(f.name)
         if isinstance(v, int) and not isinstance(v, bool) and (s is None or not s.leafy):
             out.setdefault(f.name, v)
         elif isinstance(s, SeqSpec) and isinstance(s.elem, StructSpec):
