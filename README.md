@@ -16,6 +16,8 @@ pip install expex          # Python 3.14+, JAX 0.12+
 import jax, jax.numpy as jnp, jax.random as jr
 import expex
 from expex import f32
+
+key = jr.key(0)
 ```
 
 ## JAX vs expex
@@ -28,7 +30,7 @@ from expex import f32
 
 ```python
 def attend(q, k):
-    # q: [B, T, D], k: [B, S, D] -> [B, T, S]
+    # q: [B,T,D], k: [B,S,D] -> [B,T,S]
     assert q.shape[0] == k.shape[0]
     assert q.shape[2] == k.shape[2]
     return jnp.einsum("btd,bsd->bts", q, k)
@@ -39,7 +41,8 @@ def attend(q, k):
 ```python
 @expex.fn
 def attend[B, T, S, D](
-    q: f32[B, T, D], k: f32[B, S, D]
+    q: f32[B, T, D],
+    k: f32[B, S, D],
 ) -> f32[B, T, S]:
     return expex.einsum(q, k, to=(B, T, S))
 ```
@@ -63,9 +66,11 @@ def rnn(w, xs):  # w: [D, D], xs: [T, D]
 
 ```python
 @expex.fn
-def rnn[T, D](w: f32[D, D], xs: f32[T, D]) -> f32[T, D]:
+def rnn[T, D](
+    w: f32[D, D], xs: f32[T, D]
+) -> f32[T, D]:
     h, hs = jnp.zeros(D), []
-    for t in range(T):         # a lax.scan carrying h
+    for t in range(T):  # a lax.scan
         h = jnp.tanh(w @ h + xs[t])
         hs.append(h)
     return jnp.asarray(hs)
@@ -81,7 +86,8 @@ def rnn[T, D](w: f32[D, D], xs: f32[T, D]) -> f32[T, D]:
 def safe_log(x):
     ok = x > 0
     safe = jnp.where(ok, x, 1.0)
-    return jnp.where(ok, jnp.log(safe), -jnp.inf)
+    return jnp.where(
+        ok, jnp.log(safe), -jnp.inf)
 ```
 
 </td><td>
@@ -89,7 +95,7 @@ def safe_log(x):
 ```python
 @expex.fn(jit=True, vectorize=True)
 def safe_log(x: f32) -> f32:
-    if x > 0:                  # lax.cond, any batch shape
+    if x > 0:  # lax.cond, any shape
         return jnp.log(x)
     return -jnp.inf
 ```
@@ -107,35 +113,38 @@ def init(key, D, L):
 
 def stack(params, x):
     def layer(x, p):
-        x = x + jax.nn.gelu(p["w"] @ x + p["b"])
-        return x, None
+        y = p["w"] @ x + p["b"]
+        return x + jax.nn.gelu(y), None
     x, _ = jax.lax.scan(layer, x, params)
     return x
 
-params = init(jr.key(0), D=64, L=12)
+params = init(key, D=64, L=12)
 ```
 
 </td><td>
 
 ```python
+normal = jax.nn.initializers.normal(0.1)
+
 @expex.struct
 class Block[D]:
-    w: f32[D, D] = jax.nn.initializers.normal(0.1)
+    w: f32[D, D] = normal
     b: f32[D] = 0.0
 
     def __call__(self, x: f32[D]) -> f32[D]:
-        return x + jax.nn.gelu(self.w @ x + self.b)
+        y = self.w @ x + self.b
+        return x + jax.nn.gelu(y)
 
 @expex.struct
 class Stack[D]:
     blocks: list[Block[D]]
 
     def __call__(self, x: f32[D]) -> f32[D]:
-        for block in self.blocks:   # one lax.scan
+        for block in self.blocks:  # a scan
             x = block(x)
         return x
 
-model = Stack.init(jr.key(0), D=64, blocks=12)
+model = Stack.init(key, D=64, blocks=12)
 ```
 
 </td></tr>
