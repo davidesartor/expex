@@ -37,7 +37,7 @@ def check(stats, x):
 
 def test_rows_per_layer_with_exact_stats(setup):
     m, batch = setup
-    w = watch(lambda m: m.loss.lift(batch).mean(), m)
+    w = watch(lambda m: m.loss.vectorize(batch).mean(), m)
     rows = by_name(w)
     assert [r.name for r in w.rows][:4] == [
         "Transformer.loss", "Transformer.__call__", "blocks[0].__call__", "blocks[0].norm1.__call__",
@@ -67,7 +67,7 @@ def test_planted_scale_is_flagged(setup):
     m, batch = setup
     blocks = list(m.blocks)
     blocks[1] = blocks[1].replace(mlp=blocks[1].mlp.replace(w2=blocks[1].mlp.w2 * 1e4))
-    w = watch(lambda m: m.loss.lift(batch).mean(), m.replace(blocks=blocks), growth=20.0)
+    w = watch(lambda m: m.loss.vectorize(batch).mean(), m.replace(blocks=blocks), growth=20.0)
     rows = by_name(w)
     assert any("activations growing" in f and "blocks[0].mlp" in f for f in rows["blocks[1].mlp.__call__"].flags)
     assert any("activations growing" in f for f in rows["blocks[1].__call__"].flags)
@@ -99,7 +99,7 @@ class Net[D]:
 
 def test_log_of_negative_is_flagged():
     net = Net([Logs(jnp.eye(3)), Logs(-jnp.eye(3)), Logs(jnp.eye(3))])
-    w = watch(lambda net, x: net.lift(x).sum(), net, jnp.ones((5, 3)))
+    w = watch(lambda net, x: net.vectorize(x).sum(), net, jnp.ones((5, 3)))
     rows = by_name(w)
     assert rows["layers[1].__call__"].out["nan"] == 15
     assert rows["layers[1].__call__"].flags[0] == "output not finite: 15 NaN, 0 inf"
@@ -110,11 +110,11 @@ def test_log_of_negative_is_flagged():
 
 def test_staged_loop_is_one_row(setup):
     m, batch = setup
-    w = watch(lambda m: m.loss.lift(batch).mean(), m, unroll=False)
+    w = watch(lambda m: m.loss.vectorize(batch).mean(), m, unroll=False)
     rows = by_name(w)
     assert "Block.__call__" in rows and "blocks[0].__call__" not in rows
     assert rows["Block.__call__"].count == 3 * 4  # every layer and every batch element
-    unrolled = by_name(watch(lambda m: m.loss.lift(batch).mean(), m))
+    unrolled = by_name(watch(lambda m: m.loss.vectorize(batch).mean(), m))
     assert rows["Transformer.__call__"].grad["rms"] == pytest.approx(unrolled["Transformer.__call__"].grad["rms"], rel=1e-4)  # fmt: skip
 
 
@@ -157,7 +157,7 @@ def test_html(setup, tmp_path):
     m, batch = setup
     blocks = list(m.blocks)
     blocks[2] = blocks[2].replace(mlp=blocks[2].mlp.replace(w2=blocks[2].mlp.w2 * 1e4))
-    w = watch(lambda m: m.loss.lift(batch).mean(), m.replace(blocks=blocks))
+    w = watch(lambda m: m.loss.vectorize(batch).mean(), m.replace(blocks=blocks))
     page = w.save(tmp_path / "w.html").read_text()
     assert page.startswith("<!doctype html>") and "http" not in page  # nothing from a CDN
     assert page.count('class="flag"') == len(w.flagged) > 0

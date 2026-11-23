@@ -22,7 +22,7 @@ def test_annotated_parameters_resolve_exactly():
     x = jnp.arange(24.0).reshape(2, 3, 4)
     assert jnp.allclose(pool(x), x.mean(1))
     assert expex.prove(pool).ok
-    assert jax.jit(pool)(x).shape == (2, 4) and pool.lift(jnp.ones((5, 2, 3, 4))).shape == (5, 2, 4)
+    assert jax.jit(pool)(x).shape == (2, 4) and pool.vectorize(jnp.ones((5, 2, 3, 4))).shape == (5, 2, 4)
 
 
 def test_intermediates_resolve_by_size_and_locals_by_annotation():

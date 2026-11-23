@@ -15,7 +15,7 @@ nested in, and the calls become nodes::
     >>> d.save("transformer.html")              # interactive
 
 - A call deeper than ``depth`` is one node, labelled with its input and output
-  shapes (per element for ``.lift``). Shallower calls are boxes around their
+  shapes (per element for ``.vectorize``). Shallower calls are boxes around their
   contents, so ``depth=2`` shows a block's attention and MLP.
 - Operations outside any call at that depth are drawn only when they say what
   the model does: ``matmul``, ``index``, reductions (``sum``, ``max``),
@@ -140,7 +140,7 @@ class _Stop(BaseException):
     A ``BaseException``, so it passes through expex's and JAX's ``except
     Exception`` handlers to the trace's top, carrying arrays traced at the top
     level: the arguments of the failing call, or of the innermost call around it
-    whose arguments are top-level tracers (a ``.lift``'s are unbatched).
+    whose arguments are top-level tracers (a ``.vectorize``'s are unbatched).
     """
 
     def __init__(self) -> None:
@@ -270,7 +270,7 @@ class _Builder:
         if uid not in self.by_uid:
             lifted = lifted or self.hook.lifted.get(uid, False)
             c = self.hook.calls.get(uid, dict(name="?", sig="", loc="", src="", ins="", outs=""))
-            self.by_uid[uid] = self.box(parent, "call", c["name"], lift=lifted, **c)
+            self.by_uid[uid] = self.box(parent, "call", c["name"], vectorize=lifted, **c)
         return self.by_uid[uid]
 
     def atom(self, box: int, label: str | None, kind: str, ins: list[Any], env: dict[Any, list[int]], eqn: Any = None) -> int:  # fmt: skip
@@ -290,9 +290,9 @@ class _Builder:
         for eqn in jaxpr.eqns:
             stack, name, p = str(eqn.source_info.name_stack), eqn.primitive.name, eqn.params
             b = base
-            for lift, short, uid in _TOKEN.findall(stack):
+            for vectorize, short, uid in _TOKEN.findall(stack):
                 if int(uid) != self.hook.root:
-                    b = self.call(b, int(uid), bool(lift))
+                    b = self.call(b, int(uid), bool(vectorize))
             srcs = lambda vs: [_get(env, v) for v in vs]
             outs: list[list[int]] | None = None
             if name == "optimization_barrier" and "expex-" in stack:
@@ -406,7 +406,7 @@ def _timing(m: dict[str, Any], b: dict[str, Any]) -> str:
 
 def _label(m: dict[str, Any], b: dict[str, Any]) -> str:
     """A closed call's node: name, types, and its time or what failed in it."""
-    lines = [("✗ " if b.get("err") else "") + b["l"] + (" · lift" if b["lift"] else "")]
+    lines = [("✗ " if b.get("err") else "") + b["l"] + (" · vectorized" if b["vectorize"] else "")]
     err = m.get("error")
     if b.get("err") == 2 and err and err["got"]:  # argument (or local) received vs declared, or the result
         arg = "return value" not in err["head"]
@@ -530,7 +530,7 @@ def _mermaid(m: dict[str, Any], expanded: set[int]) -> str:
             if isinstance(it, int):
                 b = m["boxes"][it]
                 share = f" · {b['s']:.1%}" if m.get("timing") and "s" in b else ""  # long titles wrap over the contents
-                title = b["l"] + (" · lift" if b.get("lift") else "") + share
+                title = b["l"] + (" · vectorized" if b.get("vectorize") else "") + share
                 out.append(f'{ind}subgraph b{it} ["{_esc(title)}"]')
                 emit(it, ind + "  ")
                 out.append(f"{ind}end")
@@ -585,7 +585,7 @@ def _outline(m: dict[str, Any]) -> str:
             b = boxes[i]
             if b["k"] == "loop" and b["l"] in ("then", "else") and not kids.get(i):
                 continue
-            name = ind + b["l"] + (" · lift" if b.get("lift") else "")
+            name = ind + b["l"] + (" · vectorized" if b.get("vectorize") else "")
             if b["k"] == "call":
                 what = f"{b['ins']} → {b['outs'] or '?'}"
             else:

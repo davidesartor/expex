@@ -1,4 +1,4 @@
-"""``f.lift(...)``: call an ``@fn`` on arguments with extra leading batch axes."""
+"""``f.vectorize(...)``: call an ``@fn`` on arguments with extra leading batch axes."""
 
 import inspect
 from typing import TYPE_CHECKING, Any, Callable
@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from ._fn import Fn
 
 
-def lift(f: Fn[Any, Any], args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+def vectorize(f: Fn[Any, Any], args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
     """Call the function with extra leading batch axes on any array argument.
 
     Each argument's batch axes are whatever precedes its declared shape.
@@ -38,9 +38,9 @@ def lift(f: Fn[Any, Any], args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
     except TypeError:
         return f._direct(args, original)  # let Python raise its own error
     try:
-        leaves, batches, bshape = batch_plan(f, ba.arguments, "lift")
+        leaves, batches, bshape = batch_plan(f, ba.arguments, "vectorize")
     except TypeError:
-        if not f.auto_lift:
+        if not f.auto_vectorize:
             raise
         return f._direct(args, original)  # variadic shapes: nothing to infer
     if not bshape:
@@ -51,7 +51,7 @@ def lift(f: Fn[Any, Any], args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
     levels: list[set[int]] = []
     if f.random and "key" not in f.params:  # one key per example
         if key is None:
-            key = _rng.fresh(f"{f.name}.lift()")
+            key = _rng.fresh(f"{f.name}.vectorize()")
         if KeySpec.batch_shape(key):  # already one key per example
             prepared.append(jnp.broadcast_to(key, bshape))
         else:

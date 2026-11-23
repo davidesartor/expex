@@ -426,7 +426,7 @@ class UnionSpec(Spec):
         try:
             opt = self._select(value, path, Env())
         except Mismatch:
-            # No exact match, e.g. an array with extra batch axes (as `lift`
+            # No exact match, e.g. an array with extra batch axes (as `vectorize`
             # sees it): fall back to the first member of the right kind.
             if value is None:
                 return value

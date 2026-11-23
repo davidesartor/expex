@@ -1,6 +1,6 @@
 # How expex is put together
 
-Everything starts from `@expex.fn` (`_fn.py`); `@expex.lift` and `@expex.random` set flags
+Everything starts from `@expex.fn` (`_fn.py`); `@expex.vectorize` and `@expex.random` set flags
 on the same `Fn` object, so they stack in any order. `@expex.jit` is `jax.jit` with
 `static_argnames` read from the signature. Gradients and remat are JAX's own. Each module has one job:
 
@@ -14,9 +14,9 @@ on the same `Fn` object, so they stack in any order. `@expex.jit` is `jax.jit` w
 | `_summary.py` | `expex.summary`: one row per module with parameters and FLOPs, as formulas and numbers. |
 | `_sym.py` | Size arithmetic written in annotations (`f32[T + 1]`), read from their text. |
 | `_expr.py` | Size arithmetic and constraints (`"T + 1"`, `"D % heads == 0"`). |
-| `_fn.py` | `@expex.fn`, `@expex.lift`, `@expex.random`, `@expex.jit`: binds arguments, checks them and the result, runs the body. |
+| `_fn.py` | `@expex.fn`, `@expex.vectorize`, `@expex.random`, `@expex.jit`: binds arguments, checks them and the result, runs the body. |
 | `_axes.py` | Axes by name: `x.sum(T)`, `axis=T`, resolved from annotations or sizes. |
-| `_lift.py` | `f.lift(...)`: mapping over extra leading axes. |
+| `_vectorize.py` | `f.vectorize(...)`: mapping over extra leading axes. |
 | `_messages.py` | Error messages, hints and the notes added to exceptions. |
 | `_consts.py` | `expex.eps`, `expex.tiny`, `expex.huge`: dtype limits resolved against the array they meet. |
 | `_cost.py` | `expex.cost`: FLOPs and parameters as polynomials in the sizes, from a symbolic trace. |
@@ -36,7 +36,7 @@ on the same `Fn` object, so they stack in any order. `@expex.jit` is `jax.jit` w
 | `_watch.py` | `expex.debug.watch`: per-call output and gradient statistics, with flags. |
 | `pytest_plugin.py` | `pytest --expex pkg`. |
 
-A call to an `@fn` goes `_fn.Fn.__call__` → (`_lift` if lifted) → `_run`
+A call to an `@fn` goes `_fn.Fn.__call__` → (`_vectorize` if lifted) → `_run`
 (opens a key scope if random) → `_run_checked`, which matches arguments with `_spec`, runs the
 converted body (`_convert` output calling `_runtime`), and matches the result.
 

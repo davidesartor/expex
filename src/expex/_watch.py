@@ -2,7 +2,7 @@
 
 ::
 
-    >>> w = watch(lambda m: m.loss.lift(batch).mean(), model)
+    >>> w = watch(lambda m: m.loss.vectorize(batch).mean(), model)
     >>> print(w)                    # one row per call, in call order, flagged rows marked
     >>> w.rows[2].grad["rms"]       # d loss / d (that call's output), as statistics
     >>> w.save("watch.html")        # collapsible, sortable, RMS per layer as bars
@@ -17,7 +17,7 @@ a tuple ``(loss, aux)`` whose ``aux`` is kept as ``Watch.aux``. Every
   occurs more than once gets its call index (``Attention.causal#3``).
 - Statistics of its output (mean, std, abs-max, RMS over the finite values,
   and the number of NaN and inf), and the same for the gradient of the loss
-  with respect to that output. A lifted call (``.lift``, ``jax.vmap``) or a
+  with respect to that output. A lifted call (``.vectorize``, ``jax.vmap``) or a
   call inside a staged loop is one row with statistics over every element:
   ``×n`` counts them.
 - Flagged when its output or gradient is not finite, when its gradient RMS is
@@ -29,7 +29,7 @@ How: the ``_fn.CALL_HOOK`` adds a zero scalar (the one differentiated input)
 to each output and passes it through an identity with a custom VJP. Its
 forward and backward each reduce the array to a few moments in the graph and
 send them to the host with ``jax.debug.callback``: under ``jit``, once per
-iteration of a ``scan``, and once per call under ``vmap`` / ``.lift`` (a
+iteration of a ``scan``, and once per call under ``vmap`` / ``.vectorize`` (a
 ``custom_vmap`` rule merges the moments of the batch in the graph). As every
 output depends on the zero, the backward pass reaches every call.
 
@@ -75,7 +75,7 @@ class Row:
 
     name: str  #: ``blocks[3].attn.__call__``, or ``Attention.causal#3``
     depth: int  #: nesting: calls made inside the previous shallower row
-    shape: str  #: the output, per call (per element of a ``.lift``)
+    shape: str  #: the output, per call (per element of a ``.vectorize``)
     count: int  #: outputs the statistics cover: batch elements × calls × loop iterations
     out: dict[str, float]
     grad: dict[str, float] | None

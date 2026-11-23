@@ -65,10 +65,10 @@ def test_eager_and_compiled_agree():
 def test_environment_step_matches_a_reference_rollout():
     # plain `if done:` inside step(), lifted over environments
     keys = jr.split(jr.key(0), 5)
-    obs, env = ppo.Env.reset.lift(keys)
+    obs, env = ppo.Env.reset.vectorize(keys)
     for t in range(60):
         step_keys = jr.split(jr.key(t), 5)
-        obs, env, reward, done, info = env.step.lift(step_keys, jnp.ones(5, jnp.int32))
+        obs, env, reward, done, info = env.step.vectorize(step_keys, jnp.ones(5, jnp.int32))
         assert obs.shape == (5, 4) and reward.shape == (5,)
     assert int(info.timestep[0]) == 60
     assert bool((env.cart.time < 60).all())  # always pushing right ends episodes

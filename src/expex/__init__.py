@@ -16,7 +16,7 @@ from ._io import load, save
 from ._shard import device_put, shard, shardings
 from ._dims import show
 from ._errors import ShapeError, StageError
-from ._fn import Fn, compile_cache, config, fn, jit, lift, random, remat
+from ._fn import Fn, compile_cache, config, fn, jit, vectorize, random, remat
 from ._loops import rows, stack
 from ._rng import key, rng, seed
 from ._struct import struct
@@ -50,7 +50,7 @@ from ._types import (
 
 __all__ = [
     # decorate
-    "fn", "jit", "lift", "random", "remat", "struct", "prove",
+    "fn", "jit", "vectorize", "random", "remat", "struct", "prove",
     "save", "load", "shard", "shardings", "device_put", "cost", "diff", "summary", "diagram", "eps", "tiny", "huge",
     # annotate
     "f16", "f32", "f64", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "c64", "c128",

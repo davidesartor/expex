@@ -27,13 +27,13 @@ def test_the_problem_exists_with_plain_where():
     assert jnp.isnan(g[1]) and jnp.isnan(g[2])
 
 
-def test_if_is_gradient_safe_under_vmap_and_lift():
+def test_if_is_gradient_safe_under_vmap_and_vectorize():
     xs = jnp.array([4.0, 0.0, -1.0])
     for mapped in (jax.vmap(jax.grad(safe_sqrt)), jax.jit(jax.vmap(jax.grad(safe_sqrt)))):
         assert mapped(xs).tolist() == [0.25, 0.0, 0.0]
-    g = jax.grad(lambda v: safe_sqrt.lift(v).sum())(xs)
+    g = jax.grad(lambda v: safe_sqrt.vectorize(v).sum())(xs)
     assert g.tolist() == [0.25, 0.0, 0.0]
-    assert safe_sqrt.lift(xs).tolist() == [2.0, 0.0, 0.0]
+    assert safe_sqrt.vectorize(xs).tolist() == [2.0, 0.0, 0.0]
     # forward mode and unbatched reverse mode agree
     assert jax.vmap(jax.jacfwd(safe_sqrt))(xs).tolist() == [0.25, 0.0, 0.0]
     assert jax.grad(safe_sqrt)(-1.0) == 0.0

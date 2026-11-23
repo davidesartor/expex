@@ -85,7 +85,7 @@ let expanded = new Set(), renders = 0, vb = null, base = null;
 
 const esc = s => [...s].map(c => '"[]<>#&|{}_*`~'.includes(c) ? "#" + c.codePointAt(0) + ";" : c).join("");
 const text = s => s.replace(/[&<>]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;"})[c]);
-const callLabel = b => b.l + (b.lift ? " · lift" : "");
+const callLabel = b => b.l + (b.vectorize ? " · vectorized" : "");
 const T = M.timing, E = M.error;
 const steps = M.heat;  // shares from which a box is one step hotter
 const heat = s => steps.filter(h => s >= h).length;
@@ -280,7 +280,7 @@ function describe(id, nodes) {
     if (b.err === 2 && E) return E.message;
     const inside = b.err === 1 ? "\n\n✗ the failing call is inside: " + E.head : "";
     if (b.k !== "call") return `${b.l}  (${b.k === "loop" ? "loop or branch" : b.k})${timeText(b)}${inside}`;
-    return `${b.sig || b.name}\n\n${b.ins} → ${b.outs || "?"}${b.lift ? "   (per element: called with .lift)" : ""}\n${b.loc}${timeText(b)}${inside}`;
+    return `${b.sig || b.name}\n\n${b.ins} → ${b.outs || "?"}${b.vectorize ? "   (per element: called with .vectorize)" : ""}\n${b.loc}${timeText(b)}${inside}`;
   }
   const n = nodes.get(id);
   if (!n) return "";
@@ -333,7 +333,7 @@ function showPanel(i) {
   const t = timeText(b).trim();
   panel.innerHTML = `<h2${b.err === 2 ? ' class="bad"' : ""}>${b.err === 2 ? "✗ " : ""}${text(b.name)}</h2><p>${text(b.sig)}</p>`
     + `<p class="muted">${text(b.ins)} → ${text(b.outs || "?")}`
-    + `${b.lift ? " (per element, via .lift)" : ""}<br>${text(b.loc)}${t ? "<br>" + text(t) : ""}</p>` + err + (src ? `<pre>${text(src)}</pre>` : "");
+    + `${b.vectorize ? " (per element, via .vectorize)" : ""}<br>${text(b.loc)}${t ? "<br>" + text(t) : ""}</p>` + err + (src ? `<pre>${text(src)}</pre>` : "");
 }
 
 function wire(el, nodes) {

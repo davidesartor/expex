@@ -16,7 +16,7 @@ array annotations are traced leaves, fields with plain Python types (numbers,
 strings, callables, tuples of those, ...) are static metadata. Every method
 is an ``@fn``, so its arguments, its result and ``self``'s fields are
 checked against the annotations, with the class's own dimensions shared.
-``module.lift(x)`` maps ``__call__`` over extra leading axes of ``x``, and
+``module.vectorize(x)`` maps ``__call__`` over extra leading axes of ``x``, and
 ``module.replace(field=...)`` returns a modified copy.
 """
 
@@ -47,7 +47,7 @@ def struct(cls: Any = None, /, **moved: Any) -> Any:
     """Turn a class into a typed module. See the module docstring.
 
     Methods are wrapped with ``@expex.fn``; one already decorated (``@expex.fn(...)``,
-    ``@expex.lift``, ``@expex.random``, ``@expex.jit``) keeps its own options.
+    ``@expex.vectorize``, ``@expex.random``, ``@expex.jit``) keeps its own options.
 
     A method's leading ``assert`` that only involves the class's sizes and
     fields, such as ``assert D % self.heads == 0``, is an invariant of the
@@ -106,14 +106,14 @@ def struct(cls: Any = None, /, **moved: Any) -> Any:
             method.__set_name__(cls, name)
             setattr(cls, name, wrapper(method) if wrapper else method)
 
-        if isinstance(unwrap(getattr(cls, "__call__", None)), Fn) and "lift" not in vars(cls):
+        if isinstance(unwrap(getattr(cls, "__call__", None)), Fn) and "vectorize" not in vars(cls):
 
-            def lift(self: Any, *args: Any, **kwargs: Any) -> Any:
+            def vectorize(self: Any, *args: Any, **kwargs: Any) -> Any:
                 """Call the module on inputs with extra leading batch axes."""
                 method: Any = unwrap(type(self).__call__)
-                return method.__get__(self).lift(*args, **kwargs)
+                return method.__get__(self).vectorize(*args, **kwargs)
 
-            cls.lift = lift
+            cls.vectorize = vectorize
         if "replace" not in vars(cls):
 
             def replace(self: Any, **changes: Any) -> Any:

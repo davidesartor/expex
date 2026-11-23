@@ -39,14 +39,14 @@ def test_rng_scope_opened_outside_jit_is_not_frozen_into_it():
 
 
 def test_stacked_decorators_register_once():
-    @expex.lift
+    @expex.vectorize
     @expex.random
     @fn
     def stacked[D](x: f32[D]) -> f32[D]:
         return x
 
     @fn(prove=False)
-    @expex.lift
+    @expex.vectorize
     def hidden[D](x: f32[D]) -> f32[D]:
         return x
 
@@ -65,12 +65,12 @@ def test_random_function_with_its_own_key_parameter_runs_under_jit():
     a = jax.jit(own)(jnp.zeros(2), key=jr.key(0))
     assert not jnp.allclose(a, jax.jit(own)(jnp.zeros(2), key=jr.key(1)))
     assert jnp.allclose(own(jnp.zeros(2), jr.key(0)), a)  # deterministic in its key
-    assert own.lift(jnp.zeros((3, 2)), jr.key(0)).shape == (3, 2)
+    assert own.vectorize(jnp.zeros((3, 2)), jr.key(0)).shape == (3, 2)
 
 
 def test_lift_takes_one_key_per_example():
     ks = jr.split(jr.key(0), 4)
-    out = noise.lift(jnp.zeros((4, 2)), key=ks)
+    out = noise.vectorize(jnp.zeros((4, 2)), key=ks)
     assert jnp.allclose(out[1], noise(jnp.zeros(2), key=ks[1]))
 
 
@@ -110,10 +110,10 @@ def test_jitted_methods_bound_to_instances_work_with_tools():
     s = S(jnp.ones(3))
     assert expex.prove(s.jitted).ok
     assert "S.jitted" in str(expex.debug.shapes(s.jitted, jnp.ones(3)))
-    assert s.lift(jnp.ones((5, 3))).shape == (5, 3)  # jitted __call__ still lifts
+    assert s.vectorize(jnp.ones((5, 3))).shape == (5, 3)  # jitted __call__ still vectorizes
 
 
-def test_struct_subclasses_keep_their_fields_and_lift():
+def test_struct_subclasses_keep_their_fields_and_vectorize():
     @expex.struct
     class Base[D]:
         w: f32[D]
@@ -127,7 +127,7 @@ def test_struct_subclasses_keep_their_fields_and_lift():
 
     c = Child(jnp.ones(3), jnp.zeros(3))
     assert c.b.shape == (3,)
-    assert c.lift(jnp.ones((4, 3))).shape == (4, 3)
+    assert c.vectorize(jnp.ones((4, 3))).shape == (4, 3)
 
 
 def test_ellipsis_is_proved_at_several_ranks():

@@ -87,7 +87,7 @@ def test_jax_jit_takes_the_key_as_an_argument():
 
 
 def test_lift_gives_each_example_its_own_key():
-    out = noise.lift(jnp.zeros((5, 3)))
+    out = noise.vectorize(jnp.zeros((5, 3)))
     assert out.shape == (5, 3)
     assert len({tuple(r.tolist()) for r in out}) == 5
 

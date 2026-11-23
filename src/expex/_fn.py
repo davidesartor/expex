@@ -24,7 +24,7 @@ import jax
 import numpy as np
 from jax.core import Tracer
 
-from . import _flow, _lift, _messages, _ops, _rng, _sym
+from . import _flow, _vectorize, _messages, _ops, _rng, _sym
 from ._convert import NotConverted
 from ._convert import convert as _convert
 from ._dims import DExpr, DName, Env, describe, is_symbolic, resolve
@@ -191,8 +191,8 @@ class Fn(Generic[P, R]):
         self.raw = raw
         #: Set by ``@expex.random``: the function gets an implicit PRNG key.
         self.random = False
-        #: Set by ``@expex.lift``: a plain call maps over extra leading axes by itself.
-        self.auto_lift = False
+        #: Set by ``@expex.vectorize``: a plain call maps over extra leading axes by itself.
+        self.auto_vectorize = False
         #: The function that actually runs: ``raw`` with its control flow converted.
         self._impl: Callable[..., Any] = raw
         #: Why the control flow was not converted ("" if it was).
@@ -423,8 +423,8 @@ class Fn(Generic[P, R]):
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
         __tracebackhide__ = True
-        if self.auto_lift:
-            return self.lift(*args, **kwargs)
+        if self.auto_vectorize:
+            return self.vectorize(*args, **kwargs)
         return self._direct(args, kwargs)
 
     def _direct(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
@@ -453,7 +453,7 @@ class Fn(Generic[P, R]):
                 raise StageError(
                     f"{self.name}() is being mapped with jax.vmap, but its random key is "
                     f"shared by the whole batch: every element would draw the same numbers.\n"
-                    f"    - use {self.name}.lift(...), which gives each element its own key\n"
+                    f"    - use {self.name}.vectorize(...), which gives each element its own key\n"
                     f"    - or split a key yourself and pass the keys: {self.name}(..., key=keys)"
                 )
             if key is None:
@@ -648,9 +648,9 @@ class Fn(Generic[P, R]):
             raise e from None
 
 
-    # ------------------------------------------------------------------ lift
+    # ------------------------------------------------------------------ vectorize
 
-    def lift(self, *args: P.args, **kwargs: P.kwargs) -> R:
+    def vectorize(self, *args: P.args, **kwargs: P.kwargs) -> R:
         """Call the function with extra leading batch axes on any array argument.
 
         Each argument's batch axes are whatever precedes its declared shape.
@@ -660,7 +660,7 @@ class Fn(Generic[P, R]):
         per batch element, so examples do not share randomness.
         """
         __tracebackhide__ = True
-        return _lift.lift(self, args, kwargs)
+        return _vectorize.vectorize(self, args, kwargs)
 
 
     def _walk(self, arguments: Any, visit: Callable[[Spec, Any, str], Any]) -> dict[str, Any]:
@@ -733,7 +733,7 @@ class Fn(Generic[P, R]):
     def info(self) -> str:
         """Everything expex knows about this function, as text."""
         lines = [self.signature, f"  defined at {self.location}"]
-        opts = [k for k, v in (("lift", self.auto_lift), ("random", self.random)) if v]
+        opts = [k for k, v in (("vectorize", self.auto_vectorize), ("random", self.random)) if v]
         if opts:
             lines.append("  options: " + ", ".join(opts))
         for k, e in self.defs.items():
@@ -765,9 +765,9 @@ class BoundFn(Generic[P, R]):
         __tracebackhide__ = True
         return self.fn(self.obj, *args, **kwargs)
 
-    def lift(self, *args: P.args, **kwargs: P.kwargs) -> R:
+    def vectorize(self, *args: P.args, **kwargs: P.kwargs) -> R:
         __tracebackhide__ = True
-        return self.fn.lift(self.obj, *args, **kwargs)
+        return self.fn.vectorize(self.obj, *args, **kwargs)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.fn, name)
@@ -819,7 +819,7 @@ def fn(f: Callable[P, R], /) -> Fn[P, R]: ...
 def fn(
     *,
     jit: bool = False,
-    lift: bool = False,
+    vectorize: bool = False,
     random: bool = False,
     remat: Any = False,
     donate: str | tuple[str, ...] = (),
@@ -833,7 +833,7 @@ def fn(
     /,
     *,
     jit: bool = False,
-    lift: bool = False,
+    vectorize: bool = False,
     random: bool = False,
     remat: Any = False,
     donate: str | tuple[str, ...] = (),
@@ -860,8 +860,8 @@ def fn(
 
     ``jit``
         Compile, as :func:`expex.jit`: static arguments read from the signature.
-    ``lift``
-        Plain calls take extra leading batch axes, as :func:`expex.lift`.
+    ``vectorize``
+        Plain calls take extra leading batch axes, as :func:`expex.vectorize`.
     ``random``
         An implicit PRNG key, ``expex.key()``, as :func:`expex.random`.
     ``remat``
@@ -878,12 +878,12 @@ def fn(
     ``convert``
         ``False`` keeps Python control flow as it is (no rewriting).
 
-    Combine with :func:`lift`, :func:`random` and :func:`jit`, and with JAX's
+    Combine with :func:`vectorize`, :func:`random` and :func:`jit`, and with JAX's
     own transformations.
     """
     hints = {
         "checked": "use `with expex.config(checked=False):`",
-        "vectorize": "the option is called lift=True",
+        "lift": "the option is now called vectorize=True",
         "where": "write the constraint as an `assert` at the top of the body: assert T >= 2",
     }
     for k, v in moved.items():
@@ -895,15 +895,15 @@ def fn(
     def wrap(raw: Callable[..., Any]) -> Fn[Any, Any]:
         flags: dict[str, bool] = {}
         if isinstance(raw, Fn):
-            flags = {"random": raw.random, "auto_lift": raw.auto_lift}
+            flags = {"random": raw.random, "auto_vectorize": raw.auto_vectorize}
             REGISTRY.discard(raw)
             raw = raw.raw
         out = Fn(raw, prove=prove, convert=convert, examples=examples)
         vars(out).update(flags)
         if random:
             out.random = True
-        if lift:
-            out.auto_lift = True
+        if vectorize:
+            out.auto_vectorize = True
         result: Any = out
         if remat:
             result = _remat(out, remat)
@@ -922,7 +922,7 @@ def _flagged(f: Any, flag: str) -> Any:
     if isinstance(f, (staticmethod, classmethod)):
         return type(f)(_flagged(f.__func__, flag))
     if not isinstance(f, Fn) and hasattr(f, "__wrapped__"):
-        deco = "@expex.random" if flag == "random" else "@expex.lift"
+        deco = "@expex.random" if flag == "random" else "@expex.vectorize"
         raise TypeError(
             f"{deco} must go under @jax.jit / @jax.checkpoint (inside it would be "
             f"compiled once and repeat): put it directly on the @expex.fn function, or use "
@@ -941,12 +941,12 @@ def _flagged(f: Any, flag: str) -> Any:
     return g
 
 
-def lift(f: Callable[P, R], /) -> Fn[P, R]:
-    """Let plain calls take extra leading batch axes, as ``f.lift(...)`` does.
+def vectorize(f: Callable[P, R], /) -> Fn[P, R]:
+    """Let plain calls take extra leading batch axes, as ``f.vectorize(...)`` does.
 
     ::
 
-        @expex.lift
+        @expex.vectorize
         @expex.fn
         def norm[D](x: f32[D]) -> f32: ...
 
@@ -955,7 +955,7 @@ def lift(f: Callable[P, R], /) -> Fn[P, R]:
     Arguments without extra axes are shared by every element. A plain
     function is wrapped with :func:`fn` first.
     """
-    return _flagged(f, "auto_lift")
+    return _flagged(f, "auto_vectorize")
 
 
 def jit(f: Callable[P, R] | None = None, /, **options: Any) -> Any:
@@ -1077,6 +1077,6 @@ def random(f: Callable[P, R], /) -> Fn[P, R]:
         noisy(x)                                    # a new draw every time
         jax.jit(noisy)(x, key=jr.key(0))            # compiled: pass the key
 
-    Under ``f.lift(...)`` each element gets its own key.
+    Under ``f.vectorize(...)`` each element gets its own key.
     """
     return _flagged(f, "random")

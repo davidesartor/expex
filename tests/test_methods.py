@@ -59,7 +59,7 @@ def test_methods_are_proved_without_an_instance():
 
 def test_method_lift_jit_and_grad():
     lin = Linear(jnp.ones((5, 3)), jnp.zeros(5))
-    assert lin.__call__.lift(jnp.ones((7, 2, 3))).shape == (7, 2, 5)
+    assert lin.__call__.vectorize(jnp.ones((7, 2, 3))).shape == (7, 2, 5)
     assert jax.jit(lin.__call__)(jnp.ones((2, 3))).shape == (2, 5)
     g = jax.grad(lambda x: lin(x).sum())(jnp.ones((2, 3)))
     assert g.shape == (2, 3)

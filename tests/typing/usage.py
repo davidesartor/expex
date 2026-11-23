@@ -65,17 +65,17 @@ class Model:
 
 x = jnp.ones((2, 3, 4))
 assert_type(attend(x, x), jax.Array)
-assert_type(attend.lift(x, x), jax.Array)
+assert_type(attend.vectorize(x, x), jax.Array)
 assert_type(pad(x[0]), jax.Array)
 assert_type(step(x[0, 0], jnp.float32(0.1), 2, jr.key(0)), jax.Array)
 assert_type(Model().call(x[0, 0]), jax.Array)
-assert_type(Model().call.lift(x[0], scale=2.0), jax.Array)
+assert_type(Model().call.vectorize(x[0], scale=2.0), jax.Array)
 
 report = expex.prove(attend)
 assert_type(report.ok, bool)
 attend.check().raise_if_failed()
 jax.jit(step, static_argnames=("n", "mode"))(x[0, 0], jnp.float32(0.1), 2, jr.key(0))
-lifted = expex.lift(attend)
+lifted = expex.vectorize(attend)
 assert_type(lifted(x, x), jax.Array)
 attend.flow
 with expex.rng(0):

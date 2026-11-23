@@ -67,7 +67,7 @@ def noise(x: f32) -> f32:
 
 def test_vmap_with_a_shared_key_is_refused():
     with expex.rng(0):
-        assert len(set(noise.lift(jnp.zeros(4)).tolist())) == 4
+        assert len(set(noise.vectorize(jnp.zeros(4)).tolist())) == 4
         with pytest.raises(StageError, match="shared by the whole batch"):
             jax.vmap(noise)(jnp.zeros(4))
 
@@ -207,7 +207,7 @@ def test_a_variable_named_slice():
 
 
 def test_lift_maps_optional_arguments():
-    @expex.lift
+    @expex.vectorize
     @fn
     def f(x: f32, opt: f32 | None = None) -> f32:
         return x + (0 if opt is None else opt)

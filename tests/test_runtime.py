@@ -415,7 +415,7 @@ def test_methods():
 
     m = M(2.0)
     assert m.call(jnp.ones(3)).shape == (3,)
-    assert m.call.lift(jnp.ones((4, 3))).shape == (4, 3)
+    assert m.call.vectorize(jnp.ones((4, 3))).shape == (4, 3)
     with pytest.raises(ShapeError, match="expected 1 axis, got 2"):
         m.call(jnp.ones((3, 3)))
 
@@ -561,13 +561,13 @@ def test_hints():
 
 
 def test_info():
-    @expex.lift
+    @expex.vectorize
     @fn
     def pad[B, T](x: f32[B, T]) -> f32[B, T + 1]:
         return jnp.pad(x, ((0, 0), (0, 1)))
 
     text = pad.info()
-    assert "pad[B, T](x: f32[B, T]) -> f32[B, T + 1]" in text and "options: lift" in text
+    assert "pad[B, T](x: f32[B, T]) -> f32[B, T + 1]" in text and "options: vectorize" in text
     assert "not converted (no control flow to convert)" in text
 
     @fn

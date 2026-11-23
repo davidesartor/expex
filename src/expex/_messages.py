@@ -1,7 +1,7 @@
 """What a shape error says: the message, a hint for the usual causes, and notes.
 
 ``error`` formats a mismatch found while checking a call; ``hint`` suggests
-the usual fix (a missing ``lift``, permuted axes, a dtype conversion);
+the usual fix (a missing ``vectorize``, permuted axes, a dtype conversion);
 ``annotate`` adds "in f(x: f32[3, 4])" notes to exceptions passing through an
 ``@fn``, and ``_stage_hint`` explains JAX's tracer errors.
 """
@@ -87,7 +87,7 @@ def hint(f: Fn[Any, Any], m: Mismatch, role: str, env: Env) -> str:
         extra = len(shape) - rank
         return (
             f"`{m.path}` has {extra} extra leading ax{'is' if extra == 1 else 'es'}. To map "
-            f"over {'it' if extra == 1 else 'them'}, call {f.name}.lift(...)."
+            f"over {'it' if extra == 1 else 'them'}, call {f.name}.vectorize(...)."
         )
     if len(shape) == rank and rank > 1:
         want_shape = []

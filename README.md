@@ -33,10 +33,10 @@ python -m expex examples/transformer.py        # prove a small transformer's sha
 | [Sizes and axes by name](#sizes-and-axes-by-name) | `jnp.zeros((B, T))`, `x.reshape(T, H, K)`, `x.sum(T)`, `axis=T` |
 | [Proofs](#proofs-without-data) | `expex.prove(f)`: the shapes hold for every size |
 | [Plain Python control flow](#plain-python-on-traced-values) | `if` → `lax.cond`, `for` → `lax.scan` / `vmap`, `while` → `lax.while_loop` |
-| [Vectorising](#vectorising) | `f.lift(...)` and `@expex.lift` map over extra leading axes |
+| [Vectorising](#vectorising) | `f.vectorize(...)` and `@expex.vectorize` map over extra leading axes |
 | [Modules](#modules) | `@expex.struct`: typed, immutable classes that JAX can trace |
 | [Random keys](#random-keys) | `@expex.random` and `expex.key()`, no key threading |
-| [Compiling and gradients](#compiling-and-gradients) | `@expex.fn(jit=True, lift=True, random=True, remat=True)`, or JAX's own transformations |
+| [Compiling and gradients](#compiling-and-gradients) | `@expex.fn(jit=True, vectorize=True, random=True, remat=True)`, or JAX's own transformations |
 | [Sharding](#sharding) | `expex.shard(f, mesh, B="data", D="model")`: shardings from axis names |
 | [Diagrams](#diagrams) | `expex.diagram(f)`: an interactive architecture diagram, shapes on every edge, measured time per module, shape errors in place |
 | [Cost estimates](#cost-estimates) | FLOPs and parameters as formulas in the sizes |
@@ -248,15 +248,15 @@ be mapped over without `in_axes`:
 def score[T, D](x: f32[T, D], w: f32[D]) -> f32[T]:
     return jnp.tanh(x @ w)
 
-score.lift(jnp.ones((32, 5, 3)), jnp.ones(3)).shape                # (32, 5)
-score.lift(jnp.ones((8, 1, 5, 3)), jnp.ones((7, 3))).shape         # (8, 7, 5)
+score.vectorize(jnp.ones((32, 5, 3)), jnp.ones(3)).shape                # (32, 5)
+score.vectorize(jnp.ones((8, 1, 5, 3)), jnp.ones((7, 3))).shape         # (8, 7, 5)
 ```
 
-Batch axes broadcast like NumPy. `@expex.lift` makes plain calls do the same, so
+Batch axes broadcast like NumPy. `@expex.vectorize` makes plain calls do the same, so
 a function written for one element takes batches:
 
 ```python
-@expex.lift
+@expex.vectorize
 def safe_log(x: f32) -> f32:
     if x > 0:
         return jnp.log(x)
@@ -310,7 +310,7 @@ grads = jax.grad(lambda m: m(jnp.ones((4, 16))).sum())(model)   # a Stack too
   `expex.prove(Block.__call__)` works without an instance.
 - A loop over identical layers is one `lax.scan`, so a deep model compiles in
   the time one layer takes.
-- `model.lift(x)` maps `__call__` over extra axes. Other decorators go on the
+- `model.vectorize(x)` maps `__call__` over extra axes. Other decorators go on the
   methods themselves.
 
 Annotations can use the struct's fields through `self`, and a method's
@@ -431,7 +431,7 @@ def dropout[D](x: f32[D], rate: float = 0.5) -> f32[D]:
 expex.seed(0)
 dropout(jnp.ones(6))                        # different on every call
 dropout(jnp.ones(6), key=jr.key(1))         # or choose the key
-dropout.lift(jnp.ones((4, 6)))              # each row gets its own key
+dropout.vectorize(jnp.ones((4, 6)))              # each row gets its own key
 ```
 
 Every `expex.key()` is a new key. Nested calls, branches and loop iterations
@@ -454,12 +454,12 @@ repeat(jnp.ones(3), 4, 0.5).shape                       # (12,)
 | Option | |
 |---|---|
 | `jit=True` | compile; static arguments are read from the signature |
-| `lift=True` | plain calls take extra leading batch axes |
+| `vectorize=True` | plain calls take extra leading batch axes |
 | `random=True` | `expex.key()` inside gives a fresh key on every call |
 | `remat=True` | recompute in the backward pass (`jax.checkpoint`); or a policy: `"dots"`, `"dots_no_batch"`, `"everything"` |
 | `donate=("state",)` | with `jit`: reuse these arguments' buffers |
 
-Each is also a decorator of its own (`@expex.jit`, `@expex.lift`, `@expex.random`,
+Each is also a decorator of its own (`@expex.jit`, `@expex.vectorize`, `@expex.random`,
 `@expex.remat`). Static arguments are the ones with plain Python types (`int`,
 `str`, tuples, callables, enums) and `Static[...]`; arrays and `float`
 numbers are traced, so a new learning rate does not recompile. A compiled
@@ -557,7 +557,7 @@ Transformer.__call__   (sizes: T=1024, D=512, F=2048, Vocab=32000, L=12)
    87 |     x = self.embed[tokens]                                f32[T,D]       3·T                           3.07 kFLOP   0.0%             2.11 MB
    88 |     for block in self.blocks:  # identical blocks: one …
    89 |         x = block(x)                                      f32[T,D]       ×L -                                       0.0%             calls 75.6%  277 MB
-   90 |     return self.norm.lift(x) @ self.unembed               f32[T,Vocab]   2·T·D·Vocab                   33.6 GFLOP  24.4% ██          131 MB
+   90 |     return self.norm.vectorize(x) @ self.unembed               f32[T,Vocab]   2·T·D·Vocab                   33.6 GFLOP  24.4% ██          131 MB
 
 ── MLP.__call__   transformer.py:63   self 37.7%
    64 |     return jax.nn.gelu(x @ self.w1) @ self.w2             f32[T,D]       ×L 4·T·D·F·L + 8·T·F·L        51.7 GFLOP  37.7% ████        931 MB
@@ -604,7 +604,7 @@ flowchart TD
     b1["Block.#95;#95;call#95;#95;
 f32#91;T, D#93; → f32#91;T, D#93;"]
   end
-  b10["LayerNorm.#95;#95;call#95;#95; · lift
+  b10["LayerNorm.#95;#95;call#95;#95; · vectorize
 f32#91;D#93; → f32#91;D#93;"]
   n170(["matmul"])
   n171[\"return f32#91;T, Vocab#93;"\]
@@ -623,7 +623,7 @@ f32#91;D#93; → f32#91;D#93;"]
 ```
 
 - Each call to an `@fn` is a node showing its input and output types (per
-  element for `.lift`). `depth=2`, or a click on the page, opens it to show
+  element for `.vectorize`). `depth=2`, or a click on the page, opens it to show
   the calls inside. A loop over identical layers is one box, `× L`; the
   selective scan in `examples/mamba/` is a box `× T`. A traced `if` or
   `while` is a box too.
@@ -877,7 +877,7 @@ originals:
   in-place updates of anything but a local variable, and variables shared with
   a nested function. A variable assigned on only one traced path reads as
   zeros on the other.
-- `lift` needs batch axes in front, and not on arguments with a `*Rest` shape.
+- `vectorize` needs batch axes in front, and not on arguments with a `*Rest` shape.
 - `debug.find_nan` and parts of the prover read JAX internals; they are tested
   on JAX 0.12.
 - A `spot-checked` proof verdict is evidence, not proof.

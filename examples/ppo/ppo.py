@@ -5,7 +5,7 @@ The original is written with nested `jax.lax.scan`s over closures and
 random-number stream and the arithmetic identical, but writes it as:
 
 * modules (`@expex.struct`) with shapes in their signatures, written for one
-  environment or one example and vectorised with `.lift`;
+  environment or one example and vectorised with `.vectorize`;
 * plain Python `for` loops and `if` statements, staged by `@fn`.
 
 `compare.py` (next to this file) checks that it reproduces the original's numbers.
@@ -205,7 +205,7 @@ class Net[H]:
         self, batch: Batch[Transition, M], advantage: f32[M], target: f32[M], cfg: Config
     ) -> tuple[f32, tuple[f32, f32, f32]]:
         """The PPO objective on a minibatch: clipped policy and value losses, entropy bonus."""
-        logp_all, value = self.lift(batch.obs)
+        logp_all, value = self.vectorize(batch.obs)
         log_prob: f32[M] = jnp.sum(logp_all * jax.nn.one_hot(batch.action, 2), axis=-1)
 
         clipped = batch.value + (value - batch.value).clip(-cfg.clip_eps, cfg.clip_eps)
@@ -268,7 +268,7 @@ def train[H, T, N](key: Key, cfg: Config, net: Net[H] | None = None):
     opt_state = optimizer.init(net)
 
     key, reset_key = jr.split(key)
-    obs, env = Env.reset.lift(jr.split(reset_key, cfg.num_envs))
+    obs, env = Env.reset.vectorize(jr.split(reset_key, cfg.num_envs))
     _, key = jr.split(key)
 
     metrics = []
@@ -277,21 +277,21 @@ def train[H, T, N](key: Key, cfg: Config, net: Net[H] | None = None):
         trajectory = []
         for _t in range(cfg.num_steps):
             key, act_key = jr.split(key)
-            logp, value = net.lift(obs)
+            logp, value = net.vectorize(obs)
             action = jr.categorical(act_key, logp, shape=(1, cfg.num_envs))[0]
             log_prob = jnp.sum(logp * jax.nn.one_hot(action, 2), axis=-1)
 
             key, step_key = jr.split(key)
             step_keys = jr.split(step_key, cfg.num_envs)
-            next_obs, env, reward, done, info = env.step.lift(step_keys, action)
+            next_obs, env, reward, done, info = env.step.vectorize(step_keys, action)
             trajectory.append(Transition(done, action, value, reward, log_prob, obs, info))
             obs = next_obs
         traj: Batch[Transition, T, N] = expex.stack(trajectory)
 
         # Advantages, per environment.
-        _, last_value = net.lift(obs)
+        _, last_value = net.vectorize(obs)
         advantages = time_major(
-            gae.lift(
+            gae.vectorize(
                 time_major(traj.reward), time_major(traj.value), time_major(traj.done),
                 last_value, cfg.gamma, cfg.gae_lambda,
             )

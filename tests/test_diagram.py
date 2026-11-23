@@ -81,7 +81,7 @@ def test_transformer_depth_1(transformer):
     assert labels(d, "out") == ["return f32[T, Vocab]"]
     assert sorted(labels(d, "op")) == ["index", "matmul"]
     assert node(d, "Block.__call__")[2] == "Block.__call__\nf32[T, D] → f32[T, D]"
-    assert node(d, "LayerNorm")[2] == "LayerNorm.__call__ · lift\nf32[D] → f32[D]"
+    assert node(d, "LayerNorm")[2] == "LayerNorm.__call__ · vectorized\nf32[D] → f32[D]"
     assert box_of(d, "Block.__call__") == "× L"  # the loop over self.blocks: one scan
     assert list(d.boxes.values()) == ["× L"]
     assert edge(d, "tokens", "index") == "i32[T]"
@@ -101,7 +101,7 @@ def test_transformer_depth_2(transformer):
     assert box_of(d, "Attention.__call__") == "Block.__call__"
     assert box_of(d, "MLP.__call__") == "Block.__call__"
     assert [label.split("\n")[0] for label in labels(d, "call")] == [
-        "LayerNorm.__call__ · lift", "Attention.__call__", "LayerNorm.__call__ · lift", "MLP.__call__ · lift",
+        "LayerNorm.__call__ · vectorized", "Attention.__call__", "LayerNorm.__call__ · vectorized", "MLP.__call__ · vectorized",
     ]  # fmt: skip
     attn, mlp = node(d, "Attention")[0], node(d, "MLP")[0]
     assert any(u == attn for u, _, _ in d.edges) and any(v == mlp for _, v, _ in d.edges)
@@ -112,7 +112,7 @@ def test_attention(transformer):
     d = diagram(transformer.Attention.__call__)
     calls = labels(d, "call")
     assert sum(c.startswith("Attention.split\nf32[T, D] → f32[4, T, D // 4]") for c in calls) == 3
-    assert any(c.startswith("Attention.causal · lift") for c in calls)
+    assert any(c.startswith("Attention.causal · vectorized") for c in calls)
     assert labels(d, "op") == ["matmul"] * 4  # q, k, v and the output projection
     causal = [n[0] for n in d.nodes if n[2].startswith("Attention.causal")][0]
     into = [t for _, v, t in d.edges if v == causal]
@@ -135,7 +135,7 @@ def test_mamba(mamba):
     d = diagram(mamba.Mamba.__call__)
     assert box_of(d, "Block.__call__") == "× L"
     assert labels(d, "out") == ["return f32[T, V]"]
-    assert node(d, "RMSNorm")[2] == "RMSNorm.__call__ · lift\nf32[D] → f32[D]"
+    assert node(d, "RMSNorm")[2] == "RMSNorm.__call__ · vectorized\nf32[D] → f32[D]"
     check_mermaid(d.mermaid)
 
 
@@ -273,9 +273,9 @@ def broken[T, D](x: f32[T, D], w: f32[D, D]) -> f32[T, D]:
 
 @pytest.fixture(scope="module")
 def buggy(tmp_path_factory):
-    """The example transformer with a bug: the MLP called without .lift."""
+    """The example transformer with a bug: the MLP called without .vectorize."""
     src = (ROOT / "examples" / "transformer.py").read_text()
-    src = src.replace("x + self.mlp.lift(self.norm2.lift(x))", "x + self.mlp(self.norm2.lift(x))")
+    src = src.replace("x + self.mlp.vectorize(self.norm2.vectorize(x))", "x + self.mlp(self.norm2.vectorize(x))")
     path = tmp_path_factory.mktemp("buggy") / "buggy_transformer.py"
     path.write_text(src)
     return load("diagram_buggy", path)
@@ -294,13 +294,13 @@ def test_error_diagram(buggy):
     assert box_of(d, "✗ MLP.__call__") == "Block.__call__"  # opened to show the failing call
     names = {n[0]: n[2].split("\n")[0] for n in d.nodes}
     assert sorted(names[n] for n in d.feeds) == [
-        "Attention.__call__", "LayerNorm.__call__ · lift", "LayerNorm.__call__ · lift", "index", "tokens: i32[24]"
+        "Attention.__call__", "LayerNorm.__call__ · vectorized", "LayerNorm.__call__ · vectorized", "index", "tokens: i32[24]"
     ]  # fmt: skip
     assert labels(d, "out") == []  # the trace stopped: nothing returned
     assert "classDef error" in d.mermaid and "linkStyle" in d.mermaid
     check_mermaid(d.mermaid)
     assert "✗ received f32[24, 32], declared x: f32[D]" in d.text
-    assert "path:  tokens: i32[24] → index → LayerNorm.__call__ · lift → Attention.__call__ → LayerNorm.__call__ · lift → ✗ MLP.__call__" in d.text
+    assert "path:  tokens: i32[24] → index → LayerNorm.__call__ · vectorized → Attention.__call__ → LayerNorm.__call__ · vectorized → ✗ MLP.__call__" in d.text
     assert expex.diagram.explain(e.value) is d
     assert _fn.CALL_HOOK.get() is None
 

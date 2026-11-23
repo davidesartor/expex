@@ -94,7 +94,7 @@ def test_methods_keep_their_own_decorators():
         def apply(self, x: f32[3]) -> f32[3]:  # type: ignore[valid-type]
             return x * self.k + self.v
 
-        @expex.lift
+        @expex.vectorize
         def norm(self, x: f32[3]) -> f32:  # type: ignore[valid-type]
             return jnp.linalg.norm(x * self.k)
 
@@ -205,10 +205,10 @@ def test_struct_where_is_rejected():
         expex.struct(where="D % heads == 0")
 
 
-def test_module_lift():
+def test_module_vectorize():
     m = Heads(jnp.eye(4) * 2, heads=2)
-    assert m.lift(jnp.ones((5, 4))).shape == (5, 4)
-    assert jnp.allclose(m.lift(jnp.ones((5, 4))), 2.0)
+    assert m.vectorize(jnp.ones((5, 4))).shape == (5, 4)
+    assert jnp.allclose(m.vectorize(jnp.ones((5, 4))), 2.0)
 
 
 @expex.struct

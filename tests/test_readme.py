@@ -22,6 +22,6 @@ def test_readme_blocks_run(tmp_path, capsys, monkeypatch):
     assert "[  8  16 111]" in out
     assert "for -> lax.scan (carries h)" in out
     assert "NaN first appears at" in out
-    assert ns["dropout"].random and ns["safe_log"].auto_lift
+    assert ns["dropout"].random and ns["safe_log"].auto_vectorize
     assert "# scores: f32[B, T, T]" in out
     assert type(ns["grads"]).__name__ == "Stack" and ns["y"].shape == (4, 16)
