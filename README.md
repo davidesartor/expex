@@ -332,6 +332,28 @@ print(tx.prove(Heads.split).ok)                      # True
 ```
 
 
+### Model summary
+
+```python
+print(tx.summary(model, B=64))     # B: a size the call needs that the model does not have
+```
+
+```
+Stack   (B=64, D=16, L=24)
+module     class              params  formula       bytes   flops  flops formula
+────────────────────────────────────────────────────────────────────────────────
+blocks[*]  Block[D=16]  × 24     272  D² + D      1.09 kB    43 k  2·B·D² + 10·B·D
+  w        f32[D, D]             256  D²          1.02 kB
+  b        f32[D]                 16  D              64 B
+────────────────────────────────────────────────────────────────────────────────
+total      Stack               6,528  D²·L + D·L  26.1 kB  1.03 M  2·B·D²·L + 10·B·D·L
+```
+
+One row per module, a list of identical layers as one row; parameters and
+FLOPs of a call, as formulas in the sizes and as numbers. `tx.summary(Stack,
+D=16, blocks=24)` gives the same without building the model. In a notebook,
+or with `.save("summary.html")`, it is a collapsible, sortable table.
+
 ### Saving and loading
 
 ```python

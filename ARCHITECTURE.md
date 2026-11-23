@@ -10,6 +10,7 @@ on the same `Fn` object, so they stack in any order. `@tx.jit` is `jax.jit` with
 | `_diff.py` | `tx.diff`: two models or checkpoints compared field by field, as text or HTML. |
 | `_dims.py` | Dimensions (`B`, `T + 1`, `*Rest`), binding sizes during a call (`Env`), printing values as `f32[3, 4]`. |
 | `_spec.py` | Turning annotations into specs and matching values against them, structs included. |
+| `_summary.py` | `tx.summary`: one row per module with parameters and FLOPs, as formulas and numbers. |
 | `_sym.py` | Size arithmetic written in annotations (`f32[T + 1]`), read from their text. |
 | `_expr.py` | Size arithmetic and constraints (`"T + 1"`, `"D % heads == 0"`). |
 | `_fn.py` | `@tx.fn`, `@tx.lift`, `@tx.random`, `@tx.jit`: binds arguments, checks them and the result, runs the body. |
