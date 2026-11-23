@@ -225,12 +225,13 @@ class Net[H]:
 # ---------------------------------------------------------------- algorithm
 
 
-@fn(examples={"gamma": [0.99], "lam": [0.95]}, where="T >= 1")
+@fn
 def gae[T](
     reward: f32[T], value: f32[T], done: Bool[T], last_value: f32,
     gamma: float, lam: float,
 ) -> f32[T]:  # fmt: skip
     """Generalised advantage estimates for one environment's trajectory."""
+    assert T >= 1
     advantage, next_value = jnp.float32(0), last_value
     out = []
     for t in reversed(range(reward.shape[0])):

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -107,11 +109,9 @@ def q_log_expected_improvement[Q, S](
 
 
 @tx.jit
-@fn(K="n", where="n <= N")
-def boltzmann_select[N, K](
-    key: Key, values: Float[N], n: int, eta: float = 2.0
-) -> Int[K]:
+def boltzmann_select[N](key: Key, values: Float[N], n: int, eta: float = 2.0) -> Int[n]:
     """Sample n distinct indices with weights exp(eta * standardized values), keeping the argmax."""
+    assert n <= N
     finite = jnp.isfinite(values)
     v = jnp.where(finite, values, jnp.nan)
     z = (v - jnp.nanmean(v)) / jnp.maximum(jnp.nanstd(v), jnp.finfo(v.dtype).eps)
@@ -133,8 +133,7 @@ def _perturb(key, z, lo, hi, sigma):
 
 
 @tx.jit
-@fn(Q="batch_size")
-def optimize_expected_improvement[N, O, M, D, Q](
+def optimize_expected_improvement[N, O, M, D](
     key: Key,
     surrogate: gp.GaussianProcess[N, O, M, D],
     l_range: tuple[Float, Float],
@@ -150,7 +149,7 @@ def optimize_expected_improvement[N, O, M, D, Q](
     n_best: int = 4,
     sigma_around_best: float = 1e-2,
     eta: float = 2.0,
-) -> Batch[RBFMixture[M, D], Q, O]:
+) -> Batch[RBFMixture[M, D], batch_size, O]:
     """Maximize Monte Carlo batch EI over RBF mixtures, screening probe batches then L-BFGS-B."""
     _, o, m, d = surrogate.f.l.shape
     x_range = (jnp.asarray(-rkhs.X_MAX), jnp.asarray(rkhs.X_MAX))

@@ -4,6 +4,8 @@
     python examples/transformer.py              # train a few steps
 """
 
+from __future__ import annotations  # size arithmetic in annotations (built in on Python 3.14)
+
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -31,7 +33,7 @@ class LayerNorm[D]:
         return (x - x.mean()) / (x.std() + 1e-5) * self.scale + self.bias
 
 
-@tx.struct(where="D % heads == 0")
+@tx.struct
 class Attention[D]:
     wq: f32[D, D]
     wk: f32[D, D]
@@ -44,10 +46,9 @@ class Attention[D]:
         self.wq, self.wk, self.wv, self.wo = (dense(k, d, d) for k in (kq, kk, kv, ko))
         self.heads = heads
 
-    @tx.fn(H="heads", K="D // heads")
-    def split[T, H, K](self, x: f32[T, D]) -> f32[H, T, K]:
-        h: f32[T, H, K] = x.reshape(T, H, K)
-        return h.transpose(H, T, K)
+    def split[T](self, x: f32[T, D]) -> f32[self.heads, T, D // self.heads]:
+        assert D % self.heads == 0
+        return x.reshape(T, self.heads, D // self.heads).transpose(1, 0, 2)
 
     @staticmethod
     @tx.fn
@@ -57,11 +58,10 @@ class Attention[D]:
         weights = jax.nn.softmax(jnp.where(mask, scores, -jnp.inf), axis=-1)
         return weights @ v
 
-    @tx.fn(H="heads", K="D // heads")
-    def __call__[T, H, K](self, x: f32[T, D]) -> f32[T, D]:
+    def __call__[T](self, x: f32[T, D]) -> f32[T, D]:
         q, k, v = self.split(x @ self.wq), self.split(x @ self.wk), self.split(x @ self.wv)
-        out: f32[H, T, K] = Attention.causal.lift(q, k, v)  # over heads
-        return out.transpose(T, H, K).reshape(x.shape) @ self.wo
+        out = Attention.causal.lift(q, k, v)  # over heads
+        return out.transpose(1, 0, 2).reshape(T, D) @ self.wo
 
 
 @tx.struct
@@ -113,8 +113,8 @@ class Transformer[D, F]:
             x = block(x)
         return self.norm.lift(x) @ self.unembed
 
-    @tx.fn(where="T >= 2")
     def loss[T](self, tokens: Int[T]) -> f32:
+        assert T >= 2
         logp = jax.nn.log_softmax(self(tokens[:-1]))
         return -jnp.take_along_axis(logp, tokens[1:, None], axis=1).mean()
 

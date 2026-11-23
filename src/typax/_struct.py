@@ -32,6 +32,7 @@ from jax.core import Tracer
 
 from ._dims import Env, resolve
 from ._errors import Mismatch, ShapeError, StageError
+from . import _sym
 from ._fn import Fn, fn, unwrap
 from ._spec import _class_annotations, parse_owner, rebuild, static_type
 
@@ -43,25 +44,31 @@ _SKIP = {"__init__", "__post_init__", "__repr__", "__eq__", "__hash__", "__init_
 @overload
 def struct(cls: T, /) -> T: ...
 @overload
-def struct(*, where: str | list[str] | tuple[str, ...] = ()) -> Callable[[T], T]: ...
-def struct(cls: Any = None, /, *, where: str | list[str] | tuple[str, ...] = ()) -> Any:
+def struct(**moved: Any) -> Callable[[T], T]: ...
+def struct(cls: Any = None, /, **moved: Any) -> Any:
     """Turn a class into a typed module. See the module docstring.
 
-    ``where`` states invariants over the class's dimensions and int fields,
-    e.g. ``where="D % heads == 0"``. They are checked whenever an instance is
-    passed to an ``@fn``, and every function that receives an instance, however
-    deeply nested, may assume them (the prover does).
-
     Methods are wrapped with ``@tx.fn``; one already decorated (``@tx.fn(...)``,
-    ``@tx.lift``, ``@tx.random``) keeps its own options.
-    """
-    from ._expr import Expr
+    ``@tx.lift``, ``@tx.random``, ``@tx.jit``) keeps its own options.
 
-    invariants = tuple(Expr(w, constraint=True) for w in ([where] if isinstance(where, str) else where))
+    A method's leading ``assert`` that only involves the class's sizes and
+    fields, such as ``assert D % self.heads == 0``, is an invariant of the
+    class: checked whenever an instance is passed to an ``@fn`` (or built by a hand-written ``__init__``), and
+    assumed by every function that receives one (the prover does).
+    """
+    for k in moved:
+        raise TypeError(
+            f"@tx.struct got {k}=...: write invariants as an `assert` at the top of a "
+            f"method instead, e.g. assert D % self.heads == 0."
+        )
+
+    localns = _sym.caller_locals()
 
     def build(original: Any) -> Any:
         cls: Any = original
         custom_init = "__init__" in vars(cls)  # dataclass() keeps a hand-written __init__
+        if localns:
+            cls.__typax_localns__ = localns
         params = vars(cls).get("__dataclass_params__")  # not a parent's
         if not (isinstance(cls, type) and params is not None and params.frozen):
             cls = dataclasses.dataclass(frozen=True)(cls)
@@ -112,10 +119,25 @@ def struct(cls: Any = None, /, *, where: str | list[str] | tuple[str, ...] = ())
 
             cls.replace = replace
         cls.__typax_struct__ = True
-        cls.__typax_where__ = invariants
+        cls.__typax_where__ = _invariants(cls)
         return cls
 
     return build(cls) if cls is not None else build
+
+
+def _invariants(cls: Any) -> tuple[Any, ...]:
+    """Leading asserts of the methods that only involve the class's sizes and fields."""
+    names = {p.__name__ for p in getattr(cls, "__type_params__", ())}
+    names |= {f.name for f in dataclasses.fields(cls)}
+    out: list[Any] = []
+    for base in reversed(cls.__mro__[1:]):
+        out += [e for e in getattr(base, "__typax_where__", ()) if e not in out]
+    for value in vars(cls).values():
+        method = unwrap(getattr(value, "__func__", value))
+        for e in getattr(method, "_asserted", ()):
+            if e.names <= names and e not in out:
+                out.append(e)
+    return tuple(out)
 
 
 def _register(cls: Any, data: tuple[str, ...], meta: tuple[str, ...]) -> None:

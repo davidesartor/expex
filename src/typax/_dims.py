@@ -98,6 +98,10 @@ class DimError(TypeError):
 
 
 def parse_dim(item: Any, subst: dict[Any, Any]) -> Any:
+    from ._sym import Sym
+
+    if isinstance(item, Sym):  # written in the annotation: T, D // heads, self.heads
+        return DName(item.src) if item.is_dim else DExpr(Expr(item.src))
     if item in subst if _hashable(item) else False:
         return subst[item]
     if isinstance(item, typing.TypeVar):

@@ -24,7 +24,7 @@ import jax
 import numpy as np
 from jax.core import Tracer
 
-from . import _flow, _lift, _messages, _ops, _rng
+from . import _flow, _lift, _messages, _ops, _rng, _sym
 from ._convert import NotConverted
 from ._convert import convert as _convert
 from ._dims import DExpr, DName, Env, describe, is_symbolic, resolve
@@ -126,10 +126,7 @@ class Param:
 
 
 def _raw_annotations(raw: Callable[..., Any]) -> dict[str, Any]:
-    try:
-        return inspect.get_annotations(raw)
-    except Exception:
-        return {}
+    return _sym.texts(raw)
 
 
 def _enclosing_class(raw: Callable[..., Any]) -> type | None:
@@ -143,20 +140,22 @@ def _enclosing_class(raw: Callable[..., Any]) -> type | None:
     return obj if isinstance(obj, type) else None
 
 
-def _annotations(raw: Callable[..., Any]) -> dict[str, Any]:
+def _annotations(raw: Callable[..., Any], localns: dict[str, Any]) -> dict[str, Any]:
     try:
         return inspect.get_annotations(raw, eval_str=True)
     except Exception:
         pass
     # Some annotation could not be evaluated (e.g. a TYPE_CHECKING-only import).
     # Evaluate them one by one and ignore the ones that fail.
+    # Or it does arithmetic on sizes, f32[T + 1], which is evaluated symbolically.
     out: dict[str, Any] = {}
     glb = getattr(raw, "__globals__", {})
-    loc = {p.__name__: p for p in getattr(raw, "__type_params__", ())}
-    for k, v in inspect.get_annotations(raw).items():
+    loc = {**localns, **{p.__name__: p for p in getattr(raw, "__type_params__", ())}}
+    params = list(_sym.signature(raw).parameters)
+    for k, v in _sym.texts(raw).items():
         if isinstance(v, str):
             try:
-                v = eval(v, glb, loc)  # noqa: S307 - same as typing.get_type_hints
+                v = _sym.evaluate(v, glb, loc, params)
             except Exception:
                 v = inspect.Parameter.empty
         out[k] = v
@@ -203,13 +202,21 @@ class Fn(Generic[P, R]):
         self.name: str = getattr(raw, "__qualname__", getattr(raw, "__name__", repr(raw)))
         self.prove = prove
         self.examples = dict(examples or {})
-        self._sig = inspect.signature(raw)
+        self._sig = _sym.signature(raw)
 
         defs = defs or {}
         self.defs = {k: Expr(v) for k, v in defs.items()}
         if isinstance(where, str):
             where = [where]
         self.where = [Expr(w, constraint=True) for w in where]
+        #: Leading `assert`s on sizes in the body: constraints like `where`.
+        self._asserted: list[Expr] = []
+        for w in getattr(self._impl, "__typax_where__", ()):
+            try:
+                self._asserted.append(Expr(w, constraint=True))
+            except Exception:
+                pass
+        self.where += self._asserted
 
         derived = self.defs
 
@@ -218,7 +225,9 @@ class Fn(Generic[P, R]):
                 return DExpr(derived[d.name], d.name)
             return d
 
-        anns = _annotations(raw)
+        #: Where the function was defined (for annotations written as text).
+        self._localns = _sym.caller_locals()
+        anns = _annotations(raw, self._localns)
         # Annotations that could not be evaluated yet (a forward reference to the
         # class being defined, say) are retried at the first call.
         self._pending = {
@@ -278,19 +287,41 @@ class Fn(Generic[P, R]):
         used: set[str] = set()
         for expr in [*self.defs.values(), *self.where]:
             used |= expr.names
+        # ... and so may sizes written in the annotations, f32[D // heads]
+        dims: set[str] = set()
+
+        def visit(d: Any) -> Any:
+            if isinstance(d, DExpr) and d.label is None:
+                used.update(d.expr.names)
+            elif isinstance(d, DName):
+                dims.add(d.name)
+            return d
+
+        for spec in [*(p.spec for p in self.params.values()), self.ret]:
+            spec.replace_dims(visit)
         self.static_refs = [n for n in self.static_names if n in used]
         # ... and so may a method's int fields of `self`: @fn(H="heads") for self.heads
         fields = _field_names(getattr(self, "_owner_cls", None))
-        self.field_refs = sorted((used - declared - set(self.static_names)) & fields)
-        unknown = used - declared - set(self.static_names) - set(self.field_refs)
+        self.field_refs = sorted((used - dims - set(self.static_names)) & fields)
+        known = declared | set(self.static_names) | set(self.field_refs)
         first = next(iter(self.params), None)
+        pending_owner = first in ("self", "cls") and not getattr(self, "_resolved", False)
+        if self._asserted and not pending_owner:
+            # an assert that is not about sizes after all stays an ordinary assert
+            drop = [e for e in self._asserted if not e.names <= known]
+            self.where = [w for w in self.where if w not in drop]
+            self._asserted = [e for e in self._asserted if e not in drop]
+            used = set().union(*(e.names for e in [*self.defs.values(), *self.where]))
+            if used:
+                self.static_refs = [n for n in self.static_names if n in used or n in self.static_refs]
+        unknown = used - declared - set(self.static_names) - set(self.field_refs)
         maybe_method = self._owner is None and first in ("self", "cls")
         if unknown and not (maybe_method and not getattr(self, "_resolved", False)):
             raise TypeError(
                 f"{self.name}: {', '.join(sorted(unknown))} used in a derived size or `where` "
                 f"constraint is neither a dimension in the signature nor a Static parameter."
             )
-        self.input_names -= set(self.static_refs)
+        self.input_names -= set(self.static_refs) | set(self.field_refs)
         self._avail = self.input_names | set(self.static_refs) | set(self.field_refs)
         #: Invariants of the structs among the inputs: the prover may assume them.
         self.assumed: list[Any] = []
@@ -324,7 +355,7 @@ class Fn(Generic[P, R]):
             owner = _enclosing_class(self.raw)
         self._owner_cls = owner
         if self._pending:
-            scope = {p.__name__: p for p in getattr(self.raw, "__type_params__", ())}
+            scope = {**self._localns, **{p.__name__: p for p in getattr(self.raw, "__type_params__", ())}}
             if owner is not None:
                 scope.update({p.__name__: p for p in getattr(owner, "__type_params__", ())})
                 scope[owner.__name__] = owner
@@ -333,7 +364,7 @@ class Fn(Generic[P, R]):
                 if k not in self._pending:
                     continue
                 try:
-                    spec = parse(eval(text, glb, scope))  # noqa: S307 - as typing.get_type_hints
+                    spec = parse(_sym.evaluate(text, glb, scope, self.params))
                 except Exception:
                     continue
                 spec.names(self._declared)
@@ -722,39 +753,34 @@ def _field_names(cls: Any) -> set[str]:
 def fn(f: Callable[P, R], /) -> Fn[P, R]: ...
 @overload
 def fn(
-    *,
-    where: str | list[str] | tuple[str, ...] = (),
-    examples: dict[str, Any] | None = None,
-    prove: bool = True,
-    convert: bool = True,
-    **dims: str,
+    *, examples: dict[str, Any] | None = None, prove: bool = True, convert: bool = True, **moved: Any
 ) -> Callable[[Callable[P, R]], Fn[P, R]]: ...
 def fn(
     f: Any = None,
     /,
     *,
-    where: str | list[str] | tuple[str, ...] = (),
     examples: dict[str, Any] | None = None,
     prove: bool = True,
     convert: bool = True,
-    **dims: str,
+    **moved: Any,
 ) -> Any:
     """Make a function's shape annotations real.
 
     ::
 
         @tx.fn
-        def attend[B, T, D](q: f32[B, T, D], k: f32[B, T, D]) -> f32[B, T, T]: ...
+        def split_heads[T, D](x: f32[T, D], heads: int) -> f32[heads, T, D // heads]:
+            assert D % heads == 0
+            return x.reshape(T, heads, D // heads).transpose(1, 0, 2)
 
     Arguments and the result are checked on every call (once per trace under
-    ``jax.jit``), the prover can check the shapes for all sizes, and plain
-    ``if`` / ``while`` / ``for`` work on traced values.
+    ``jax.jit``), the prover checks the shapes for all sizes, and plain
+    ``if`` / ``while`` / ``for`` work on traced values. Sizes can be computed in
+    the annotations from other sizes, int parameters and fields of ``self``.
+    ``assert``s on sizes at the top of the body are constraints: checked before
+    the body runs, and assumed by the prover. (Size arithmetic in annotations
+    needs Python 3.14, or ``from __future__ import annotations``.)
 
-    ``where``
-        Constraints on sizes, e.g. ``where="T >= 2"``.
-    ``**dims``
-        Derived sizes, e.g. ``U="T + 1"``. These and ``where`` may also use int
-        parameters and int fields of ``self`` by name: ``H="heads"``.
     ``examples``
         Values the prover should try for parameters it cannot guess,
         as ``{"name": [value, ...]}``.
@@ -763,21 +789,22 @@ def fn(
     ``convert``
         ``False`` keeps Python control flow as it is (no rewriting).
 
-    Combine with :func:`lift` and :func:`random`, and with JAX's own
-    ``jax.jit``, ``jax.grad``, ``jax.checkpoint``, ... in any order.
+    Combine with :func:`lift`, :func:`random` and :func:`jit`, and with JAX's
+    own transformations.
     """
-
-    moved = {
-        "jit": "decorate with @jax.jit (above @tx.fn) or call jax.jit(f)",
+    hints = {
+        "jit": "decorate with @tx.jit, or call jax.jit(f)",
         "remat": "use jax.checkpoint(f, policy=...)",
         "random": "decorate with @tx.random",
         "lift": "decorate with @tx.lift",
         "checked": "use `with tx.config(checked=False):`",
+        "where": "write the constraint as an `assert` at the top of the body: assert T >= 2",
     }
-    for k, v in dims.items():
-        if k in moved or not isinstance(v, str):
-            hint = moved.get(k, "derived sizes are strings, e.g. U=\"T + 1\"")
-            raise TypeError(f"@tx.fn got {k}={v!r}: {hint}.")
+    for k, v in moved.items():
+        hint = hints.get(
+            k, f"write the size in the annotation instead, e.g. -> f32[{v}] in place of {k}"
+        )
+        raise TypeError(f"@tx.fn got {k}={v!r}: {hint}.")
 
     def wrap(raw: Callable[..., Any]) -> Fn[Any, Any]:
         flags: dict[str, bool] = {}
@@ -785,7 +812,7 @@ def fn(
             flags = {"random": raw.random, "auto_lift": raw.auto_lift}
             REGISTRY.discard(raw)
             raw = raw.raw
-        out = Fn(raw, prove=prove, convert=convert, examples=examples, where=where, defs=dims)
+        out = Fn(raw, prove=prove, convert=convert, examples=examples)
         vars(out).update(flags)
         return out
 

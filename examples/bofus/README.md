@@ -30,8 +30,7 @@ class RBFMixture[M, D]:          # one mixture; a set of them is Batch[RBFMixtur
     @tx.lift
     def distance[K](self, other: "RBFMixture[K, D]", l0=None, periodic=None) -> Float: ...
     @tx.lift
-    @fn(K="m", where="m >= M")
-    def pad_to[K](self, m: int) -> "RBFMixture[K, D]": ...
+    def pad_to(self, m: int) -> RBFMixture[m, D]: ...    # assert m >= M in the body
 
 @tx.struct
 class GaussianProcess[N, O, M, D]:
@@ -59,7 +58,7 @@ API stays as aliases (`rkhs.inner(f1, f2)`, `rkhs.distance(...)`,
 | `jax.lax.map(f, xs, batch_size=k)` and `jax.vmap(solve)(starts)` | `for x in tx.rows(xs, chunk=k): out.append(f(x))` |
 | `eqx.error_if(x, cond, msg)` | `assert not cond, msg` |
 | `logits.at[i].set(jnp.inf)` | `logits[i] = jnp.inf` |
-| `pad_to(m)` returns "some mixture" | `-> RBFMixture[K, D]` with `K="m"` and `where="m >= M"`, checked |
+| `pad_to(m)` returns "some mixture" | `-> RBFMixture[m, D]` with `assert m >= M`, checked |
 
 The port does not depend on equinox or jaxtyping.
 

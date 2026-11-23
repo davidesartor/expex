@@ -5,6 +5,8 @@ arrays, and of collections of arrays, and the library does the rest by reading
 your annotations. Put the shapes in the signature:
 
 ```python
+from __future__ import annotations   # only before Python 3.14: lets annotations do arithmetic
+
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -22,7 +24,7 @@ data, and used to vectorise the function. Inside `@fn`, plain `if` / `for` /
 `jax.grad`, `jax.vmap` and `jax.checkpoint` take an `@fn` like any function.
 
 ```
-pip install -e .                               # Python 3.12+, JAX 0.12+
+pip install -e .                               # Python 3.14 (or 3.12+, see above), JAX 0.12+
 python examples/tour.py                        # see everything run
 python -m typax examples/transformer.py        # prove a small transformer's shapes
 ```
@@ -63,13 +65,31 @@ attend(): argument `k` does not match its annotation.
 The result is checked too, and so are annotated local variables
 (`h: f32[B, D] = ...`). Under `jax.jit` the checks run once, while tracing.
 
-Sizes that depend on others go on the decorator:
+Sizes can be computed from other sizes and from int parameters, right in the
+annotation, and constraints are `assert`s at the top of the body:
 
 ```python
-@fn(U="T + 1")
-def pad[B, T, U](x: f32[B, T]) -> f32[B, U]:
+@fn
+def pad[B, T](x: f32[B, T]) -> f32[B, T + 1]:
     return jnp.pad(x, ((0, 0), (0, 1)))
+
+@fn
+def split_heads[T, D](x: f32[T, D], heads: int) -> f32[heads, T, D // heads]:
+    assert D % heads == 0
+    return x.reshape(T, heads, D // heads).transpose(1, 0, 2)
+
+split_heads(jnp.ones((5, 8)), heads=2).shape     # (2, 5, 4)
 ```
+
+```
+>>> split_heads(jnp.ones((5, 8)), heads=3)
+ShapeError: split_heads(): constraint `D % heads == 0` is violated (D=8, heads=3).
+```
+
+A leading `assert` on sizes is checked before the body runs, and the prover
+assumes it. (Arithmetic in annotations needs Python 3.14, which evaluates
+annotations lazily; before that, `from __future__ import annotations` at the
+top of the file.)
 
 ## Sizes and axes by name
 
@@ -81,10 +101,10 @@ a name is its size in this call; as an axis argument, it is that axis:
 def pool[B, T, D](x: f32[B, T, D]) -> f32[B, D]:
     return x.mean(T)                     # an axis
 
-@fn(H="heads", K="D // heads", where="D % heads == 0")
-def split_heads[T, D, H, K](x: f32[T, D], heads: int) -> f32[H, T, K]:
-    h: f32[T, H, K] = x.reshape(T, H, K) # sizes
-    return h.transpose(H, T, K)          # axes
+@fn
+def swap[B, T, D](x: f32[B, T, D]) -> f32[T, B, D]:
+    y = jnp.tanh(x).reshape(B, T, D)     # sizes
+    return y.transpose(T, B, D)          # axes
 
 @fn
 def running_mean[N, D](xs: f32[N, D]) -> f32[N, D]:
@@ -96,14 +116,14 @@ def running_mean[N, D](xs: f32[N, D]) -> f32[N, D]:
     return jnp.asarray(out)
 
 pool(jnp.ones((2, 3, 4))).shape                  # (2, 4)
-split_heads(jnp.ones((5, 8)), heads=2).shape     # (2, 5, 4)
-print(tx.prove(split_heads))                     # proved for all sizes
+swap(jnp.ones((2, 3, 4))).shape                  # (3, 2, 4)
+print(tx.prove(running_mean))                    # proved for all sizes
 ```
 
 - **Axes**: positional arguments of array methods (`sum`, `mean`, `max`,
   `argmax`, `transpose`, `swapaxes`, ...) and `axis=` / `axes=` of any function
   (`jax.nn.softmax(x, axis=T)`). The position comes from the array's annotation
-  (a parameter, or an annotated local like `h` above), else from its sizes.
+  (a parameter, or an annotated local `h: f32[B, T, D] = ...`), else from its sizes.
   When two axes have the same size and nothing says which is which, the call
   is an error asking for an annotation.
 - **Sizes**: everywhere else: shapes, `range(N)`, arithmetic, slices. Under the
@@ -261,20 +281,20 @@ grads = jax.grad(lambda m: m(jnp.ones((4, 16))).sum())(model)   # a Stack too
 - `model.lift(x)` maps `__call__` over extra axes. Other decorators go on the
   methods themselves.
 
-Invariants state what every instance satisfies. They are checked when one is
-built or passed in, and the prover assumes them. A method's sizes can name the
-struct's int fields:
+Annotations can use the struct's fields through `self`, and a method's
+leading `assert` on the class's sizes and fields is an invariant of the class:
+checked whenever an instance is passed in, and assumed by every function that
+receives one, including the prover:
 
 ```python
-@tx.struct(where="D % heads == 0")
+@tx.struct
 class Heads[D]:
     w: f32[D, D]
     heads: int = 4
 
-    @fn(H="heads", K="D // heads")
-    def split[T, H, K](self, x: f32[T, D]) -> f32[H, T, K]:
-        h: f32[T, H, K] = (x @ self.w).reshape(T, H, K)
-        return h.transpose(H, T, K)
+    def split[T](self, x: f32[T, D]) -> f32[self.heads, T, D // self.heads]:
+        assert D % self.heads == 0
+        return (x @ self.w).reshape(T, self.heads, D // self.heads).transpose(1, 0, 2)
 
 Heads(jnp.eye(8)).split(jnp.ones((5, 8))).shape      # (4, 5, 2)
 print(tx.prove(Heads.split).ok)                      # True
@@ -309,8 +329,7 @@ not recompile.
 
 ```python
 @tx.jit
-@fn(K="N * n")
-def repeat[N, K](x: f32[N], n: int, scale: float) -> f32[K]:
+def repeat[N](x: f32[N], n: int, scale: float) -> f32[N * n]:
     return jnp.tile(x, n) * scale
 
 repeat(jnp.ones(3), 4, 0.5).shape                       # (12,)
@@ -408,7 +427,7 @@ def example[*Batch, H, W](
 |---|---|
 | Arrays | `f16 f32 f64 i8 … i64 u8 … u64 c64 c128`, any of a kind: `Float Int UInt Bool Complex Num Arr` |
 | Sizes | type parameters (`def f[B, T]`), `Literal[3]`, `class RGB(Dim, size=3)`, `*Rest` (any number of axes, the same everywhere), `...` (any number, unchecked), `Any` (one, unchecked) |
-| Derived sizes | `@fn(U="T + 1")`, constraints `@fn(where="T >= 2")` |
+| Derived sizes | `f32[T + 1]`, `f32[heads, D // heads]`, `f32[self.heads]`; constraints: a leading `assert T >= 2` |
 | Containers | `tuple[...]`, `list[X]`, `dict[str, X]`, `X \| None`, NamedTuples and dataclasses, generic ones too |
 | Stacked | `Batch[Transition, T, N]`: a `Transition` whose arrays all have leading axes `T, N` |
 | Plain values | `int`, `float`, `bool`, `str`, `Literal`, enums, callables, config classes |

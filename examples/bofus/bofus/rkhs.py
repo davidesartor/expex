@@ -1,4 +1,6 @@
 
+from __future__ import annotations
+
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -42,7 +44,7 @@ class RBFMixture[M, D]:
         a_range: tuple[Float, Float],
         sigma0: float = 1.0,
         coverage: float = 1.0,
-    ) -> "Batch[RBFMixture[K, E], *B]":
+    ) -> Batch[RBFMixture[K, E], *B]:
         """Draw iid mixtures of shape (*b, m, d) from the prior, then clip l and a to their ranges.
         log l ~ N(median, sigma0^2 / d), the median solved so the atoms fill coverage of the box (m + 1) E[phi^2] = coverage.
         Amplitudes make the box mean of Var f(x) 1 before clipping. Periodic dims use the line energy.
@@ -70,9 +72,9 @@ class RBFMixture[M, D]:
         return RBFMixture(l.clip(*l_range), x, a.clip(*a_range))
 
     @tx.lift
-    @fn(K="m", where="m >= M")
-    def pad_to[K](self, m: int) -> "RBFMixture[K, D]":
+    def pad_to(self, m: int) -> RBFMixture[m, D]:
         """Pad with inert atoms: zero amplitude, period wide lengthscale, at the origin."""
+        assert m >= M
         m0, d = self.l.shape
         l = jnp.concat([self.l, jnp.full((m - m0, d), (2 * X_MAX) ** 2)])
         x = jnp.concat([self.x, jnp.zeros((m - m0, d))])
@@ -81,7 +83,7 @@ class RBFMixture[M, D]:
 
     @tx.lift
     def inner[K](
-        self, other: "RBFMixture[K, D]", l0: Float[D] | None = None, periodic: Periodic = None
+        self, other: RBFMixture[K, D], l0: Float[D] | None = None, periodic: Periodic = None
     ) -> Float:
         """Inner product in the rkhs of phi(.; l0) on [-X_MAX, X_MAX]^d, in L2 if l0 is None.
         RBF are analytic, so the rkhs inner product on the box is an isometry of the one on the line.
@@ -115,7 +117,7 @@ class RBFMixture[M, D]:
 
     @tx.lift
     def distance[K](
-        self, other: "RBFMixture[K, D]", l0: Float[D] | None = None, periodic: Periodic = None
+        self, other: RBFMixture[K, D], l0: Float[D] | None = None, periodic: Periodic = None
     ) -> Float:
         """Distance between mixtures in the rkhs of phi(.; l0), in L2 on the box if l0 is None."""
         norms = self.inner(self, l0, periodic) + other.inner(other, l0, periodic)
