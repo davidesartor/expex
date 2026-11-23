@@ -144,9 +144,10 @@ def vectorize(f: Fn[Any, Any], args: tuple[Any, ...], kwargs: dict[str, Any], au
     try:
         return g(*prepared)
     except ShapeError as e:
-        if getattr(e, "_expex_arguments", None) is not f:
+        failed = getattr(e, "_expex_arguments", None)
+        if failed is None or failed[0] is not f:
             raise
-        raise _per_element(f, e, leaves, batches) from None
+        raise _per_element(f, e, failed[1], leaves, batches) from None
 
 
 def batch_plan(
@@ -207,12 +208,15 @@ def _axes(b: tuple[Any, ...]) -> str:
 
 
 def _per_element(
-    f: Fn[Any, Any], e: ShapeError, leaves: list[tuple[Spec, Any, str]], batches: list[tuple[Any, ...]]
+    f: Fn[Any, Any], e: ShapeError, path: str, leaves: list[tuple[Spec, Any, str]], batches: list[tuple[Any, ...]]
 ) -> ShapeError:
-    """The error of an automatically mapped call whose elements do not match: says what was mapped."""
+    """The error of an automatically mapped call whose elements do not match: says what was mapped.
+
+    ``e`` is the error of one element's call, about the argument at ``path``.
+    """
     lines = str(e).split("\n")
     lines[0] = lines[0].removesuffix(".") + ", even with the extra leading axes mapped over."
-    if len(lines) > 3 and lines[3].startswith("    received"):
+    if len(lines) > 3 and lines[3].startswith("    received") and any(p == path and b for (_, _, p), b in zip(leaves, batches)):
         lines[3] += "  (one element)"
     mapped = [
         f"`{path}: {describe(v)}` is a batch {_axes(b)} of {spec}"

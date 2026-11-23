@@ -82,7 +82,7 @@ def _hints(
         for note in notes:
             if note.startswith("-> "):
                 text, ret = note, returns.get(line)
-                target: ast.AST | None = ret.value if ret is not None and ret.value is not None else ret
+                target: ast.expr | ast.stmt | None = ret.value if ret is not None and ret.value is not None else ret
             else:
                 name, _, shape = note.partition(": ")
                 text, target = shape, stores.get((line, name))
@@ -167,6 +167,7 @@ def analyse(path: str) -> FileShapes:
         except Exception as e:
             report = Report(f, ERROR, f"the prover raised:\n    {_summ(e)}")
         err: BaseException | None = None
+        trace: Any
         try:
             trace = shapes(f)
         except Exception as e:  # the shape error itself, with the line it happened on

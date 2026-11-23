@@ -569,7 +569,7 @@ class Fn(Generic[P, R]):
             if self._auto() and batching.extra_axes(self, m):
                 raise batching.Rebatch from None
             err = messages.error(self, m, "argument", env)
-            setattr(err, "_expex_arguments", self)  # for a mapped call to say it was mapped
+            setattr(err, "_expex_arguments", (self, m.path))  # for a mapped call to say it was mapped
             raise err from None
         if self.where:
             self._check_where(env, final=False)

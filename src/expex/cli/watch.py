@@ -432,7 +432,7 @@ def _wait_polling(w: Watcher, interval: float, debounce: float) -> set[Path]:
 
 def _watchfiles_waiter(w: Watcher, debounce: float) -> Callable[[], set[Path]] | None:
     try:
-        import watchfiles  # optional
+        watchfiles: Any = importlib.import_module("watchfiles")  # optional
     except ImportError:
         return None
     events = watchfiles.watch(*w.folders(), debounce=int(debounce * 1000), step=50)
