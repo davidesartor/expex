@@ -232,6 +232,19 @@ change what that name means in code written without it, where `b`, `t` or
 `d` may be a global or a loop variable. The rewrite below makes them type
 parameters, which the body can then use by name.
 
+**Annotations nobody checked** (jaxtyping checks only under `@jaxtyped` or
+its import hook) can be wrong, and when an argument has more axes than its
+annotation says, expex maps over them rather than failing. Turn that off
+while you first run such code, with `expex.config.vectorize = False` (or
+`@expex.fn(vectorize=False)`), so that a wrong annotation is reported where
+it is, then turn it back on.
+
+A module inside another one (a layer in a model) has its own sizes: in a
+stack of layers of different widths, each layer's `in` and `out` are its
+own, as jaxtyping checks a module's fields when that module is built. A
+module's sizes are shared with the function only for `self` and for an
+argument annotated with it.
+
 **With jaxtyping's own checks**, put `@expex.fn` on top:
 `@expex.fn` over `@jaxtyped(typechecker=beartype)` runs both checks, and
 maps over extra leading axes before jaxtyping sees one element. The other
@@ -259,7 +272,11 @@ Sizes are renamed in expex's style (`b` to `B`, `seq_len` to `SeqLen`),
 unless the new name is taken: by a global, an import, a parameter or a name
 the body uses (`D = 64` at the top of the file keeps the size `d` as `d`).
 Field annotations of a class (an Equinox module, a dataclass) give the class
-its type parameters, which its methods share. `Float` stays `Float`, as
+its type parameters, which its methods share. A class with a field of such a
+class takes its sizes too, and so do the functions that take it
+(`params: Params[StateDim, EmissionDim]`), since jaxtyping's names mean one
+size throughout a file; in `list[Layer]` or `tuple[Layer, ...]`, whose
+elements may differ, `Layer` is left as it is. `Float` stays `Float`, as
 jaxtyping's accepts any float dtype; `--float f32` writes `f32` (and `Int` as
 `i32`). jaxtyping's imports that are no longer used are removed.
 

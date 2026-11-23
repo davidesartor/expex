@@ -112,10 +112,11 @@ def _names_in(node: ast.AST) -> set[str]:
 
 @dataclass
 class _Ann:
-    node: ast.expr  # a jaxtyping subscript, or a name such as PRNGKeyArray
+    node: ast.expr  # a jaxtyping subscript, a name such as PRNGKeyArray, or a class of this file
     dtype: str | None  # expex's, or None for an array type that is a Python scalar
     dims: tuple[Any, ...]
     whole: str | None = None  # a whole-annotation replacement (PRNGKeyArray -> Key)
+    ref: str | None = None  # a class of this file that becomes generic: `Params` -> `Params[B, D]`
 
 
 class _Rewriter:
@@ -125,6 +126,8 @@ class _Rewriter:
         self.tree = ast.parse(text)
         self.float_as = float_as
         self.edits: list[tuple[int, int, str]] = []
+        #: Classes of this file that become generic: name -> their sizes (see ``plan``).
+        self.generic: dict[str, list[tuple[str, bool]]] = {}
         self.changes: list[str] = []
         self.kept: list[str] = []
         self.taken = defined(self.tree) | set(dir(builtins)) | set(EXPEX_NAMES) | {"Any", "expex"}
@@ -159,7 +162,17 @@ class _Rewriter:
             return
         if isinstance(ann, ast.Constant) and isinstance(ann.value, str):
             raise _Keep(f"a quoted annotation, {ann.value!r}")
+        many = {  # in list[X], tuple[X, ...]: each element may have its own sizes, so X stays as it is
+            id(n) for s in ast.walk(ann)
+            if isinstance(s, ast.Subscript) and isinstance(s.value, (ast.Name, ast.Attribute))
+            and ast.unparse(s.value).split(".")[-1] in ("list", "List", "Sequence", "tuple", "Tuple")
+            and not (ast.unparse(s.value).split(".")[-1] in ("tuple", "Tuple") and not _ellipsis(s.slice))
+            for n in ast.walk(s.slice)
+        }  # fmt: skip
         for node in ast.walk(ann):
+            if isinstance(node, ast.Name) and node.id in self.generic and id(node) not in many:
+                yield _Ann(node, None, tuple(DVar(n) if v else DName(n) for n, v in self.generic[node.id]), ref=node.id)
+                continue
             name = self.ref(node.value) if isinstance(node, ast.Subscript) else self.ref(node)
             if isinstance(node, ast.Subscript) and name is not None:
                 if name == "PyTree":
@@ -220,6 +233,8 @@ class _Rewriter:
     # -------------------------------------------------------------- writing annotations
 
     def render(self, a: _Ann, names: dict[str, str]) -> str:
+        if a.ref is not None:
+            return f"{a.ref}[{', '.join(('*' if isinstance(d, DVar) else '') + names[d.name] for d in a.dims)}]"
         if a.whole is not None and a.dtype is None:
             return f"\x00{a.whole}\x00"
         dtype = a.dtype or "Arr"
@@ -355,7 +370,7 @@ class _Rewriter:
             for m in methods:
                 self.function(m, {}, where)
             return
-        sizes = self.sizes(found, set())
+        sizes = self.generic.get(node.name) or self.sizes(found, set())
         body_names = set().union(*(_names_in(m) for m in methods)) if methods else set()
         names = self.rename(sizes, self.taken | body_names | {node.name}, {})
         saved = (list(self.edits), list(self.changes), len(self.kept))
@@ -457,13 +472,57 @@ class _Rewriter:
                 break
         return offset(self.lines, (last.end_lineno or last.lineno) + 1, 0) if last is not None else 0
 
+    def plan(self) -> None:
+        """The classes of this file that become generic, with their sizes in order.
+
+        A class whose fields are annotated with jaxtyping gets the sizes they name
+        as type parameters; a class with a field of such a class (``initial:
+        ParamsInitial``) gets that class's sizes too, and the field says them
+        (``ParamsInitial[StateDim]``), as do the functions that take it: jaxtyping's
+        names mean the same size throughout, which expex says by passing them on.
+        """
+        classes = {n.name: n for n in self.tree.body if isinstance(n, ast.ClassDef) and not n.type_params}
+        own: dict[str, list[tuple[str, bool]]] = {}
+        refs: dict[str, list[str]] = {}
+        for name, c in classes.items():
+            fields = [s.annotation for s in c.body if isinstance(s, ast.AnnAssign)]
+            methods = [s for s in c.body if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef))]
+            try:
+                found = [f for a in fields for f in self.anns(a)]
+                for m in methods:  # a method kept as jaxtyping keeps its class so
+                    ma = m.args
+                    for x in [*ma.posonlyargs, *ma.args, *ma.kwonlyargs, *[y for y in (ma.vararg, ma.kwarg) if y]]:
+                        list(self.anns(x.annotation))
+                    list(self.anns(m.returns))
+            except _Keep:
+                continue
+            own[name] = self.sizes(found, set())
+            refs[name] = [n.id for a in fields for n in ast.walk(a) if isinstance(n, ast.Name) and n.id in classes and n.id != name]
+        sizes = {n: list(v) for n, v in own.items()}
+        changed = True
+        while changed:
+            changed = False
+            for n in sizes:
+                for r in refs[n]:
+                    for item in sizes.get(r, ()):
+                        if item[0] not in {x for x, _ in sizes[n]}:
+                            sizes[n].append(item)
+                            changed = True
+        self.generic = {n: v for n, v in sizes.items() if v and sum(var for _, var in v) <= 1}
+
     def run(self) -> Migration:
         if self.names or self.modules:
+            self.plan()
             self.visit(self.tree.body)
         if self.edits:
             self.finish()
         new = apply_edits(self.text, self.edits)
         return Migration(self.path, self.text, new, self.changes, self.kept)
+
+
+def _ellipsis(sl: ast.expr) -> bool:
+    """Is the subscript ``sl`` that of ``tuple[X, ...]``?"""
+    return isinstance(sl, ast.Tuple) and len(sl.elts) == 2 and isinstance(sl.elts[1], ast.Constant) and sl.elts[1].value is Ellipsis
 
 
 def _inside(stmt: ast.AST, fn: ast.AST) -> bool:

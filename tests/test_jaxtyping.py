@@ -493,6 +493,41 @@ def test_migrate_names_float_qualified_when_jaxtyping_float_stays(tmp_path):
     assert "from jaxtyping import Array, Float\nimport expex\n" in new
 
 
+def test_migrate_passes_sizes_through_classes(tmp_path):
+    """jaxtyping's names mean one size throughout: a struct of structs, and the functions taking it, say so."""
+    from expex.tools.migrate import migrate
+
+    path = tmp_path / "params.py"
+    path.write_text(textwrap.dedent('''\
+        from typing import NamedTuple
+        from jaxtyping import Array, Float
+
+        class Initial(NamedTuple):
+            mean: Float[Array, "state"]
+
+        class Dynamics(NamedTuple):
+            weights: Float[Array, "state state"]
+
+        class Params(NamedTuple):
+            initial: Initial
+            dynamics: Dynamics
+            history: list[Initial]  # each element may have its own sizes: left as it is
+
+        def step(params: Params, x: Float[Array, "state"]) -> Float[Array, "state"]:
+            return params.dynamics.weights @ x + params.initial.mean
+    '''))
+    new = migrate(path).new
+    assert "class Initial[State](NamedTuple):\n    mean: Float[State]" in new
+    assert "class Params[State](NamedTuple):\n    initial: Initial[State]\n    dynamics: Dynamics[State]\n    history: list[Initial]" in new
+    assert "def step[State](params: Params[State], x: Float[State]) -> Float[State]:" in new
+    path.write_text(new)
+    m = load_file(path)
+    p = m.Params(m.Initial(ones(3)), m.Dynamics(ones((3, 3))), [])
+    assert m.step(p, ones(3)).shape == (3,)
+    assert "State is 3" in raises("EX101", m.step, p, ones(4))  # the struct's size is the function's
+    assert expex.prove(m.step).ok
+
+
 def test_migrate_refuses_a_file_changed_since(tmp_path):
     from expex.tools.migrate import migrate
 

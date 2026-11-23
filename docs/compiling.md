@@ -156,7 +156,7 @@ out = forward(model, jnp.ones((8 * n, 16))) # x: f32[B, D], and the result, spli
 A training step with an optax optimizer, whose state holds the model's moments,
 sharded like the model:
 
-```python
+```python optax
 import optax
 from typing import Any
 
