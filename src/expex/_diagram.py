@@ -507,7 +507,7 @@ def _view(m: dict[str, Any], expanded: set[int], full: bool = False) -> tuple[li
     for a, b, t in m["edges"]:
         if key[a] != key[b]:
             succ.setdefault(key[a], []).append((key[b], t))
-    edges: dict[tuple[str, str], str] = {}
+    edges: dict[tuple[str, str], tuple[str, str, str]] = {}  # (shown, leaving u, reaching v)
     for u in nodes:
         seen, todo = {u}, [(v, t, t) for v, t in reversed(succ.get(u, []))]
         while todo:  # (node, type leaving u, type reaching the node)
@@ -701,9 +701,9 @@ def _palette() -> dict[str, tuple[str, str]]:
         out[k + "f"] = (_mix(hue, 0.12, white), _mix(lit, 0.2, dark))
         out[k + "c"] = (_mix(hue, 0.06, white), _mix(lit, 0.12, dark))
     out["mixf"], out["mixc"] = out["wash"], (white, _mix("#FFFFFF", 0.04, dark))
-    for k, (p, q) in enumerate([(0.0, 0.0), (0.12, 0.16), (0.28, 0.3), (0.5, 0.48), (0.78, 0.7)]):
-        out[f"h{k}"] = (_mix(_AMBER, p, white), _mix(_AMBER, q, dark))  # boxes by their share of the time
-        out[f"p{k}"] = (_mix(_AMBER, p / 8, white), _mix(_AMBER, q / 6, dark))  # panels, fainter
+    for j, (p, q) in enumerate([(0.0, 0.0), (0.12, 0.16), (0.28, 0.3), (0.5, 0.48), (0.78, 0.7)]):
+        out[f"h{j}"] = (_mix(_AMBER, p, white), _mix(_AMBER, q, dark))  # boxes by their share of the time
+        out[f"p{j}"] = (_mix(_AMBER, p / 8, white), _mix(_AMBER, q / 6, dark))  # panels, fainter
     return out
 
 
@@ -926,7 +926,8 @@ class _Scene:
     # -- structure
 
     def _containers(self, drawn: list[int]) -> None:
-        B, members = self.B, {i: [] for i in drawn}  # what each drawn box directly holds
+        B = self.B
+        members: dict[int, list[str]] = {i: [] for i in drawn}  # what each drawn box directly holds
         for n in self.order:
             if self.nodes[n][3] >= 0:
                 members[self.nodes[n][3]].append(n)
@@ -1368,7 +1369,7 @@ class _Scene:
                     blocks.append([(m1 * w1 + m2 * w2) / (w1 + w2), w1 + w2, n1 + n2])
             k = 0
             for mean, _, n in blocks:
-                for _ in range(n):
+                for _ in range(int(n)):
                     xs[layer[k]] = mean + off[k]
                     k += 1
 
@@ -1798,12 +1799,12 @@ def _states(m: dict[str, Any], budget: int = 40) -> tuple[dict[str, str], dict[s
                 states[key(s)] = s
                 todo.append(key(s))
             clicks.setdefault(k, {})[str(i)] = key(s)
-    for k, targets in clicks.items():  # a click past the budget goes to the nearest depth view
-        for i, t in targets.items():
+    for targets in clicks.values():  # a click past the budget goes to the nearest depth view
+        for box, t in targets.items():
             if t not in svgs:
                 want = states.get(t) or {int(x) for x in t.split(",") if x}
                 fits = [d for d in depths if want <= states[d]]
-                targets[i] = fits[0] if fits else depths[-1]
+                targets[box] = fits[0] if fits else depths[-1]
     return svgs, clicks, depths
 
 

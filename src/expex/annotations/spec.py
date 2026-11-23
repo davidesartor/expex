@@ -107,8 +107,9 @@ class ArraySpec(Spec):
         return None if self.var_index is not None else len(self.dims)
 
     def match(self, value: Any, path: str, env: Env) -> None:
-        symbolic = bool(jax.export.is_symbolic_dim(value))  # a size, under the prover: an int at run time
-        t = int if symbolic else type(value)
+        t = type(value)
+        if t not in _SCALARS and not hasattr(value, "shape") and bool(jax.export.is_symbolic_dim(value)):
+            t = int  # a size, symbolic under the prover: an int at run time (checked last: it is slow)
         if t in _SCALARS:
             if t not in self.dtype.weak:
                 raise Mismatch(

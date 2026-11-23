@@ -740,7 +740,7 @@ class Fn(Generic[P, R]):
 class BoundFn(Generic[P, R]):
     """An ``@fn`` method bound to an instance."""
 
-    __slots__ = ("fn", "obj")
+    __slots__ = ("fn", "obj", "__weakref__")
 
     def __init__(self, fn: Fn[Any, R], obj: Any):
         self.fn = fn
