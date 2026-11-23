@@ -56,8 +56,11 @@ def local_(value: Any, ann: Callable[[], Any], name: str, site: str) -> Any:
     if spec is None:
         return value
     env, fn = CALLS.stack[-1]
-    fn._check_local(spec, value, name, site, env)
     env.locals[name] = spec
+    from ._fn import config
+
+    if config.checked:
+        fn._check_local(spec, value, name, site, env)
     return value
 
 

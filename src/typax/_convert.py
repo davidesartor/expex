@@ -451,7 +451,34 @@ class _Exprs(ast.NodeTransformer):
     visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
     visit_ClassDef = visit_FunctionDef  # type: ignore[assignment]
 
+    def visit_Lambda(self, node: ast.Lambda) -> Any:
+        if getattr(node, "_typax_annotation", False):
+            return node  # `f32[B, T]` in a local annotation: the names stay names
+        self.generic_visit(node)
+        return node
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> Any:
+        if node.value is not None:
+            node.value = self.visit(node.value)
+        return node
+
+    def visit_Name(self, node: ast.Name) -> Any:
+        if isinstance(node.ctx, ast.Load) and node.id in self.axis_names:
+            self.named += 1
+            return ast.copy_location(_call("size_", node), node)  # `T` as a value: its size
+        return node
+
     def visit_Call(self, node: ast.Call) -> Any:
+        if self.axis_names and _named_axes_call(node, self.axis_names):
+            # axis positions keep the names; everything else is visited as usual
+            method = isinstance(node.func, ast.Attribute) and node.func.attr in _axes.AXIS_METHODS
+            node.func = self.visit(node.func)
+            if not method:
+                node.args = [self.visit(a) for a in node.args]
+            for k in node.keywords:
+                if k.arg not in _axes.AXIS_KEYWORDS:
+                    k.value = self.visit(k.value)
+            return self._named(node)
         self.generic_visit(node)
         if (
             isinstance(node.func, ast.Name)
@@ -470,8 +497,6 @@ class _Exprs(ast.NodeTransformer):
         ):
             # builtins that need a concrete value: staged versions handle traced ones
             node.func = ast.copy_location(_flow_attr(node.func.id + "_"), node.func)
-        elif self.axis_names and _named_axes_call(node, self.axis_names):
-            return self._named(node)
         return node
 
     def _named(self, node: ast.Call) -> ast.expr:
@@ -539,6 +564,7 @@ class _Converter:
         self.filename = filename
         self.n = 0
         self.count = 0
+        self.sizes = 0  # uses of size names in the body
         self.uses_return_flag = False
         args = fdef.args
         params = [a.arg for a in args.posonlyargs + args.args + args.kwonlyargs]
@@ -687,8 +713,10 @@ class _Converter:
                     continue
                 for i, s in enumerate(seq):
                     if _is_local_annotation(s) and s.target.id in self.locals:
+                        ann = _thunk(s.annotation)
+                        ann._typax_annotation = True  # type: ignore[attr-defined]
                         call = _call(
-                            "local_", s.value, _thunk(s.annotation),
+                            "local_", s.value, ann,
                             ast.Constant(s.target.id), self.site(s),
                         )  # fmt: skip
                         seq[i] = _locate(
@@ -1054,12 +1082,13 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
     fdef = tree.body[0] if tree.body else None
     if not isinstance(fdef, ast.FunctionDef) or fdef.name != raw.__name__:
         raise NotConverted("could not locate the function definition in its source")
+    names = _axis_names(raw, fdef)  # size names, used as sizes or axes
     if not any(
         isinstance(m, _INTERESTING)
         or (isinstance(m, ast.UnaryOp) and isinstance(m.op, ast.Not))
         or _is_local_annotation(m)
         or _is_rewritable(m)
-        or (isinstance(m, ast.Call) and _named_axes_call(m, None))
+        or (isinstance(m, ast.Name) and m.id in names)
         for m in _walk_all(fdef.body)
     ):
         raise NotConverted("no control flow to convert")
@@ -1117,6 +1146,7 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
     new.__dict__.update(raw.__dict__)
     new.__typax_converted__ = conv.count  # type: ignore[attr-defined]
     new.__typax_locals__ = n_locals  # type: ignore[attr-defined]
+    new.__typax_sizes__ = conv.sizes  # type: ignore[attr-defined]
     return new
 
 
@@ -1129,9 +1159,10 @@ def _rewrite(tree: ast.Module, fdef: ast.FunctionDef, raw: Any) -> tuple[_Conver
     conv.rewrite_inplace(fdef.body)
     conv.rewrite_raises(fdef.body)
     n_locals = conv.rewrite_annotations(fdef.body)
-    exprs = _Exprs(conv.site, conv.first_param, conv.builtins_ok, _axis_names(raw, fdef))
+    exprs = _Exprs(conv.site, conv.first_param, conv.builtins_ok, _axis_names(raw, fdef) - conv.locals)
     fdef.body = [exprs.visit(s) for s in fdef.body]
     n_locals += exprs.named  # axes by name need the call's sizes, as checked locals do
+    conv.sizes = exprs.named
     fdef.body = conv.lower_jumps(fdef.body)
     if any(
         isinstance(s, ast.If) and (_returns_via_ifs(s.body) or _returns_via_ifs(s.orelse))

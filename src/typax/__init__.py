@@ -5,7 +5,6 @@ checked on every call, provable for all sizes, and usable for vectorising.
 """
 
 from . import debug
-from ._axes import size
 from ._check import Report, prove
 from ._dims import show
 from ._errors import ShapeError, StageError
@@ -49,7 +48,7 @@ __all__ = [
     "Arr", "Bool", "Int", "UInt", "Float", "Complex", "Inexact", "Num",
     "Key", "Static", "Batch", "Dim",
     # inside functions
-    "key", "rng", "seed", "rows", "stack", "size",
+    "key", "rng", "seed", "rows", "stack",
     # tools
     "show", "debug", "config", "compile_cache",
     # types and errors

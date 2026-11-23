@@ -198,6 +198,8 @@ class Fn(Generic[P, R]):
             except Exception as e:  # never let conversion break a working function
                 self.convert_note = f"conversion failed: {type(e).__name__}: {e}"
         self.converted = self._impl is not raw
+        #: The body uses sizes by name (or annotated locals): it needs this call's sizes.
+        self._needs_sizes = bool(getattr(self._impl, "__typax_sizes__", 0))
         self.name: str = getattr(raw, "__qualname__", getattr(raw, "__name__", repr(raw)))
         self.prove = prove
         self.examples = dict(examples or {})
@@ -416,7 +418,7 @@ class Fn(Generic[P, R]):
         self, args: tuple[Any, ...], kwargs: dict[str, Any], env: Env | None, force: bool
     ) -> Any:
         __tracebackhide__ = True
-        if not force and not config.checked:
+        if not force and not config.checked and not self._needs_sizes:
             out = self._impl(*args, **kwargs)
             return _flow.unstack(out) if self.converted else out
         if self._lazy:

@@ -103,17 +103,41 @@ def test_names_that_are_not_axes_are_left_alone():
     assert f(jnp.ones(3), 0) == 3.0
 
 
-def test_size_gives_the_size_of_a_name():
+def test_size_names_are_sizes_as_values():
     @fn
     def init[*B, T](x: f32[*B, T]) -> f32[*B, T]:
-        return jnp.zeros((*tx.size(B), tx.size(T)))
+        return jnp.zeros((*B, T))
 
     @fn(U="T + 1")
     def pad[T, U](x: f32[T]) -> f32[U]:
-        return jnp.zeros(tx.size(U)).at[: tx.size(T)].set(x)
+        return jnp.zeros(U).at[:T].set(x)
+
+    @fn(H="heads", K="D // heads", where="D % heads == 0")
+    def split[T, D, H, K](x: f32[T, D], heads: int) -> f32[H, T, K]:
+        h: f32[T, H, K] = x.reshape(T, H, K)  # sizes in the reshape, names in the annotation
+        return h.transpose(H, T, K)  # axes in the transpose
+
+    @fn
+    def mean[N, D](x: f32[N, D]) -> f32[D]:
+        acc = jnp.zeros(D)
+        for i in range(N):
+            acc = acc + x[i]
+        return acc / N
 
     assert init(jnp.ones((2, 5, 3))).shape == (2, 5, 3) and tx.prove(init).ok
     assert jax.jit(init)(jnp.ones((4, 3))).shape == (4, 3)
     assert pad(jnp.ones(3)).tolist() == [1, 1, 1, 0] and tx.prove(pad).ok
-    with pytest.raises(ShapeError, match="only available inside an @fn"):
-        tx.size(Vocab)
+    x = jnp.arange(40.0).reshape(5, 8)
+    assert jnp.array_equal(split(x, 2), x.reshape(5, 2, 4).transpose(1, 0, 2)) and tx.prove(split).ok
+    assert jnp.allclose(mean(x), x.mean(0)) and tx.prove(mean).ok
+    with tx.config(checked=False):  # the sizes are still known
+        assert pad(jnp.ones(2)).tolist() == [1, 1, 0]
+
+
+def test_unknown_sizes_are_explained():
+    @fn
+    def onehot[T](tokens: tx.Int[T]) -> f32[T, Vocab]:
+        return jax.nn.one_hot(tokens, Vocab)
+
+    with pytest.raises(ShapeError, match="onehot.*the size Vocab is not known"):
+        onehot(jnp.arange(3))

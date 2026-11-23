@@ -30,7 +30,7 @@ python -m typax examples/transformer.py        # prove a small transformer's sha
 | | |
 |---|---|
 | [Checked calls](#checked-calls) | errors that name the axis and where its size came from |
-| [Axes by name](#axes-by-name) | `x.sum(T)`, `softmax(x, axis=T)`, `x.transpose(B, D, T)` |
+| [Sizes and axes by name](#sizes-and-axes-by-name) | `jnp.zeros((B, T))`, `x.reshape(T, H, K)`, `x.sum(T)`, `axis=T` |
 | [Proofs](#proofs-without-data) | `tx.prove(f)`: the shapes hold for every size |
 | [Plain Python control flow](#plain-python-on-traced-values) | `if` → `lax.cond`, `for` → `lax.scan` / `vmap`, `while` → `lax.while_loop` |
 | [Vectorising](#vectorising) | `f.lift(...)` and `@tx.lift` map over extra leading axes |
@@ -63,50 +63,52 @@ attend(): argument `k` does not match its annotation.
 The result is checked too, and so are annotated local variables
 (`h: f32[B, D] = ...`). Under `jax.jit` the checks run once, while tracing.
 
-Sizes that depend on others, and constraints, go on the decorator:
+Sizes that depend on others go on the decorator:
 
 ```python
 @fn(U="T + 1")
 def pad[B, T, U](x: f32[B, T]) -> f32[B, U]:
     return jnp.pad(x, ((0, 0), (0, 1)))
-
-@fn(H="heads", K="D // heads", where="D % heads == 0")
-def split_heads[T, D, H, K](x: f32[T, D], heads: int) -> f32[H, T, K]:
-    t, d = x.shape
-    return x.reshape(t, heads, d // heads).transpose(1, 0, 2)
-
-split_heads(jnp.ones((5, 8)), heads=2).shape     # (2, 5, 4)
 ```
 
-## Axes by name
+## Sizes and axes by name
 
-The sizes in the signature are names, and inside the function they name axes:
+The sizes in the signature are names, and the body can use them. As a value,
+a name is its size in this call; as an axis argument, it is that axis:
 
 ```python
 @fn
 def pool[B, T, D](x: f32[B, T, D]) -> f32[B, D]:
-    return x.mean(T)
+    return x.mean(T)                     # an axis
+
+@fn(H="heads", K="D // heads", where="D % heads == 0")
+def split_heads[T, D, H, K](x: f32[T, D], heads: int) -> f32[H, T, K]:
+    h: f32[T, H, K] = x.reshape(T, H, K) # sizes
+    return h.transpose(H, T, K)          # axes
 
 @fn
-def summarise[B, T, D](x: f32[B, T, D]) -> f32[D, B]:
-    h = jnp.tanh(x)
-    return h.max(T).transpose(D, B)      # h is unannotated: found by size
+def running_mean[N, D](xs: f32[N, D]) -> f32[N, D]:
+    total = jnp.zeros(D)
+    out = []
+    for i in range(N):
+        total = total + xs[i]
+        out.append(total / (i + 1))
+    return jnp.asarray(out)
 
-pool(jnp.ones((2, 3, 4))).shape          # (2, 4)
-summarise(jnp.ones((2, 3, 4))).shape     # (4, 2)
-print(tx.prove(summarise))               # proved for all sizes
+pool(jnp.ones((2, 3, 4))).shape                  # (2, 4)
+split_heads(jnp.ones((5, 8)), heads=2).shape     # (2, 5, 4)
+print(tx.prove(split_heads))                     # proved for all sizes
 ```
 
-An axis name works as a positional argument of array methods (`sum`, `mean`,
-`max`, `argmax`, `transpose`, `swapaxes`, ...) and as `axis=` / `axes=` of any
-function (`jax.nn.softmax(x, axis=T)`). `Dim` classes and variadics (`*B`) are
-names too. The position comes from the array's annotation when it has one, a
-parameter or an annotated local (`h: f32[B, T, D] = ...`), and otherwise from
-its sizes. When two axes have the same size and nothing says which is which,
-the call is an error asking for an annotation.
-
-`tx.size(T)` is the size of `T` in the current call, a tuple for `*B` and the
-value of a derived size such as `U = T + 1`: `jnp.zeros((tx.size(B), tx.size(T)))`.
+- **Axes**: positional arguments of array methods (`sum`, `mean`, `max`,
+  `argmax`, `transpose`, `swapaxes`, ...) and `axis=` / `axes=` of any function
+  (`jax.nn.softmax(x, axis=T)`). The position comes from the array's annotation
+  (a parameter, or an annotated local like `h` above), else from its sizes.
+  When two axes have the same size and nothing says which is which, the call
+  is an error asking for an annotation.
+- **Sizes**: everywhere else: shapes, `range(N)`, arithmetic, slices. Under the
+  prover the sizes are symbolic, so code built from them is proved for all sizes.
+- `Dim` classes and variadics (`*B`, a tuple of sizes) work the same way.
 
 ## Proofs without data
 
@@ -271,8 +273,8 @@ class Heads[D]:
 
     @fn(H="heads", K="D // heads")
     def split[T, H, K](self, x: f32[T, D]) -> f32[H, T, K]:
-        t, d = x.shape
-        return (x @ self.w).reshape(t, self.heads, d // self.heads).transpose(1, 0, 2)
+        h: f32[T, H, K] = (x @ self.w).reshape(T, H, K)
+        return h.transpose(H, T, K)
 
 Heads(jnp.eye(8)).split(jnp.ones((5, 8))).shape      # (4, 5, 2)
 print(tx.prove(Heads.split).ok)                      # True

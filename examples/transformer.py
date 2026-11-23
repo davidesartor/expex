@@ -46,7 +46,7 @@ class Attention[D]:
 
     @tx.fn(H="heads", K="D // heads")
     def split[T, H, K](self, x: f32[T, D]) -> f32[H, T, K]:
-        h: f32[T, H, K] = x.reshape(tx.size(T), tx.size(H), tx.size(K))
+        h: f32[T, H, K] = x.reshape(T, H, K)
         return h.transpose(H, T, K)
 
     @staticmethod

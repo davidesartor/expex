@@ -45,27 +45,21 @@ def axis_name(v: Any) -> str | None:
     return None
 
 
-def size(name: Any) -> Any:
-    """The size of axis ``name`` in the current ``@fn`` call.
+def size_(name: Any) -> Any:
+    """``T`` used as a value inside an ``@fn``: its size in the current call.
 
-    ::
-
-        @tx.fn
-        def init[B, T](x: f32[B, T]) -> f32[B, T]:
-            return jnp.zeros((tx.size(B), tx.size(T)))
-
-    For a variadic ``*B`` it is a tuple of sizes. Under the prover the sizes
-    are symbolic, so code built from them is proved for all sizes.
+    The converter rewrites ``jnp.zeros((B, T))`` to use this. For a variadic
+    ``*B`` it is a tuple of sizes, for a derived size (``U = T + 1``) its value.
+    Under the prover the sizes are symbolic, so the code is proved for all sizes.
     """
     from ._ops import CALLS
 
     n = axis_name(name)
     if n is None:
-        raise TypeError(f"tx.size() takes a size name (a type parameter or a Dim class), not {name!r}")
+        return name  # not a size name after all (e.g. rebound in an enclosing scope)
     if not CALLS.stack:
         raise ShapeError(
-            f"tx.size({n}) is only available inside an @fn call (with checks on: "
-            f"the sizes come from matching the arguments)."
+            f"the size {n} is only known inside an @fn call."
         )
     env, fn = CALLS.stack[-1]
     if n.startswith("*"):
@@ -76,8 +70,9 @@ def size(name: Any) -> Any:
     elif n in getattr(fn, "defs", {}) and fn.defs[n].names <= env.dims.keys():
         return fn.defs[n](env.dims)  # a derived size, e.g. U = T + 1
     raise ShapeError(
-        f"tx.size({n.lstrip('*')}): {n} is not bound in this call. Only sizes that appear in "
-        f"the arguments (or are derived from them) are known inside the body."
+        f"{getattr(fn, 'name', '?')}(): the size {n.lstrip('*')} is not known in this call: only sizes that appear in "
+        f"the arguments, or are derived from them (@fn(U=\"T + 1\")), are known inside "
+        f"the body."
     )
 
 
