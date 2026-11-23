@@ -30,7 +30,7 @@ pip install -e . "jax[cuda12]==0.12.1"                     # or jax[cuda13]: mat
 pip install -r benchmarks/requirements.txt
 python benchmarks/fetch.py                                 # clones the pinned originals into benchmarks/.originals/
 python -c "import jax; print(jax.devices())"               # check: CudaDevice(...)
-python benchmarks/run.py --device gpu --quick              # a minute: does everything load?
+python benchmarks/run.py --device gpu --quick              # a few minutes: does everything load?
 python benchmarks/run.py --device gpu                      # the README's configs and the "realistic" ones
 python benchmarks/report.py benchmarks/results/gpu-*.json > benchmarks/results/gpu.md
 ```
@@ -55,10 +55,10 @@ python benchmarks/run.py --out results/a100.json          # default results/<cpu
 python benchmarks/fetch.py --list                         # the pinned originals and whether they are fetched
 ```
 
-Default configs: `--quick` runs each port's `quick` config (small, about two
-minutes in all on a 4-core CPU, most of it compiling; for CI-style smoke
-runs); on CPU, the `readme` config (the one the README's claim was measured
-on); on GPU, `readme` and `realistic` (a GPU-sized model or batch).
+Default configs: `--quick` runs each port's `quick` config (small: three to
+four minutes in all on a busy 4-core CPU, nearly all of it compiling; for
+CI-style smoke runs); on CPU, the `readme` config (the one the README's claim was measured
+on; `tiny` / `default` for ports without a claim); on GPU, `readme` and `realistic` (a GPU-sized model or batch).
 
 | Port | Original (pinned in `originals.toml`) | `readme` config | `realistic` config |
 |---|---|---|---|
@@ -66,6 +66,9 @@ on); on GPU, `readme` and `realistic` (a GPU-sized model or batch).
 | `mamba` | mamba-jax (Equinox) | width 128, 4 layers, vocab 1,000, T 2,048 | Mamba-130m's shape: width 768, 24 layers, vocab 50,280, T 2,048 |
 | `llama` | llama-2-jax | width 256, 4 layers, 8 query / 2 kv heads, batch 4 x 256, vocab 32,000 | width 1,024, 8 layers, 16 / 4 heads, batch 4 x 2,048 |
 | `pgx` | Pgx v2.6.0 Connect Four, Othello | 1,024 games x 100 random moves | 8,192 games x 100 moves |
+| `vit` | vision_transformer (Flax) | `tiny`: ViT-Ti/16, batch 8 of 224 x 224 (no README claim yet) | ViT-B/16, batch 64 |
+| `mctx` | mctx | `default`: batch 64 x 64 simulations, MuZero and Gumbel MuZero (no claim yet) | batch 1,024 x 128 simulations |
+| `nerf` | JaxNeRF | `default`: JaxNeRF's 8 x 256 MLPs, 1,024 rays, 64 + 128 samples (no claim yet) | 4,096 rays |
 | `overhead` | plain JAX | per-call cost of a typed call, a jitted call, a jitted method, a `donate="auto"` step, an eager `.vectorize` | |
 
 ## Layout
@@ -92,7 +95,3 @@ port and its `compare.py` with `harness.use_example` / `harness.load_module`,
 and returns `Measure(name, Fn(jax.jit(original), args), Fn(jax.jit(port), args),
 items=..., unit=..., check=...)`s. Keep model code out of it: load parameters
 through the example's `compare.py`.
-
-To do: ViT (`examples/vit`), mctx (`examples/mctx`) and NeRF (`examples/nerf`):
-their originals are already pinned and fetched; their benchmark files will be
-added once the ports and their tests are finished.
