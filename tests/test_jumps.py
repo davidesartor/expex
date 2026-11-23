@@ -9,7 +9,7 @@ import jax.numpy as jnp
 
 import expex
 from expex import f32, fn, i32
-from expex._convert import convert
+from expex.staging.convert import convert
 
 
 def same(f, *args):

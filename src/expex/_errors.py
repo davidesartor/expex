@@ -1,21 +1,5 @@
+"""Old import path kept for ``_diagram.py`` while it is being rewritten: see ``annotations/errors.py``."""
 
-class ShapeError(TypeError):
-    """A value does not match the shape/dtype annotation it was declared with."""
+from .annotations.errors import ShapeError
 
-
-class StageError(TypeError):
-    """A value that must be known at trace time was traced (or vice versa)."""
-
-
-class Mismatch(Exception):
-    """Internal: raised while matching a value against a spec.
-
-    ``Fn`` turns it into a :class:`ShapeError` with the full context.
-    """
-
-    def __init__(self, path: str, spec: object, value: object, reason: str):
-        super().__init__(reason)
-        self.path = path
-        self.spec = spec
-        self.value = value
-        self.reason = reason
+__all__ = ["ShapeError"]

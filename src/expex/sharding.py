@@ -26,10 +26,10 @@ from typing import Any
 import jax
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
-from ._dims import DConst, DName
-from ._fn import BoundFn, Fn, fn, unwrap
-from ._spec import ArraySpec, KeySpec, Spec, StaticSpec, _struct_fields, parse, parse_owner
-from ._types import ArrayAnn, DType
+from .annotations.dims import DConst, DName
+from .function import BoundFn, Fn, fn, unwrap
+from .annotations.spec import ArraySpec, KeySpec, Spec, StaticSpec, _struct_fields, parse, parse_owner
+from .annotations.types import ArrayAnn, DType
 
 
 def shardings(tree: Any, mesh: Mesh, /, *, annotation: Any = None, **names: Any) -> Any:
@@ -96,7 +96,7 @@ def shard(f: Callable[..., Any], mesh: Mesh, /, **names: Any) -> Callable[..., A
         __tracebackhide__ = True
         extra = {}
         if g.random and "key" not in g.params:  # as expex.jit: a fresh key per call
-            from ._rng import fresh
+            from .keys import fresh
 
             extra["key"] = kwargs.pop("key") if "key" in kwargs else fresh(f"{g.name}()")
         bound = g._sig.bind(*args, **kwargs)

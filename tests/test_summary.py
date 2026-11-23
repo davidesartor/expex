@@ -13,8 +13,8 @@ import pytest
 
 import expex
 from expex import f32
-from expex._cost import Poly
-from expex._summary import Summary, summary
+from expex.tools.cost import Poly
+from expex.tools.summary import Summary, summary
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 

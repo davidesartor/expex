@@ -12,9 +12,9 @@ import jax.numpy as jnp
 from jax import lax
 from jax.core import Tracer
 
-from . import _rng
-from ._errors import StageError
-from ._flow import (
+from .. import keys
+from ..annotations.errors import StageError
+from .flow import (
     LOG,
     UNDEF,
     Stacked,
@@ -135,7 +135,7 @@ def stack(seq: Any) -> Any:
 
 
 def reversed_(it: Any) -> Any:
-    inner = _as_iter(it) if _rng.tracing() else None
+    inner = _as_iter(it) if keys.tracing() else None
     if inner is None:
         return reversed(it)
     n = inner.n
@@ -156,7 +156,7 @@ def range_(*args: Any) -> Any:
         try:
             return range(*args)
         except TypeError:
-            if not _rng.tracing() or type(step) is not int:
+            if not keys.tracing() or type(step) is not int:
                 raise
         # a symbolic size (the prover's `T`): a loop of statically unknown but fixed length
         n = (hi - lo) if step == 1 else -(-(hi - lo) // step)
@@ -169,7 +169,7 @@ def range_(*args: Any) -> Any:
 
 def enumerate_(iterable: Any, start: int = 0) -> Any:
     it = iterable
-    inner = _as_iter(it) if _rng.tracing() else None
+    inner = _as_iter(it) if keys.tracing() else None
     if inner is None:
         return enumerate(it, start)
     return _Iter(
@@ -182,7 +182,7 @@ def enumerate_(iterable: Any, start: int = 0) -> Any:
 
 
 def zip_(*its: Any, **kw: Any) -> Any:
-    inners = [_as_iter(it) for it in its] if _rng.tracing() and not kw else [None]
+    inners = [_as_iter(it) for it in its] if keys.tracing() and not kw else [None]
     if not inners or any(i is None or isinstance(i.n, Tracer) for i in inners):
         return zip(*its, **kw)
     n = min(i.n for i in inners)  # type: ignore[union-attr]
@@ -210,15 +210,15 @@ def for_(
     next; ``live`` are those used after the loop. ``brk`` names the flag a
     ``break`` sets: the Python loop stops when it is set to a concrete True.
     """
-    k = _rng.sub()
+    k = keys.sub()
     brk_i = names.index(brk) if brk is not None else None
-    it = _as_iter(iterable) if _rng.tracing() else None
+    it = _as_iter(iterable) if keys.tracing() else None
     if it is not None and not isinstance(it.n, Tracer) and it.n == 0:
         return state
     if it is not None:
         if isinstance(it.n, Tracer):
             return _fori(it, body_fn, state, names, live, site, k)
-        from ._fn import config
+        from ..function import config
 
         if not config.lower_loops:
             it = None
@@ -233,13 +233,13 @@ def for_(
         except Exception as e:  # e.g. the loop index is used as a Python int
             first = (str(e).strip().splitlines() or [""])[0]
             LOG[site] = f"for -> unrolled ({type(e).__name__}: {first[:120]})"
-    elif _rng.tracing() and site not in LOG:
+    elif keys.tracing() and site not in LOG:
         LOG[site] = f"for -> unrolled (iterating over a {type(iterable).__name__})"
     for i, item in enumerate(iterable):
         if k is None:
             state = body_fn(item, *state)
         else:
-            with _rng.child(k, i):
+            with keys.child(k, i):
                 state = body_fn(item, *state)
         if brk_i is not None and state[brk_i] is True:
             break  # a real `break`; a traced flag masks the remaining iterations instead
@@ -301,7 +301,7 @@ def _lower_for(
             cs[j] = args[j] = _Collector()
         for j in last_idx:
             args[j] = UNDEF
-        with _rng.child(k, i), _staged():
+        with keys.child(k, i), _staged():
             out = body_fn(it.make(x, i), *args)
         for j, v in enumerate(out):
             if j in coll:
@@ -387,7 +387,7 @@ def _fori(
 
     def body_f(c: Any) -> Any:
         i, carry = c
-        with _rng.child(k, i), _staged():
+        with keys.child(k, i), _staged():
             out = body_fn(it.make((), i), *merge(carry))
         for j, v in enumerate(out):
             if j in dyn:

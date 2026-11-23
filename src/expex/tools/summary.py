@@ -28,11 +28,11 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-from ._cost import Poly, cost
-from ._dims import DConst, DExpr, DName, Env
-from ._fn import Fn, unwrap
-from ._init import _all_fields
-from ._spec import ArraySpec, SeqSpec, StructSpec, UnionSpec, parse_owner
+from .cost import Poly, cost
+from ..annotations.dims import DConst, DExpr, DName, Env
+from ..function import Fn, unwrap
+from ..modules import _all_fields
+from ..annotations.spec import ArraySpec, SeqSpec, StructSpec, UnionSpec, parse_owner
 
 
 @dataclass

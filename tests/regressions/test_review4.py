@@ -9,7 +9,7 @@ import pytest
 
 import expex
 from expex import Key, f32, fn
-from expex._fn import REGISTRY
+from expex.function import REGISTRY
 
 
 @expex.random

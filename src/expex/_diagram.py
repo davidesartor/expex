@@ -73,10 +73,11 @@ import jax.numpy as jnp
 import numpy as np
 from jax.core import Tracer
 
-from . import _cost, _fn
-from ._dims import fmt_dim, short_dtype
-from ._errors import ShapeError
-from ._jaxpr import sub_jaxprs
+from . import function as _fn
+from .annotations.dims import fmt_dim, short_dtype
+from .annotations.errors import ShapeError
+from .tools import cost as _cost
+from .tools.trace import sub_jaxprs
 
 #: Operations that are drawn (as small nodes) when outside every closed call.
 OPS = {
@@ -90,7 +91,6 @@ OPS = {
 }  # fmt: skip
 _TOKEN = re.compile(r"(vmap\()?([^/()]+)#(\d+)")
 _PAGE = Path(__file__).with_name("_diagram.html")
-MERMAID = "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"
 #: Share of the measured time from which a box is drawn one step hotter (5 steps).
 HEAT = (0.02, 0.08, 0.2, 0.4)
 #: XLA instructions whose events contain the events of the instructions they run.
@@ -327,8 +327,17 @@ class _Builder:
                 label = OPS.get(name)
                 if name == "gather" and not any(self.data[a] for a in _get(env, eqn.invars[1])):
                     label = None  # a slice by sizes, not a lookup
+                if name == "add" and self.joins(eqn, env):
+                    label = "+"  # two computed values of one shape: a residual or skip connection
                 outs = [[self.atom(b, label, "op", eqn.invars, env, eqn)]] * len(eqn.outvars)
             env.update({o: s for o, s in zip(eqn.outvars, outs) if _type(o.aval) is not None})
+
+    def joins(self, eqn: Any, env: dict[Any, list[int]]) -> bool:
+        """Whether an ``add`` sums two values that both depend on the inputs, with one shape."""
+        shapes = {getattr(v.aval, "shape", None) for v in [*eqn.invars, *eqn.outvars]}
+        if len(shapes) != 1 or not next(iter(shapes)) or any(type(v).__name__ == "Literal" for v in eqn.invars):
+            return False
+        return all(any(self.data[a] for a in _get(env, v)) for v in eqn.invars)
 
     def sub(self, jaxpr: Any, box: int, ins: list[list[int]]) -> list[list[int]]:
         jaxpr = getattr(jaxpr, "jaxpr", jaxpr)
@@ -371,11 +380,6 @@ class _Builder:
         types = sorted(self.types, key=self.types.__getitem__)
         return dict(name=name, depth=depth, boxes=self.boxes, atoms=self.atoms, edges=self.edges,
                     types=types, sources=self.hook.sources, timing=None, error=self.error)  # fmt: skip
-
-
-def _esc(text: str) -> str:
-    """Text for a quoted Mermaid label: brackets, quotes and tags as entity codes."""
-    return "".join(f"#{ord(c)};" if c in '"[]<>#&|{}_*`~' else c for c in text)
 
 
 def _amount(x: float, unit: str) -> str:
@@ -421,16 +425,14 @@ def _label(m: dict[str, Any], b: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _view(m: dict[str, Any], expanded: set[int]) -> tuple[list[tuple[str, str, str, int]], list[tuple[str, str, str]], list[int], str | None]:  # fmt: skip
+def _view(m: dict[str, Any], expanded: set[int], full: bool = False) -> tuple[list[tuple[str, str, str, int]], list[Any], list[int], str | None]:  # fmt: skip
     """The visible graph: nodes (id, kind, label, parent box), edges (from, to, type), drawn boxes,
     and the node that failed (for ``explain``), if any.
 
     Atoms inside a closed call become that call's node; unlabelled atoms elsewhere
     are passed through. An edge is labelled with the type of the array as it
     leaves its source, or as it enters its target if that is a call (whose
-    label says what it takes).
-
-    Mirrored in ``_diagram.html`` (``view``), which redraws as calls are opened.
+    label says what it takes). With ``full``, edges also carry both types.
     """
     boxes, atoms = m["boxes"], m["atoms"]
     rep: list[int | None] = []  # the closed call that swallows each box
@@ -462,7 +464,7 @@ def _view(m: dict[str, Any], expanded: set[int]) -> tuple[list[tuple[str, str, s
                 continue
             seen.add(v)
             if v in nodes:
-                edges.setdefault((u, v), m["types"][t if nodes[v][1] == "call" else t0])
+                edges.setdefault((u, v), (m["types"][t if nodes[v][1] == "call" else t0], m["types"][t0], m["types"][t]))
             else:
                 todo.extend((w, t0, tw) for w, tw in reversed(succ.get(v, [])))
     drawn: set[int] = set()
@@ -471,7 +473,9 @@ def _view(m: dict[str, Any], expanded: set[int]) -> tuple[list[tuple[str, str, s
             drawn.add(box)
             box = boxes[box]["p"]
     fail = key[m["error"]["atom"]] if m.get("error") else None
-    return list(nodes.values()), [(u, v, t) for (u, v), t in edges.items()], sorted(drawn), fail
+    if full:  # (from, to, type, type leaving the source, type entering the target)
+        return list(nodes.values()), [(u, v, *t) for (u, v), t in edges.items()], sorted(drawn), fail
+    return list(nodes.values()), [(u, v, t[0]) for (u, v), t in edges.items()], sorted(drawn), fail
 
 
 def _feeds(edges: list[tuple[str, str, str]], node: str | None) -> tuple[set[str], set[int]]:
@@ -486,85 +490,6 @@ def _feeds(edges: list[tuple[str, str, str]], node: str | None) -> tuple[set[str
                 seen.add(u)
                 todo.append(u)
     return seen - {node}, {i for i, (u, w, _) in enumerate(edges) if w in seen and u in seen}
-
-
-#: Mermaid styles, light then dark (the page switches; the Mermaid text is light).
-STYLES = {
-    "calls": ("fill:#dbeafe,stroke:#2563eb,color:#0f172a", "fill:#1e3a8a,stroke:#60a5fa,color:#e2e8f0"),
-    "ops": ("fill:#fef3c7,stroke:#d97706,color:#0f172a", "fill:#78350f,stroke:#f59e0b,color:#fef3c7"),
-    "io": ("fill:#dcfce7,stroke:#16a34a,color:#0f172a", "fill:#14532d,stroke:#22c55e,color:#dcfce7"),
-    "heat0": ("fill:#f1f5f9,stroke:#94a3b8,color:#334155", "fill:#1e293b,stroke:#475569,color:#cbd5e1"),
-    "heat1": ("fill:#fff7ed,stroke:#fdba74,color:#0f172a", "fill:#2a1a10,stroke:#9a3412,color:#fde7d0"),
-    "heat2": ("fill:#ffedd5,stroke:#fb923c,color:#0f172a", "fill:#47210c,stroke:#c2410c,color:#ffedd5"),
-    "heat3": ("fill:#fdba74,stroke:#ea580c,color:#0f172a", "fill:#7c2d12,stroke:#f97316,color:#ffedd5"),
-    "heat4": ("fill:#f97316,stroke:#9a3412,stroke-width:2px,color:#1c0a00", "fill:#c2410c,stroke:#fdba74,stroke-width:2px,color:#fff7ed"),  # noqa: E501
-    "error": ("fill:#fee2e2,stroke:#dc2626,stroke-width:3px,color:#7f1d1d", "fill:#450a0a,stroke:#f87171,stroke-width:3px,color:#fee2e2"),  # noqa: E501
-    "feeds": ("stroke:#dc2626,stroke-width:2px", "stroke:#f87171,stroke-width:2px"),
-}  # fmt: skip
-#: The edges on the path into a failing call, light then dark.
-PATH = ("stroke:#dc2626,stroke-width:2.5px,color:#b91c1c", "stroke:#f87171,stroke-width:2.5px,color:#fca5a5")
-#: Opened boxes: (calls, loops, failing) strokes, light then dark.
-FRAME = (("#2563eb", "#9333ea", "#dc2626"), ("#60a5fa", "#c084fc", "#f87171"))
-
-
-def _part(style: str, name: str) -> str:
-    """``#9a3412`` from ``fill:...,stroke:#9a3412,...`` and ``"stroke"``."""
-    return next(kv.split(":", 1)[1] for kv in style.split(",") if kv.split(":", 1)[0] == name)
-
-
-def _mermaid(m: dict[str, Any], expanded: set[int]) -> str:
-    nodes, edges, drawn, fail = _view(m, expanded)
-    shape = {"call": '["{}"]', "op": '(["{}"])', "in": '[/"{}"/]', "out": '[\\"{}"\\]'}
-    out = ["flowchart TD"]
-
-    items: dict[int, list[Any]] = {}  # box -> its nodes and boxes, in the order they first appear
-    for node in nodes:
-        items.setdefault(node[3], []).append(node)
-        box = node[3]
-        while box >= 0 and box not in items.get(m["boxes"][box]["p"], []):
-            items.setdefault(m["boxes"][box]["p"], []).append(box)
-            box = m["boxes"][box]["p"]
-
-    def emit(box: int, ind: str) -> None:
-        for it in items.get(box, []):
-            if isinstance(it, int):
-                b = m["boxes"][it]
-                share = f" · {b['s']:.1%}" if m.get("timing") and "s" in b else ""  # long titles wrap over the contents
-                title = b["l"] + (" · vectorized" if b.get("vectorize") else "") + share
-                out.append(f'{ind}subgraph b{it} ["{_esc(title)}"]')
-                emit(it, ind + "  ")
-                out.append(f"{ind}end")
-            else:
-                text = _esc(it[2])  # a line break in the quotes is a line break in the label
-                out.append(ind + it[0] + shape[it[1]].format(text))
-
-    emit(-1, "  ")
-    out += [f'  {u} -->|"{_esc(t)}"| {v}' for u, v, t in edges]
-    groups: dict[str, list[str]] = {}
-    for n, k, _, _ in nodes:
-        b = m["boxes"][int(n[1:])] if k == "call" else None
-        cls = {"call": "calls", "op": "ops", "in": "io", "out": "io"}[k]
-        if b is not None and "s" in b:
-            cls = f"heat{heat(b['s'])}"
-        groups.setdefault("error" if n == fail else cls, []).append(n)
-    feeds, path = _feeds(edges, fail)
-    if feeds:
-        groups["feeds"] = sorted(feeds, key=[n[0] for n in nodes].index)
-    for cls in STYLES:
-        if cls in groups or cls in ("calls", "ops", "io"):
-            out.append(f"  classDef {cls} {STYLES[cls][0]}")
-    out += [f"  class {','.join(ids)} {cls}" for cls in STYLES if (ids := groups.get(cls))]
-    for i in drawn:
-        b = m["boxes"][i]
-        color = FRAME[0][2] if b.get("err") else FRAME[0][0] if b["k"] == "call" else FRAME[0][1]
-        fill = "transparent"
-        if "s" in b:  # a tint of the heat step's stroke
-            color = _part(STYLES[f"heat{heat(b['s'])}"][0], "stroke")
-            fill = color + "26"
-        out.append(f"  style b{i} fill:{fill},stroke:{color},stroke-dasharray:4 3")
-    if path:
-        out.append(f"  linkStyle {','.join(map(str, sorted(path)))} {PATH[0]}")
-    return "\n".join(out)
 
 
 def _opened(m: dict[str, Any]) -> set[int]:
@@ -625,72 +550,7 @@ def _outline(m: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-class Diagram:
-    """A traced function's structure. ``str()`` / ``.mermaid`` is Mermaid text at ``depth``.
-
-    ``nodes``, ``edges`` and ``boxes`` describe the same view for programs;
-    ``text`` is an outline of every call, with ``timings`` (from ``diagram.timed``)
-    or the ``error`` (from ``diagram.explain``); ``save(path)`` writes the
-    interactive page, also shown in notebooks.
-    """
-
-    def __init__(self, model: dict[str, Any]):
-        self.model = model
-        self.depth: int = model["depth"]
-        opened = _opened(model)
-        nodes, edges, drawn, fail = _view(model, opened)
-        #: (id, kind, label, parent box): kind is "call", "op", "in" or "out".
-        self.nodes = nodes
-        #: (from id, to id, array type)
-        self.edges = edges
-        #: box id -> label, for the boxes drawn (open calls, loops, branches)
-        self.boxes = {f"b{i}": model["boxes"][i]["l"] for i in drawn}
-        #: The id of the node that failed (``explain``), and the ids of the nodes that feed it.
-        self.failed = fail
-        self.feeds = _feeds(edges, fail)[0]
-        self.mermaid = _mermaid(model, opened)
-
-    @property
-    def timings(self) -> dict[str, tuple[float, float]]:
-        """For a timed diagram: box id -> (seconds per call, or FLOPs if estimated; share of the total)."""
-        return {f"b{i}": (b["t"], b["s"]) for i, b in enumerate(self.model["boxes"]) if "t" in b}
-
-    @property
-    def error(self) -> str | None:
-        """For ``explain``: the message of the ``ShapeError`` the diagram stops at."""
-        return self.model["error"]["message"] if self.model.get("error") else None
-
-    @property
-    def text(self) -> str:
-        """Every call and loop as an indented outline, with its time or failure."""
-        return _outline(self.model)
-
-    def at(self, depth: int) -> "Diagram":
-        """The same diagram, opened ``depth`` levels."""
-        return Diagram({**self.model, "depth": depth})
-
-    def __str__(self) -> str:
-        return self.mermaid
-
-    def __repr__(self) -> str:
-        return f"<Diagram of {self.model['name']}: {len(self.nodes)} nodes, depth {self.depth}>"
-
-    def html(self, mermaid_url: str = MERMAID) -> str:
-        """The interactive page: pan and zoom, click a call to open it, hover for details."""
-        page = _PAGE.read_text(encoding="utf-8")
-        model = {**self.model, "styles": STYLES, "path": PATH, "frame": FRAME, "heat": HEAT}
-        data = json.dumps(model).replace("</", "<\\/")
-        return (page.replace("__TITLE__", html.escape(self.model["name"]))
-                .replace("__MERMAID__", mermaid_url).replace("/*DATA*/null", data))  # fmt: skip
-
-    def save(self, path: str | Path) -> Path:
-        """Write the interactive page (a standalone HTML file; Mermaid comes from a CDN)."""
-        path = Path(path)
-        path.write_text(self.html(), encoding="utf-8")
-        return path
-
-    def _repr_html_(self) -> str:
-        return f'<iframe srcdoc="{html.escape(self.html())}" style="width:100%;height:600px;border:0"></iframe>'
+# @@RENDER@@
 
 
 def _draw(target: Any, depth: int, sizes: dict[str, Any]) -> Diagram:

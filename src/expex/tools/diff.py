@@ -26,9 +26,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ._dims import describe
-from ._io import _META, _decode, save
-from ._spec import StructSpec, parse_owner
+from ..annotations.dims import describe
+from ..io import _META, _decode, save
+from ..annotations.spec import StructSpec, parse_owner
 
 _STRUCTURAL = ("removed", "added", "reshaped", "static")
 _ids = itertools.count()

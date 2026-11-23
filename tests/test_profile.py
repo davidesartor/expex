@@ -8,8 +8,8 @@ import jax.numpy as jnp
 
 import expex
 from expex import f32, fn
-from expex._cost import Poly, cost
-from expex._profile import profile
+from expex.tools.cost import Poly, cost
+from expex.tools.profile import profile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 

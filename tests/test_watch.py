@@ -11,7 +11,7 @@ import pytest
 
 import expex
 from expex import f32, fn
-from expex._watch import watch
+from expex.tools.watch import watch
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "examples"))
 from transformer import Transformer  # noqa: E402

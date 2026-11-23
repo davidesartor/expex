@@ -5,22 +5,22 @@ checked on every call, provable for all sizes, and usable for vectorising.
 """
 
 from . import debug
-from ._axes import einsum, rearrange
-from ._check import Report, prove
-from ._consts import eps, huge, tiny
-from ._cost import cost
+from .staging.axes import einsum, rearrange
+from .tools.prove import Report, prove
+from .consts import eps, huge, tiny
+from .tools.cost import cost
 from ._diagram import Diagram, diagram
-from ._diff import Diff, diff
-from ._summary import Summary, summary
-from ._io import load, save
-from ._shard import device_put, shard, shardings
-from ._dims import show
-from ._errors import ShapeError, StageError
-from ._fn import Fn, compile_cache, config, fn, jit, vectorize, random, remat
-from ._loops import rows, stack
-from ._rng import key, rng, seed
-from ._struct import struct
-from ._types import (
+from .tools.diff import Diff, diff
+from .tools.summary import Summary, summary
+from .io import load, save
+from .sharding import device_put, shard, shardings
+from .annotations.dims import show
+from .annotations.errors import ShapeError, StageError
+from .function import Fn, compile_cache, config, fn, jit, vectorize, random, remat
+from .staging.loops import rows, stack
+from .keys import key, rng, seed
+from .modules import struct
+from .annotations.types import (
     Arr,
     Batch,
     Bool,

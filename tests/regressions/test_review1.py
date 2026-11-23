@@ -8,7 +8,7 @@ import jax
 import jax.numpy as jnp
 
 from expex import StageError, fn
-from expex._convert import NotConverted, convert
+from expex.staging.convert import NotConverted, convert
 
 
 def same(f, *args):

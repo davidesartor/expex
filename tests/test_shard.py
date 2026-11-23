@@ -1,4 +1,4 @@
-"""Sharding by axis names (``expex._shard``) on a simulated 8-device CPU mesh.
+"""Sharding by axis names (``expex.sharding``) on a simulated 8-device CPU mesh.
 
 The multi-device tests need ``--xla_force_host_platform_device_count=8`` before
 JAX creates its CPU backend, and setting it here would give every other test
@@ -20,7 +20,7 @@ from jax.sharding import PartitionSpec as P
 
 import expex
 from expex import f32
-from expex._shard import device_put, shard, shardings
+from expex.sharding import device_put, shard, shardings
 
 EIGHT = jax.device_count() >= 8
 needs8 = pytest.mark.skipif(not EIGHT, reason="run in a subprocess by test_on_eight_devices")

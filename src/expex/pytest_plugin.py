@@ -33,7 +33,7 @@ class ProofItem(pytest.Item):
         self.fn = fn
 
     def runtest(self) -> None:
-        from ._check import ERROR, FAILED, SPOT, UNCHECKED, prove
+        from .tools.prove import ERROR, FAILED, SPOT, UNCHECKED, prove
 
         report = prove(self.fn)
         if report.status in (FAILED, ERROR):
@@ -59,7 +59,7 @@ def pytest_collection_modifyitems(session: Any, config: Any, items: list[Any]) -
     targets = list(config.getoption("expex")) + list(config.getini("expex"))
     if not targets:
         return
-    from ._check import collect
+    from .tools.prove import collect
 
     seen: set[int] = set()
     for t in targets:

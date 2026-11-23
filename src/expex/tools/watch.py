@@ -25,7 +25,7 @@ a tuple ``(loss, aux)`` whose ``aux`` is kept as ``Watch.aux``. Every
   in the other layers, or when its output RMS grows by more than ``growth``
   from the previous layer.
 
-How: the ``_fn.CALL_HOOK`` adds a zero scalar (the one differentiated input)
+How: the ``function.CALL_HOOK`` adds a zero scalar (the one differentiated input)
 to each output and passes it through an identity with a custom VJP. Its
 forward and backward each reduce the array to a few moments in the graph and
 send them to the host with ``jax.debug.callback``: under ``jit``, once per
@@ -63,8 +63,9 @@ import jax.numpy as jnp
 import numpy as np
 from jax.custom_batching import custom_vmap
 
-from . import _fn, _summary
-from ._dims import fmt_dim, short_dtype
+from .. import function
+from . import summary
+from ..annotations.dims import fmt_dim, short_dtype
 
 _ids = itertools.count()
 
@@ -145,7 +146,7 @@ def _brief(out: Any) -> str:
 
 
 class _Hook:
-    """Installed as ``_fn.CALL_HOOK``: one row per call, its output tapped."""
+    """Installed as ``function.CALL_HOOK``: one row per call, its output tapped."""
 
     def __init__(self, prev: Callable[..., Any] | None):
         self.prev, self.zero, self.depth = prev, None, 0
@@ -330,11 +331,11 @@ class Watch:
             parents.append(i)
         head = "".join(f'<th class="{c}"' + (f' data-k="{k}"' if k else "") + f">{t}</th>" for t, c, k in _COLS)
         return (
-            f'<div class="txs" id="{uid}"><style>{(_summary._CSS + _CSS).replace("#ID", "#" + uid)}</style>'
+            f'<div class="txs" id="{uid}"><style>{(summary._CSS + _CSS).replace("#ID", "#" + uid)}</style>'
             f'<div class="hd"><b>{html.escape(self._title())}</b></div><div class="sc"><table><thead><tr>'
             '<th colspan="3"></th><th colspan="6" class="gh">output</th><th colspan="7" class="gh g">d loss / d output</th>'
             f"</tr><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody></table></div>"
-            f'<script>{_summary._JS.replace("ID", json.dumps(uid))}</script></div>'
+            f'<script>{summary._JS.replace("ID", json.dumps(uid))}</script></div>'
         )
 
     def save(self, path: str | Path) -> Path:
@@ -373,7 +374,7 @@ def watch(
     """
     leaves, tree = jax.tree.flatten((args, kwargs))
     dyn = [i for i, x in enumerate(leaves) if isinstance(x, (jax.Array, np.ndarray))]
-    hook = _Hook(_fn.CALL_HOOK.get())
+    hook = _Hook(function.CALL_HOOK.get())
     fname = getattr(loss_fn, "__qualname__", type(loss_fn).__name__).rsplit("<locals>.", 1)[-1]
 
     def step(zero: jax.Array, values: list[Any]) -> tuple[jax.Array, Any]:
@@ -391,14 +392,14 @@ def watch(
         return loss, aux
 
     jax.clear_caches()  # functions jitted earlier must be traced again, with the hook
-    token = _fn.CALL_HOOK.set(hook)
+    token = function.CALL_HOOK.set(hook)
     try:
-        with _fn.config(lower_loops=False) if unroll else contextlib.nullcontext():
+        with function.config(lower_loops=False) if unroll else contextlib.nullcontext():
             grad_fn = jax.jit(jax.value_and_grad(step, has_aux=True))
             (loss, aux), _ = grad_fn(jnp.zeros((), jnp.float32), [leaves[i] for i in dyn])
             jax.effects_barrier()
     finally:
-        _fn.CALL_HOOK.reset(token)
+        function.CALL_HOOK.reset(token)
         jax.clear_caches()  # and later calls must not reuse those traces, taps included
     options = {"grad_ratio": grad_ratio, "growth": growth}
     return Watch(fname, float(loss), aux, _rows(hook, grad_ratio, growth), options)

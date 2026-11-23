@@ -22,8 +22,8 @@ import numpy as np
 from jax import lax
 from jax.core import Tracer
 
-from . import _rng
-from ._errors import StageError
+from .. import keys
+from ..annotations.errors import StageError
 
 #: site ("file:line") -> how the statement there was last executed.
 LOG: dict[str, str] = {}
@@ -102,7 +102,7 @@ def _same_static(a: Any, b: Any) -> bool:
 
 
 def _desc(v: Any) -> str:
-    from ._dims import describe
+    from ..annotations.dims import describe
 
     if v is UNDEF:
         return "undefined"
@@ -368,9 +368,9 @@ def if_(
     names: tuple[str, ...],
     site: str,
 ) -> tuple[Any, ...]:
-    k = _rng.sub()
+    k = keys.sub()
     if not isinstance(pred, Tracer):
-        with _rng.child(k):
+        with keys.child(k):
             return (true_fn if pred else false_fn)(*state)
     _check_pred(pred, "if", site)
     check = _guard_lists(state, names, "if", site)
@@ -378,7 +378,7 @@ def if_(
 
     def run(fn: Callable[..., tuple[Any, ...]], on: Any) -> Callable[[], tuple[Any, ...]]:
         def r() -> tuple[Any, ...]:
-            with _rng.child(k), _on_path(on):
+            with keys.child(k), _on_path(on):
                 out = fn(*state)
             check(out)
             return out
@@ -391,8 +391,8 @@ def if_(
 
 def ifexp(pred: Any, a: Callable[[], Any], b: Callable[[], Any], site: str) -> Any:
     if not isinstance(pred, Tracer):
-        k = _rng.sub()
-        with _rng.child(k):
+        k = keys.sub()
+        with keys.child(k):
             return a() if pred else b()
     return _select_expr(pred, a, b, site)
 
@@ -400,12 +400,12 @@ def ifexp(pred: Any, a: Callable[[], Any], b: Callable[[], Any], site: str) -> A
 def _select_expr(pred: Any, a: Callable[[], Any], b: Callable[[], Any], site: str) -> Any:
     """``a() if pred else b()`` for a traced scalar ``pred``; each side runs in its branch."""
     _check_pred(pred, "... if ... else ...", site)
-    k = _rng.sub()
+    k = keys.sub()
     taken = _truth(pred)
 
     def side(fn: Callable[[], Any], on: Any) -> Callable[[], tuple[Any, ...]]:
         def r() -> tuple[Any, ...]:
-            with _rng.child(k), _on_path(on):
+            with keys.child(k), _on_path(on):
                 return (fn(),)
 
         return r
@@ -449,16 +449,16 @@ def while_(
     live: tuple[str, ...],
     site: str,
 ) -> tuple[Any, ...]:
-    k = _rng.sub()
+    k = keys.sub()
     it = 0
     while True:
-        with _rng.child(k, 2 * it):
+        with keys.child(k, 2 * it):
             c = test_fn(*state)
         if isinstance(c, Tracer):
             break
         if not c:
             return state
-        with _rng.child(k, 2 * it + 1):
+        with keys.child(k, 2 * it + 1):
             state = body_fn(*state)
         it += 1
 
@@ -484,13 +484,13 @@ def while_(
 
     def cond_f(c2: Any) -> Any:
         n, carry = c2
-        with _rng.child(k, 2 * n):
+        with keys.child(k, 2 * n):
             return truth(test_fn(*merge(carry)))
 
     def body_f(c2: Any) -> Any:
         n, carry = c2
         still = lambda: truth(test_fn(*merge(carry)))  # noqa: E731 - only evaluated by an assert
-        with _rng.child(k, 2 * n + 1), _staged(), _on_path(still):
+        with keys.child(k, 2 * n + 1), _staged(), _on_path(still):
             out = body_fn(*merge(carry))
         check(out)
         for i, v in enumerate(out):

@@ -13,12 +13,12 @@ from typing import TYPE_CHECKING, Any
 import jax
 import numpy as np
 
-from ._dims import Env, describe
-from ._errors import Mismatch, ShapeError, StageError
-from ._spec import ArraySpec, KeySpec
+from .dims import Env, describe
+from .errors import Mismatch, ShapeError, StageError
+from .spec import ArraySpec, KeySpec
 
 if TYPE_CHECKING:
-    from ._fn import Fn
+    from ..function import Fn
 
 
 def error(f: Fn[Any, Any], m: Mismatch, role: str, env: Env, site: str = "") -> Exception:

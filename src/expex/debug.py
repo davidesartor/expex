@@ -33,59 +33,16 @@ import numpy as np
 from jax import lax
 from jax.core import eval_jaxpr
 
-from . import _rng
-from ._dims import describe
-from ._fn import BoundFn, Fn, unwrap
-from ._jaxpr import iter_eqns, source_key, source_of, sub_jaxprs
+from . import keys
+from .annotations.dims import describe
+from .function import BoundFn, Fn, unwrap
+from .tools.trace import iter_eqns, keyed, make_jaxpr, resolve, source_key, source_of, sub_jaxprs
 
 __all__ = [
     "find_nan", "shapes", "ops", "timing", "memory",
     "NanReport", "ShapeTrace", "Ops", "Timing", "Memory",
     "profile", "watch",
 ]  # fmt: skip
-
-
-def _plain(
-    f: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]
-) -> tuple[Callable[..., Any], tuple[Any, ...], dict[str, Any]]:
-    """The un-jitted callable behind ``f`` and the arguments to trace it with.
-
-    ``Static`` arguments of an ``@fn`` are closed over, so that tracing the
-    result does not turn them into traced values.
-    """
-    f = unwrap(f)
-    if isinstance(f, BoundFn):
-        fn, args = f.fn, (f.obj, *args)
-    elif isinstance(f, Fn):
-        fn = f
-    else:
-        return f, args, kwargs
-    try:
-        bound = fn._sig.bind(*args, **kwargs)
-    except TypeError:
-        return (lambda *a, **k: fn._run(a, k)), args, kwargs
-    static = {n: bound.arguments[n] for n in fn.static_names if n in bound.arguments}
-    if isinstance(f, BoundFn):
-        static[next(iter(fn.params))] = f.obj
-    dyn = {n: v for n, v in bound.arguments.items() if n not in static}
-
-    def run(dyn_args: dict[str, Any]) -> Any:
-        ba = inspect.BoundArguments(fn._sig, {n: (static[n] if n in static else dyn_args[n]) for n in bound.arguments})  # type: ignore[arg-type]
-        return fn._run(ba.args, ba.kwargs)
-
-    return run, (dyn,), {}
-
-
-def _trace(f: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[Any, list[Any]]:
-    """Trace ``f``; return the closed jaxpr and the flat list of traced inputs."""
-    g, args, kwargs = _plain(f, args, kwargs)
-    key = _rng.current().next() if _rng.current() else jr.key(0)  # type: ignore[union-attr]
-
-    def run(*a: Any, **k: Any) -> Any:
-        with _rng.rng(key):
-            return g(*a, **k)
-
-    return jax.make_jaxpr(run)(*args, **kwargs), jax.tree.leaves((args, kwargs))
 
 
 # ------------------------------------------------------------------ find_nan
@@ -320,7 +277,7 @@ def find_nan(f: Callable[..., Any], *args: Any, **kwargs: Any) -> NanReport | No
     Returns ``None`` if the function's computation never produces a NaN for
     these arguments. Works on any JAX function, including ``jax.grad(f)``.
     """
-    closed, flat = _trace(f, args, kwargs)
+    closed, flat = make_jaxpr(f, args, kwargs)
     bad = [f"argument leaf #{i}: {_stats(x)}" for i, x in enumerate(flat) if _has_nan([x])]
     if bad:
         return NanReport("input", "", "", "", [], bad, [])
@@ -387,7 +344,7 @@ def ops(f: Callable[..., Any], *args: Any, **kwargs: Any) -> Ops:
 
     Flags unrolled loops and large constants baked into the program.
     """
-    closed, _ = _trace(f, args, kwargs)
+    closed, _ = make_jaxpr(f, args, kwargs)
     top = closed.jaxpr.eqns
     by_op: Counter[str] = Counter()
     by_line: Counter[tuple[str, int, str]] = Counter()
@@ -477,12 +434,8 @@ class Timing:
 
 def timing(f: Callable[..., Any], *args: Any, repeat: int = 5, **kwargs: Any) -> Timing:
     """Time tracing, compilation and execution of ``jit(f)(*args, **kwargs)`` separately."""
-    g, args, kwargs = _plain(f, args, kwargs)
+    run, args, kwargs = keyed(f, args, kwargs)
     key = jr.key(0)
-
-    def run(key: Any, *a: Any, **k: Any) -> Any:
-        with _rng.rng(key):
-            return g(*a, **k)
 
     jf = jax.jit(run)
     t0 = time.perf_counter()
@@ -528,7 +481,7 @@ class ShapeTrace:
 
 def _shape_of(v: Any) -> str | None:
     """A short description of an array-carrying value, or None for anything else."""
-    from ._dims import show
+    from .annotations.dims import show
 
     if isinstance(v, (jax.Array, np.ndarray, jax.ShapeDtypeStruct)) or hasattr(v, "aval"):
         try:
@@ -556,8 +509,6 @@ def shapes(f: Callable[..., Any], *args: Any, **kwargs: Any) -> ShapeTrace:
     Loop bodies show the shapes of one iteration.
     """
     import sys
-
-    from . import _check
 
     f = unwrap(f)
     target = f.fn if isinstance(f, BoundFn) else f
@@ -615,12 +566,11 @@ def shapes(f: Callable[..., Any], *args: Any, **kwargs: Any) -> ShapeTrace:
     sys.settrace(tracer)
     try:
         if args or kwargs or not isinstance(target, Fn):
-            g, a, k = _plain(f, args, kwargs)
-            with _rng.rng(jr.key(0)):
-                jax.eval_shape(lambda *x, **y: g(*x, **y), *a, **k)
+            run, a, k = keyed(f, args, kwargs)
+            jax.eval_shape(lambda *x, **y: run(jr.key(0), *x, **y), *a, **k)
             title = f"{getattr(raw, '__qualname__', raw.__name__)} at {fname}:{start}"
         else:
-            title = _symbolic_run(target, _check)
+            title = _symbolic_run(target)
     finally:
         sys.settrace(old)
 
@@ -635,22 +585,12 @@ def shapes(f: Callable[..., Any], *args: Any, **kwargs: Any) -> ShapeTrace:
     return ShapeTrace(title, rows)
 
 
-def _symbolic_run(f: Fn[Any, Any], check: Any) -> str:
+def _symbolic_run(f: Fn[Any, Any]) -> str:
     """Trace ``f`` once on symbolic inputs (the prover's first case)."""
-    from jax import export
-
-    if f._lazy:
-        f._resolve_owner()
-    choices = check._choices(f, f.examples)
-    abstract = [n for n, c in choices.items() if c == [check._ABSTRACT]]
-    fixed = {n: c[0] for n, c in choices.items() if n not in abstract}
-    statics = check._statics(f, fixed)
-    constraints, _ = check._jax_constraints(f, statics)
-    var_rank = {n[1:]: 1 for n in f.input_names if n.startswith("*")}
-    ctx = check._Ctx(export.SymbolicScope(constraints), None, var_rank, statics)
-    check._trace(f, fixed, abstract, ctx)
+    t = resolve(f, what="show the shapes of")
+    t.trace()
     sizes = ", ".join(sorted(n for n in f.input_names if not n.startswith("*")))
-    label = ", ".join(f"{k}={v!r}" for k, v in fixed.items())
+    label = ", ".join(f"{k}={v!r}" for k, v in t.fixed.items())
     return f"{f.signature}   [symbolic {sizes}{'; ' + label if label else ''}]"
 
 
@@ -701,12 +641,8 @@ def memory(f: Callable[..., Any], *args: Any, **kwargs: Any) -> Memory:
     lines, make it up. Pass ``jax.grad(f)`` to see the cost of a backward pass;
     ``jax.checkpoint`` on a layer reduces it.
     """
-    g, args, kwargs = _plain(f, args, kwargs)
+    run, args, kwargs = keyed(f, args, kwargs)
     key = jr.key(0)
-
-    def run(key: Any, *a: Any, **k: Any) -> Any:
-        with _rng.rng(key):
-            return g(*a, **k)
 
     traced = jax.jit(run).trace(key, *args, **kwargs)
     stats = traced.lower().compile().memory_analysis()
@@ -753,7 +689,7 @@ def profile(f: Callable[..., Any], /, **sizes: Any) -> Any:
     sizes, as numbers and shares. ``.save("profile.html")`` writes it as a
     heat map over the source.
     """
-    from ._profile import profile as run
+    from .tools.profile import profile as run
 
     return run(f, **sizes)
 
@@ -768,6 +704,6 @@ def watch(loss_fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
     compilation caches are cleared, so jitted functions recompile once after.
     See ``expex._watch.watch`` for the options.
     """
-    from ._watch import watch as run
+    from .tools.watch import watch as run
 
     return run(loss_fn, *args, **kwargs)

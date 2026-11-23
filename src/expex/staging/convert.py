@@ -1,7 +1,7 @@
 """Source conversion: plain ``if`` / ``while`` / ``for`` into staged control flow.
 
 ``convert(f)`` re-compiles a function so that its control-flow statements call
-the helpers in ``_runtime.py``. The converted function behaves exactly like the
+the helpers in ``runtime.py``. The converted function behaves exactly like the
 original when conditions and iterables are ordinary Python values, and uses
 ``lax.cond`` / ``lax.while_loop`` / ``lax.scan`` / ``vmap`` when they are
 traced.
@@ -30,7 +30,7 @@ import textwrap
 import types
 from typing import Any, Callable, Iterable
 
-from . import _axes, _runtime
+from . import axes, runtime
 
 FLOW = "__expex_flow__"
 RET = "__bn_ret__"
@@ -487,7 +487,7 @@ class _Exprs(ast.NodeTransformer):
             if to is not None and len(node.keywords) == 1:
                 self.named += 1
                 ops = [self.visit(a) for a in node.args]
-                variables: list[ast.expr] = [ast.Constant(a.id if isinstance(a, ast.Name) else None) for a in node.args]
+                variables: list[ast.expr] = [ast.Constant(_operand_name(a)) for a in node.args]
                 if which == "rearrange" and len(ops) == 1:
                     call = _call("rearrange_", ops[0], variables[0], to, self.site(node))
                 else:
@@ -498,12 +498,12 @@ class _Exprs(ast.NodeTransformer):
                 return ast.copy_location(call, node)
         if self.axis_names and _named_axes_call(node, self.axis_names):
             # axis positions keep the names; everything else is visited as usual
-            method = isinstance(node.func, ast.Attribute) and node.func.attr in _axes.AXIS_METHODS
+            method = isinstance(node.func, ast.Attribute) and node.func.attr in axes.AXIS_METHODS
             node.func = self.visit(node.func)
             if not method:
                 node.args = [self.visit(a) for a in node.args]
             for k in node.keywords:
-                if k.arg not in _axes.AXIS_KEYWORDS:
+                if k.arg not in axes.AXIS_KEYWORDS:
                     k.value = self.visit(k.value)
             return self._named(node)
         self.generic_visit(node)
@@ -529,7 +529,7 @@ class _Exprs(ast.NodeTransformer):
     def _named(self, node: ast.Call) -> ast.expr:
         """``x.sum(T)`` -> ``named_(x, "sum", (T,), {}, site, "x")``."""
         self.named += 1
-        if isinstance(node.func, ast.Attribute) and node.func.attr in _axes.AXIS_METHODS:
+        if isinstance(node.func, ast.Attribute) and node.func.attr in axes.AXIS_METHODS:
             target: ast.expr = node.func.value
             attr: ast.expr = ast.Constant(node.func.attr)
             var = target.id if isinstance(target, ast.Name) else None
@@ -1055,9 +1055,18 @@ _INTERESTING = (ast.If, ast.While, ast.For, ast.IfExp, ast.BoolOp)
 _MANGLED = re.compile(r"(?<![\w.])__[A-Za-z0-9]\w*(?<!__)\b|\.__[A-Za-z0-9]\w*(?<!__)\b")
 
 
+def _operand_name(a: ast.expr) -> str | None:
+    """An einsum operand's name for finding its annotation: ``q``, or ``self.wq`` for a field."""
+    if isinstance(a, ast.Name):
+        return a.id
+    if isinstance(a, ast.Attribute) and isinstance(a.value, ast.Name):
+        return f"{a.value.id}.{a.attr}"
+    return None
+
+
 def _einsum_spellings(raw: Any) -> tuple[dict[str, str], set[str]]:
     """How ``raw`` reaches ``expex.einsum`` / ``expex.rearrange``: bare names, and modules."""
-    from ._axes import einsum, rearrange
+    from .axes import einsum, rearrange
 
     glb = getattr(raw, "__globals__", {})
     names = {k: v.__name__ for k, v in glb.items() if v is einsum or v is rearrange}
@@ -1074,12 +1083,12 @@ def _axis_names(raw: Any, fdef: ast.FunctionDef) -> set[str]:
     code = raw.__code__
     for name, cell in zip(code.co_freevars, raw.__closure__ or ()):
         try:
-            if _axes.axis_name(cell.cell_contents) is not None:  # e.g. a class's type parameter
+            if axes.axis_name(cell.cell_contents) is not None:  # e.g. a class's type parameter
                 out.add(name)
         except ValueError:  # an empty cell
             pass
     for name in code.co_names:
-        if _axes.axis_name(raw.__globals__.get(name)) is not None:
+        if axes.axis_name(raw.__globals__.get(name)) is not None:
             out.add(name)
     return out
 
@@ -1179,11 +1188,11 @@ def _named_axes_call(node: ast.Call, names: set[str] | frozenset[str] | None) ->
             )
         return False
 
-    if any(k.arg in _axes.AXIS_KEYWORDS and is_axis(k.value) for k in node.keywords):
+    if any(k.arg in axes.AXIS_KEYWORDS and is_axis(k.value) for k in node.keywords):
         return True
     return (
         isinstance(node.func, ast.Attribute)
-        and node.func.attr in _axes.AXIS_METHODS
+        and node.func.attr in axes.AXIS_METHODS
         and any(is_axis(a) for a in node.args)
     )
 
@@ -1259,7 +1268,7 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
         closure = tuple(cells[v] for v in inner.co_freevars)
     except KeyError as e:
         raise NotConverted(f"free variable {e} could not be resolved") from None
-    raw.__globals__.setdefault(FLOW, _runtime)
+    raw.__globals__.setdefault(FLOW, runtime)
     inner = inner.replace(co_name=orig_name, co_qualname=raw.__qualname__)
     new = types.FunctionType(inner, raw.__globals__, raw.__name__, raw.__defaults__, closure or None)
     new.__kwdefaults__ = raw.__kwdefaults__

@@ -19,9 +19,9 @@ from typing import Any
 import jax.numpy as jnp
 import numpy as np
 
-from ._dims import Env, describe, resolve
-from ._errors import Mismatch, ShapeError
-from ._spec import (
+from .annotations.dims import Env, describe, resolve
+from .annotations.errors import Mismatch, ShapeError
+from .annotations.spec import (
     ArraySpec, DictSpec, NoneSpec, SeqSpec, Spec, StaticSpec, StructSpec, TupleSpec, UnionSpec,
     _field_defaults, parse_owner, rebuild,
 )  # fmt: skip

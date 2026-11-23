@@ -14,8 +14,8 @@ import jax.numpy as jnp
 import numpy as np
 from jax.core import Tracer
 
-from . import _rng
-from ._flow import (
+from .. import keys
+from .flow import (
     _NUM,
     _PATH,
     _STAGE,
@@ -42,7 +42,7 @@ def local_(value: Any, ann: Callable[[], Any], name: str, site: str) -> Any:
         return value
     spec = _LOCAL_SPECS.get(site, _LOCAL_SPECS)
     if spec is _LOCAL_SPECS:
-        from ._spec import parse
+        from ..annotations.spec import parse
 
         try:
             spec = parse(ann())
@@ -55,7 +55,7 @@ def local_(value: Any, ann: Callable[[], Any], name: str, site: str) -> Any:
         return value
     env, fn = CALLS.stack[-1]
     env.locals[name] = spec
-    from ._fn import config
+    from ..function import config
 
     if config.checked:
         fn._check_local(spec, value, name, site, env)
@@ -69,10 +69,10 @@ def and_(a: Callable[[], Any], b: Callable[[], Any]) -> Any:
             return jnp.logical_and(x, b())
         # Python's `x and y` is `y if x else x`; y is only evaluated inside its branch
         return _select_expr(x, b, lambda: x, "an `and` expression")
-    k = _rng.sub()
+    k = keys.sub()
     if not x:
         return x
-    with _rng.child(k):
+    with keys.child(k):
         return b()
 
 
@@ -82,10 +82,10 @@ def or_(a: Callable[[], Any], b: Callable[[], Any]) -> Any:
         if x.shape != ():
             return jnp.logical_or(x, b())
         return _select_expr(x, lambda: x, b, "an `or` expression")
-    k = _rng.sub()
+    k = keys.sub()
     if x:
         return x
-    with _rng.child(k):
+    with keys.child(k):
         return b()
 
 
@@ -188,7 +188,7 @@ def _replaceable(obj: Any) -> bool:
 
 
 def _replace(obj: Any, name: str, value: Any) -> Any:
-    from ._spec import rebuild
+    from ..annotations.spec import rebuild
 
     return rebuild(obj, **{name: value})
 

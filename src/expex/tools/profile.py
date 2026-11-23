@@ -31,9 +31,8 @@ from typing import Any
 
 import numpy as np
 
-from . import _cost
-from ._cost import Poly, _num, _numel, cost
-from ._jaxpr import _HERE, sub_jaxprs
+from .cost import Poly, _num, _numel, cost, flops
+from .trace import _HERE, resolve, sub_jaxprs
 
 type Key = tuple[str, str, int]  # (file, qualified name, first line): one section
 
@@ -222,12 +221,12 @@ class _Walk:
                 for j in subs:
                     self.run(j, mult * Poly.of(n), loops + [(len(stack), label)], stack)
             elif name == "cond":
-                costs = [_cost.flops(j, []) for j in subs]
+                costs = [flops(j, []) for j in subs]
                 self.run(subs[costs.index(max(costs, key=Poly.sample))], mult, loops, stack)
             else:
                 for j in subs:
                     self.run(j, mult, loops, stack)
-            fl = Poly() if subs else _cost.flops(SimpleNamespace(eqns=[eqn]), []) * mult
+            fl = Poly() if subs else flops(SimpleNamespace(eqns=[eqn]), []) * mult
             avals = [v.aval for v in eqn.outvars if hasattr(getattr(v, "aval", None), "shape")]
             by = sum((_numel(a.shape) * _itemsize(a.dtype) for a in avals), Poly()) * mult if not subs else Poly()
             if not stack:
@@ -274,12 +273,12 @@ def profile(target: Any, /, **sizes: Any) -> Profile:
     parameters (``heads=4``), list lengths (``blocks=12``) and sizes (``T=1024``).
     """
     total = cost(target, **sizes)
-    s = _cost._setup(target, dict(sizes), "profile")
+    s = resolve(target, sizes, "profile")
     raw = getattr(s.f.raw, "__func__", s.f.raw)
     root = (raw.__code__.co_filename, raw.__code__.co_qualname)
     walks = []
     for n in (1, 2):
-        jaxpr, _, lists = _cost._trace(s, n)
+        jaxpr, _, lists = s.trace(n)
         w = _Walk(root, n, bool(lists))
         w.run(jaxpr, Poly.of(1), [], [])
         walks.append(w)

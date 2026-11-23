@@ -15,7 +15,7 @@ import jax.random as jr
 
 import expex
 from expex import StageError, Static, f32, fn
-from expex._convert import convert
+from expex.staging.convert import convert
 
 
 def scoped(f, key, *args):

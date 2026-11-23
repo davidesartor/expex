@@ -1,6 +1,6 @@
 import sys
 
-from ._check import main
+from .tools.prove import main
 
 if __name__ == "__main__":
     sys.exit(main())

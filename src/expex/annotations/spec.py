@@ -19,7 +19,7 @@ import jax
 import numpy as np
 from jax.core import Tracer
 
-from ._dims import (
+from .dims import (
     DimError,
     DEllipsis,
     _SCALARS,
@@ -36,10 +36,10 @@ from ._dims import (
     is_symbolic,
     short_dtype,
 )
-from ._errors import Mismatch
-from ._expr import Expr
-from ._sym import evaluate, texts
-from ._types import ArrayAnn, BatchAnn, DType, KeyAnn, StaticAnn
+from .errors import Mismatch
+from .expr import Expr
+from .sym import evaluate, texts
+from .types import ArrayAnn, BatchAnn, DType, KeyAnn, StaticAnn
 
 # --------------------------------------------------------------------------
 # Dimensions
@@ -358,7 +358,8 @@ class SeqSpec(Spec):
         return type(value)(self.elem.walk(v, f"{path}[{i}]", visit) for i, v in enumerate(value))
 
     def abstract(self, ctx: Any, path: str) -> Any:
-        return self.kind(self.elem.abstract(ctx, f"{path}[{i}]") for i in range(2))
+        ctx.lists.append(path)
+        return self.kind(self.elem.abstract(ctx, f"{path}[{i}]") for i in range(ctx.list_length))
 
     def names(self, into: set[str]) -> None:
         self.elem.names(into)

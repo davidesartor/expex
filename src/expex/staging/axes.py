@@ -17,9 +17,9 @@ from typing import Any
 
 import jax.numpy as jnp
 
-from ._dims import DName, DVar, _same, describe
-from ._errors import ShapeError
-from ._types import Dim
+from ..annotations.dims import DConst, DName, DVar, _same, describe
+from ..annotations.errors import ShapeError
+from ..annotations.types import Dim
 
 #: Keyword arguments that take axes.
 AXIS_KEYWORDS = frozenset({"axis", "axes", "source", "destination", "axis1", "axis2"})
@@ -62,7 +62,7 @@ def dim_(name: str) -> Any:
 
 def lifted_(i: int) -> bool:
     """Is the body's ``i``-th leading assert checked as a constraint (so the body skips it)?"""
-    from ._ops import CALLS
+    from .ops import CALLS
 
     return bool(CALLS.stack) and i in getattr(CALLS.stack[-1][1], "_lifted", ())
 
@@ -74,7 +74,7 @@ def size_(name: Any) -> Any:
     ``*B`` it is a tuple of sizes, for a derived size (``U = T + 1``) its value.
     Under the prover the sizes are symbolic, so the code is proved for all sizes.
     """
-    from ._ops import CALLS
+    from .ops import CALLS
 
     n = axis_name(name)
     if n is None:
@@ -91,6 +91,8 @@ def size_(name: Any) -> Any:
         v = _size_of(n, env, fn)
         if v is not None:
             return v
+        if isinstance(name, type) and issubclass(name, Dim) and name.size is not None:
+            return name.size  # a fixed size (class Rows(Dim, size=6)) is known everywhere
     raise ShapeError(
         f"{getattr(fn, 'name', '?')}(): the size {n.lstrip('*')} is not known in this call: only sizes that appear in "
         f"the arguments, or are computed from them in an annotation, are known inside "
@@ -120,12 +122,12 @@ def _axes(v: Any, arr: Any, site: str, var: str | None) -> Any:
             out.extend(r if isinstance(r, tuple) else (r,))
         return tuple(out)
     name = axis_name(v)
-    return v if name is None else resolve(name, arr, site, var)
+    return v if name is None else resolve(name, arr, site, var, getattr(v, "size", None))
 
 
-def resolve(name: str, arr: Any, site: str, var: str | None) -> Any:
+def resolve(name: str, arr: Any, site: str, var: str | None, fixed: int | None = None) -> Any:
     """The position of axis ``name`` in ``arr`` (a tuple for a variadic name)."""
-    from ._ops import CALLS
+    from .ops import CALLS
 
     shape = tuple(jnp.shape(arr))
     env, fn = CALLS.stack[-1] if CALLS.stack else (None, None)
@@ -150,6 +152,8 @@ def resolve(name: str, arr: Any, site: str, var: str | None) -> Any:
             f"(`{var or 'y'}: f32[{name}, ...] = ...`)."
         )
     size = _size_of(name, env, fn)
+    if size is None:
+        size = fixed  # class Rows(Dim, size=6)
     if size is None:
         raise ShapeError(
             f"{site}: axis {name} is not bound in this call, so `{where}` cannot be "
@@ -189,7 +193,7 @@ def _from_dims(name: str, dims: tuple[Any, ...], var_index: int | None, rank: in
         if star and isinstance(d, DVar) and d.name == base:
             n = len(env.vars.get(base, ())) if env is not None else rank - (len(dims) - 1)
             return tuple(range(i, i + n))
-        if not star and isinstance(d, DName) and d.name == base:
+        if not star and (isinstance(d, DName) and d.name == base or isinstance(d, DConst) and d.label == base):
             if var_index is not None and i > var_index:
                 return i - len(dims)  # counted from the end, past the variadic
             return i
@@ -211,7 +215,7 @@ def einsum(*operands: Any, to: Any) -> Any:
 def einsum_(operands: tuple[Any, ...], variables: tuple[str | None, ...], to: Any, site: str) -> Any:
     """``expex.einsum`` with the operands' variable names (passed by the converter)."""
     __tracebackhide__ = True
-    from ._ops import CALLS
+    from .ops import CALLS
 
     if not CALLS.stack:
         raise ShapeError("expex.einsum() finds axes by name, so it only works inside an @fn.")
@@ -262,9 +266,12 @@ def _operand_names(x: Any, var: str | None, env: Any, fn: Any, site: str) -> lis
     shape = tuple(jnp.shape(x))
     spec = None
     if var is not None:
-        spec = env.locals.get(var)
-        if spec is None and fn is not None and var in getattr(fn, "params", {}):
-            spec = fn.params[var].spec
+        head, _, field = var.partition(".")  # `self.w`: the field's annotation
+        spec = env.locals.get(head)
+        if spec is None and fn is not None and head in getattr(fn, "params", {}):
+            spec = fn.params[head].spec
+        if field:
+            spec = getattr(spec, "fields", {}).get(field)
     dims = getattr(spec, "dims", None)
     if dims is not None:
         out: list[str] = []
@@ -312,7 +319,7 @@ def rearrange(x: Any, *, to: Any) -> Any:
 def rearrange_(x: Any, var: str | None, to: Any, site: str) -> Any:
     """``expex.rearrange`` with the operand's variable name (passed by the converter)."""
     __tracebackhide__ = True
-    from ._ops import CALLS
+    from .ops import CALLS
 
     if not CALLS.stack:
         raise ShapeError("expex.rearrange() finds axes by name, so it only works inside an @fn.")

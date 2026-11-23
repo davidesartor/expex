@@ -11,9 +11,9 @@ import jax.numpy as jnp
 import jax.random as jr
 
 import expex
-from expex._spec import StaticSpec
+from expex.annotations.spec import StaticSpec
 from expex import Dim, Key, Static, f32, f64, fn, i32, prove
-from expex._check import format_reports
+from expex.tools.prove import format_reports
 
 
 def status(f, **ex):

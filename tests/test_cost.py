@@ -13,7 +13,7 @@ import pytest
 
 import expex
 from expex import f32, fn
-from expex._cost import Poly, cost
+from expex.tools.cost import Poly, cost
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 

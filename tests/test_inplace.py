@@ -11,7 +11,7 @@ import jax.numpy as jnp
 
 import expex
 from expex import StageError, f32, fn, i32
-from expex._convert import convert
+from expex.staging.convert import convert
 
 
 def both(f, *args):
@@ -230,7 +230,7 @@ def test_shadowed_builtins_are_left_alone():
 
 
 def convert_or_same(f):
-    from expex._convert import NotConverted
+    from expex.staging.convert import NotConverted
 
     try:
         return convert(f)

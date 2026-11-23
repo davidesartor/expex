@@ -22,7 +22,7 @@ from typing import Any, Iterator
 import jax.random as jr
 from jax.core import Tracer
 
-from ._errors import StageError
+from .annotations.errors import StageError
 
 try:  # private, but there is no public equivalent
     from jax._src.core import trace_state_clean as _clean

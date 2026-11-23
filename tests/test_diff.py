@@ -9,8 +9,8 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
-from expex._diff import diff
-from expex._io import save
+from expex.tools.diff import diff
+from expex.io import save
 
 ROOT = pathlib.Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "examples"))

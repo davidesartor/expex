@@ -8,7 +8,7 @@ import contextlib
 
 import pytest
 
-from expex._convert import NotConverted, convert
+from expex.staging.convert import NotConverted, convert
 
 G = 10
 

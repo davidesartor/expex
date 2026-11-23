@@ -7,13 +7,13 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-from . import _rng
-from ._dims import describe
-from ._errors import ShapeError
-from ._spec import KeySpec, Spec
+from . import keys
+from .annotations.dims import describe
+from .annotations.errors import ShapeError
+from .annotations.spec import KeySpec, Spec
 
 if TYPE_CHECKING:
-    from ._fn import Fn
+    from .function import Fn
 
 
 def vectorize(f: Fn[Any, Any], args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
@@ -51,7 +51,7 @@ def vectorize(f: Fn[Any, Any], args: tuple[Any, ...], kwargs: dict[str, Any]) ->
     levels: list[set[int]] = []
     if f.random and "key" not in f.params:  # one key per example
         if key is None:
-            key = _rng.fresh(f"{f.name}.vectorize()")
+            key = keys.fresh(f"{f.name}.vectorize()")
         if KeySpec.batch_shape(key):  # already one key per example
             prepared.append(jnp.broadcast_to(key, bshape))
         else:

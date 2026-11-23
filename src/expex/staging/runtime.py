@@ -1,9 +1,9 @@
 """The namespace converted functions call into (as ``__expex_flow__``)."""
 
-from ._axes import dim_, einsum_, lifted_, named_, rearrange_, size_
-from ._flow import LOG, UNDEF, Stacked, append_, if_, ifexp, ld, ret_, unstack, while_
-from ._loops import enumerate_, for_, range_, reversed_, rows, stack, zip_
-from ._ops import (
+from .axes import dim_, einsum_, lifted_, named_, rearrange_, size_
+from .flow import LOG, UNDEF, Stacked, append_, if_, ifexp, ld, ret_, unstack, while_
+from .loops import enumerate_, for_, range_, reversed_, rows, stack, zip_
+from .ops import (
     and_,
     assert_,
     augattr_,
