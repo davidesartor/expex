@@ -204,6 +204,11 @@ diff: failed
 `@expex.fn(examples={"name": [...]})`. Prove a whole package with `python -m expex pkg`
 or `pytest --expex pkg`.
 
+Python control flow on a size (`if T > 1:`, `if T == 6:`, `x.shape[0] in (4, 5)`)
+is proved one region of sizes at a time: `T >= 2`, then `1 >= T`. Where no
+constraint can describe a region (`T + 1 == 7`), the report is `spot-checked`
+([EX702](errors.md#ex702)), never `proved`.
+
 ## Plain Python on traced values
 
 ```python

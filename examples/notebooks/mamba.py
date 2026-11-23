@@ -61,9 +61,10 @@ print(expex.debug.shapes(mamba.Mixer.__call__))
 model = Mamba.create(jr.key(0), vocab=100, d=64, layers=3)
 tokens = jr.randint(jr.key(1), (8, 32), 0, 100)  # 8 sequences of 32 tokens
 
-print("logits", model(tokens[0]).shape, "for one sequence;", model(tokens).shape, "for the batch")
-print("loss", float(model.loss(tokens).mean()))
-print("sampled", model.generate(tokens[0, :8], 8, jr.key(2)))
+forward = jax.jit(lambda m, t: m(t))  # checked while tracing, then plain XLA
+sample = jax.jit(lambda m, p, k: m.generate(p, 16, k))
+print("logits", forward(model, tokens[0]).shape, "for one sequence;", forward(model, tokens).shape, "for the batch")
+print("sampled", sample(model, tokens[0, :8], jr.key(2)))
 print("how the loop in selective_scan ran:", mamba.selective_scan.flow)
 
 # %% [markdown]
@@ -94,7 +95,7 @@ expex.diagram(mamba.Mixer.__call__, depth=2)
 # **`expex.inspect`**: every tool in one page, with activations and gradients of the loss.
 
 # %%
-expex.inspect(model, tokens[0], loss=lambda m, t: m.loss(t))
+expex.inspect(model, tokens[0, :12], loss=lambda m, t: m.loss(t))
 
 # %% [markdown]
 # ## A shape error
@@ -116,7 +117,7 @@ error
 # `expex.debug.watch` runs one forward and backward pass and reports every typed call:
 
 # %%
-watch = expex.debug.watch(lambda m: m.loss(tokens[0]), model)
+watch = expex.debug.watch(lambda m: m.loss(tokens[0, :12]), model)
 print(f"{len(watch.rows)} calls, {len(watch.flagged)} flagged")
 watch
 
@@ -143,7 +144,7 @@ for name, diff in compare.compare(reference).items():
 # [benchmarks/](../../benchmarks/) compare the port with the original: 10-14x faster forward and
 # 5-6x faster gradients on CPU, generation the same.
 
-# %%
+# %% [bench]
 def bench(f, *args, n=20):
     """Median seconds per call, after a first call that compiles."""
     jax.block_until_ready(f(*args))
@@ -155,9 +156,7 @@ def bench(f, *args, n=20):
     return float(np.median(times))
 
 
-forward = jax.jit(lambda m, t: m(t))
 grads = jax.jit(jax.grad(lambda m, t: m.loss(t).mean()))
-sample = jax.jit(lambda m, p, k: m.generate(p, 16, k))
 print(f"forward, 8 x 32 tokens   {bench(forward, model, tokens) * 1e3:7.2f} ms")
 print(f"gradients, 8 x 32 tokens {bench(grads, model, tokens) * 1e3:7.2f} ms")
 print(f"sample 16 tokens         {bench(sample, model, tokens[0, :8], jr.key(3)) * 1e3:7.2f} ms")

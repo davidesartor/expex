@@ -189,13 +189,23 @@ def test_reshape_is_validated_symbolically():
 def test_spot_check_when_symbolic_trace_is_inconclusive():
     @fn
     def branchy[T](x: f32[T]) -> f32[T]:
-        if x.shape[0] > 4:  # shape-dependent Python control flow
+        if x.shape[0] + 1 == 7:  # no constraint JAX takes says when this holds
             return x * 2
         return x
 
     r = prove(branchy)
     assert r.status == "spot-checked" and r.ok
     assert "could not be proved for all sizes" in r.detail
+
+
+def test_a_comparison_of_sizes_is_proved_region_by_region():
+    @fn
+    def branchy[T](x: f32[T]) -> f32[T]:
+        if x.shape[0] > 4:  # shape-dependent Python control flow: T >= 5, and 4 >= T
+            return x * 2
+        return x
+
+    assert prove(branchy).status == "proved"
 
 
 def test_spot_check_still_finds_failures():

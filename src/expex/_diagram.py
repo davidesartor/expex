@@ -364,6 +364,8 @@ class _Builder:
                     filter(None, (_type(v.aval) for v in eqn.outvars)))  # fmt: skip
                 me = self.atom(-1, text, kind, eqn.invars if kind == "out" else [], env)
                 outs = [[me]] * len(eqn.outvars)
+            elif name == "optimization_barrier":  # between unrolled layers (staging/loops.py): the values themselves
+                outs = srcs(eqn.invars)
             elif name == "scan":
                 loop = self.box(b, "loop", f"× {self.length(p['length'])}")
                 mult, self.mult = self.mult, self.mult * (p["length"] if isinstance(p["length"], int) else 1)

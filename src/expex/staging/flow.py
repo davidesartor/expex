@@ -43,8 +43,21 @@ class _Undefined:
 UNDEF = _Undefined()
 
 
-def ret_(thunk: Callable[[], Any]) -> Any:
-    """The function's return value; ``None`` if no ``return`` statement set it."""
+def ret_(thunk: Callable[[], Any], returned: Any = True) -> Any:
+    """The function's return value; ``None`` if no ``return`` statement set it.
+
+    ``returned`` says whether one did, for a function that may fall off its end: traced,
+    some data would return a value and other data None, which no traced function can.
+    """
+    if isinstance(returned, Tracer) and ld(thunk) is not UNDEF:  # (no path set a value: None)
+        from .ops import CALLS
+
+        name = getattr(CALLS.stack[-1][1], "name", "the function") if CALLS.stack else "the function"
+        raise coded("EX213", StageError(
+            f"{name}(): whether it returns a value or falls off its end (returning None) "
+            f"depends on a traced value. A traced function returns the same kind of value "
+            f"on every path: end it with a `return`, or give the `if` an `else` that returns."
+        ))
     try:
         value = thunk()
     except NameError:
@@ -291,6 +304,8 @@ def _select(
     else:
         branches = [replay(0)(), replay(1)()]
     out: list[Any] = []
+    ta: Any
+    tb: Any
     for a, b in zip(*branches):
         la, ta = jax.tree.flatten(a)
         lb, tb = jax.tree.flatten(b)
@@ -608,7 +623,9 @@ def while_(
                     f"`{names[i]}` ({_desc(state[i])}) changes inside the traced `while` at "
                     f"{site}; only arrays can change in a traced loop."
                 ))
-        return n + 1, tuple(out[i] for i in dyn)
+        new = tuple(out[i] for i in dyn)
+        _check_carry([names[i] for i in dyn], carry, new, "while", site)
+        return n + 1, new
 
     LOG[site] = "while -> lax.while_loop"
     try:
@@ -621,6 +638,29 @@ def while_(
         )
         raise
     return tuple(merge(final))
+
+
+def _check_carry(names: list[str], before: tuple[Any, ...], after: tuple[Any, ...], what: str, site: str) -> None:
+    """A traced loop's variables keep their shape and dtype (a Python int may become a float)."""
+    ta: Any
+    tb: Any
+    for name, a, b in zip(names, before, after):
+        la, ta = jax.tree.flatten(a)
+        lb, tb = jax.tree.flatten(b)
+        if ta != tb:
+            raise coded("EX212", StageError(
+                f"`{name}` changes structure inside the traced `{what}` at {site}: "
+                f"{_desc(a)} before an iteration, {_desc(b)} after."
+            ))
+        for x, y in zip(la, lb):
+            dx, dy = jnp.result_type(x), jnp.result_type(y)
+            if jnp.shape(x) != jnp.shape(y) or (dx != dy and not _weak(x)):
+                raise coded("EX212", StageError(
+                    f"`{name}` is {_desc(x)} before an iteration of the traced `{what}` at {site} "
+                    f"and {_desc(y)} after it: a traced loop keeps the shape and dtype of what "
+                    f"it carries.\n    Give it its final shape and dtype before the loop"
+                    + (f" ({name} = jnp.asarray({name}, jnp.{dy.name}))." if jnp.shape(x) == jnp.shape(y) else ".")
+                ))
 
 
 # ---------------------------------------------------------------------- for

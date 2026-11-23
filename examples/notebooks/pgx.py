@@ -101,11 +101,11 @@ print(expex.cost(Othello.step))
 expex.summary(jax.tree.map(lambda x: x[0], state))
 
 # %% [markdown]
-# **A diagram** of counting a line of stones, drawn from the code (interactive when you run the
-# notebook). The `while` loops are dashed containers.
+# **A diagram** of an Othello move, drawn from the code (interactive when you run the notebook):
+# the loop over the eight directions is a dashed container `loop × 8`, and the `if` another.
 
 # %%
-expex.diagram(connect_four.line_length, depth=2)
+expex.diagram(Othello.play)
 
 # %% [markdown]
 # `expex.inspect` and `expex.debug.watch` are for models with a `__call__` and a loss; a game
@@ -145,7 +145,7 @@ for game, mismatches in compare.compare(reference).items():
 # the repository's [benchmarks/](../../benchmarks/) report Connect Four 1.4x faster than Pgx on
 # CPU, Othello about the same.
 
-# %%
+# %% [bench]
 for game, module in ((ConnectFour, connect_four), (Othello, othello)):
     jax.block_until_ready(module.random_games(jr.key(0), 1024, 100))  # compile
     times = []

@@ -51,6 +51,8 @@ from expex import f32, i32, Static
 | [EX209](#ex209) | A Python object is updated inside traced control flow |
 | [EX210](#ex210) | Collected values of unknown number while proving |
 | [EX211](#ex211) | `expex.rows` / `expex.stack` with nothing to stack |
+| [EX212](#ex212) | A variable changes shape or dtype inside a traced loop |
+| [EX213](#ex213) | A traced condition decides whether the function returns a value |
 | [EX221](#ex221) | A key is needed while tracing, with no key in scope |
 | [EX222](#ex222) | The key in scope was set outside jit/vmap/grad |
 | [EX223](#ex223) | A random function under `jax.vmap` shares one key |
@@ -667,6 +669,70 @@ EX211 stack() of an empty list
 **Fix.** Pass at least one element to `expex.stack`; give `expex.rows` arrays that share
 their leading axis.
 
+<a id="ex212"></a>
+
+### EX212 · A variable changes shape or dtype inside a traced loop
+
+A `while` (or a `for` over a traced number of iterations) becomes
+`lax.while_loop`, which carries each variable it assigns from one iteration to
+the next with one shape and dtype. In Python an iteration can turn an `int32`
+into a `float32`, or grow an array; a traced loop cannot. (A Python number
+before the loop may become an array of its kind: `acc = 0`, then `acc += x`.)
+
+```python
+@expex.fn
+def halve(x: f32, k: i32) -> f32:
+    while x > 1:
+        x = x / 2
+        k = x  # k was an int32
+    return x + k
+
+try:
+    jax.jit(halve)(jnp.float32(10.0), jnp.int32(0))
+except expex.StageError as e:
+    print(e.code, e)
+```
+
+```
+EX212 `k` is i32[()] before an iteration of the traced `while` at example.py:3 and f32[()] after it: a traced loop keeps the shape and dtype of what it carries.
+    Give it its final shape and dtype before the loop (k = jnp.asarray(k, jnp.float32)).
+  see https://github.com/davidesartor/expex/blob/main/docs/errors.md#ex212
+```
+
+**Fix.** Give the variable its final dtype before the loop
+(`k = jnp.asarray(k, jnp.float32)`), use another variable for the new value, or
+preallocate an array of the final size and fill it (`out = out.at[i].set(v)`).
+
+<a id="ex213"></a>
+
+### EX213 · A traced condition decides whether the function returns a value
+
+A function that returns on some paths and falls off its end on others returns
+`None` on those. When a traced condition chooses the path, the result would be a
+value for some data and `None` for other data, which no traced function can
+return (a zero in place of `None` would be a wrong answer, silently).
+
+```python
+@expex.fn
+def positive(x: f32):
+    if x > 0:
+        return x
+    # falls off the end: None
+
+try:
+    jax.jit(positive)(jnp.float32(-1.0))
+except expex.StageError as e:
+    print(e.code, e)
+```
+
+```
+EX213 positive(): whether it returns a value or falls off its end (returning None) depends on a traced value. A traced function returns the same kind of value on every path: end it with a `return`, or give the `if` an `else` that returns.
+  see https://github.com/davidesartor/expex/blob/main/docs/errors.md#ex213
+```
+
+**Fix.** Return a value on every path: end the function with a `return`, or give
+the `if` an `else` that returns.
+
 <a id="ex221"></a>
 
 ### EX221 · A key is needed while tracing, with no key in scope
@@ -1031,7 +1097,13 @@ EX402 last: the annotation of the result (f32[S]) uses S, which is not defined. 
   see https://github.com/davidesartor/expex/blob/main/docs/errors.md#ex402
 ```
 
-**Fix.** Declare the size (`def last[T, S](...)`) or correct its name.
+The same goes for an array annotation whose dtype is not defined, such as
+`f32[T]` without `from expex import f32`, or `f32[*B]` without `*B` among the type
+parameters. Such an annotation is never skipped as an unknown class would be (a
+`TYPE_CHECKING`-only import): the argument would go unchecked.
+
+**Fix.** Declare the size (`def last[T, S](...)`) or correct its name; import
+the dtype.
 
 <a id="ex403"></a>
 
@@ -1554,14 +1626,16 @@ or a default; prove a method on an instance, `expex.prove(model.method)`.
 
 The function holds at the concrete sizes the prover tried, but could not be
 proved for all sizes: some step (often a `reshape`) depends on a property of
-the sizes the prover cannot decide, such as Python control flow on a size. The
-report is `spot-checked`. (When the reason has a code of its own, such as
-[EX210](#ex210), the report has that code.)
+the sizes the prover cannot decide. Python control flow on a size (`if T > 4`,
+`if T == 6`) is proved one region of sizes at a time (`T >= 5`, then `4 >= T`),
+but only where JAX can write the region down as a constraint: `T + 1 == 7` it
+cannot. The report is `spot-checked`. (When the reason has a code of its own,
+such as [EX210](#ex210), the report has that code.)
 
 ```python
 @expex.fn
 def boost[T](x: f32[T]) -> f32[T]:
-    if x.shape[0] > 4:  # Python control flow on a size
+    if x.shape[0] + 1 == 7:  # Python control flow on a size
         return x * 2
     return x
 
@@ -1572,7 +1646,7 @@ print(report.code, report)
 ```
 EX702 example.boost: spot-checked
     holds at sizes T=2; T=3; T=1; T=11, but could not be proved for all sizes:
-        InconclusiveDimensionOperation: Symbolic dimension comparison 'T' > '4' is inconclusive.
+        InconclusiveDimensionOperation: Symbolic dimension comparison 'T + 1' == '7' is inconclusive.
         This error arises for comparison operations with shapes that
         are non-constant, and the result of the operation cannot be represented as
         a boolean value for all values of the symbolic dimensions involved.
@@ -1582,8 +1656,9 @@ EX702 example.boost: spot-checked
     see https://github.com/davidesartor/expex/blob/main/docs/errors.md#ex702
 ```
 
-**Fix.** Let the prover decide the step: a leading `assert` on the sizes (`assert T > 4`)
-is assumed by the prover and checked on every call; a choice made on data
+**Fix.** Let the prover decide the step: write the comparison so that one side
+is a size alone (`T == 6`), or add a leading `assert` on the sizes (`assert T > 4`),
+which the prover assumes and every call checks; a choice made on data
 (`jnp.where`) rather than in Python holds for every size. Or accept the spot
 check: the function is right at every size tried.
 

@@ -162,6 +162,7 @@ _FREE = {
     "expand_dims", "slice", "dynamic_slice", "dynamic_update_slice", "gather",
     "concatenate", "pad", "iota", "copy", "copy_p", "dim_as_value", "rev",
     "sharding_constraint", "stop_gradient", "bitcast_convert_type", "split", "stack",
+    "optimization_barrier",
 }  # fmt: skip
 _REDUCE = {
     "reduce_sum", "reduce_max", "reduce_min", "reduce_prod", "reduce_and", "reduce_or",

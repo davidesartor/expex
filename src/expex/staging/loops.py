@@ -20,6 +20,7 @@ from .flow import (
     UNDEF,
     Stacked,
     _CannotLower,
+    _check_carry,
     _Collector,
     _desc,
     _dyn,
@@ -69,9 +70,7 @@ def _as_iter(it: Any) -> _Iter | None:
     if isinstance(it, (list, tuple)) and len(it) >= 2:
         stacked = _stack_alike(it)
         if stacked is not None:  # e.g. a list of identical layers: one scan, not n copies
-            r = _Iter(len(it), stacked, lambda x, i: x, lambda: it, layers=True)
-            r.items = list(it)
-            return r
+            return _Iter(len(it), stacked, lambda x, i: x, lambda: it, layers=True)
     return None
 
 
@@ -362,15 +361,7 @@ def _lower_for(
         LOG[site] = f"for -> lax.scan (carries {', '.join(names[j] for j in carry_idx)})"
         if unroll:
             LOG[site] += f", unrolled when compiled ({n} identical layers)"
-        if unroll and VARIANT["mode"] in ("replay", "barrier"):
-            final, (ys, lasts) = _replay_layers(step, init, it, n)
-        elif unroll and VARIANT["mode"] == "scanbar":
-            def barred(c, xi):
-                c2, y = step(c, xi)
-                return lax.optimization_barrier(c2), y
-            final, (ys, lasts) = lax.scan(barred, init, (it.xs, idx), unroll=unroll)
-        else:
-            final, (ys, lasts) = lax.scan(step, init, (it.xs, idx), unroll=unroll)
+        final, (ys, lasts) = lax.scan(_between_layers(step) if unroll else step, init, (it.xs, idx), unroll=unroll)
 
     out = list(state)
     for j, v in zip(carry_idx, final):
@@ -391,28 +382,28 @@ def _lower_for(
     return tuple(out)
 
 
-import os
-VARIANT = {"mode": os.environ.get("PROTO", "scan")}
+def _between_layers(step: Callable[..., Any]) -> Callable[..., Any]:
+    """``step`` with an ``optimization_barrier`` on what one layer passes to the next.
 
+    For a scan unrolled over layers: the values are unchanged, but XLA keeps each
+    layer's output as it is instead of fusing the layers' element-wise work into
+    one another. Without it, the backward pass of a deep stack (ViT-Ti's 12
+    blocks) has XLA:CPU recompute the residual stream's gradient inside every
+    layer's fusions, which grows with the square of the depth: twice the
+    compile time of the rolled loop, for no gain at run time. With it, the
+    unrolled stack compiles faster than the rolled loop up to at least 64 layers
+    and runs as fast as without it (benchmarks/results/compile-cpu-2026-11-23.md).
+    """
 
-def _replay_layers(step, init, it, n):
-    import numpy as np
-    from jax.extend.core import jaxpr_as_fun
-    idt = jax.dtypes.canonicalize_dtype(np.int64)
-    item = lambda l: jax.tree.map(lambda a: a[l], it.xs) if getattr(it, "items", None) is None else it.items[l]
-    closed, shape = jax.make_jaxpr(step, return_shape=True)(init, (item(0), np.asarray(0, idt)))
-    carry = init
-    ys_all, last = [], None
-    for l in range(n):
-        flat = jax.tree.leaves((carry, (item(l), np.asarray(l, idt))))
-        out = jax.tree.unflatten(jax.tree.structure(shape), jax.core.eval_jaxpr(closed.jaxpr, closed.consts, *flat))
-        carry, (ys, last) = out
-        if VARIANT["mode"] == "barrier" and l < n - 1:
-            carry = lax.optimization_barrier(carry)
-        ys_all.append(ys)
-    ys = jax.tree.map(lambda *a: jnp.stack(a), *ys_all) if ys_all and jax.tree.leaves(ys_all[0]) else ys_all[0]
-    lasts = jax.tree.map(lambda a: a[None], last)
-    return carry, (ys, lasts)
+    def barred(carry: tuple[Any, ...], xi: Any) -> Any:
+        new, out = step(carry, xi)
+        leaves, tree = jax.tree.flatten(new)
+        arrays = [k for k, v in enumerate(leaves) if isinstance(v, (jax.Array, Tracer))]
+        for k, v in zip(arrays, lax.optimization_barrier([leaves[k] for k in arrays])):
+            leaves[k] = v
+        return jax.tree.unflatten(tree, leaves), out
+
+    return barred
 
 
 def _unroll(it: _Iter) -> bool:
@@ -420,9 +411,12 @@ def _unroll(it: _Iter) -> bool:
 
     Traced once either way. On XLA:CPU a rolled loop over layers keeps every
     activation the backward pass needs in a stacked buffer (zeroed, written and
-    read back once per layer) and fuses nothing across layers; unrolled, a
-    ViT-Ti gradient runs about 1.2x faster, Mamba's token-by-token generation
-    about 1.7x (the original projects unroll their layers).
+    read back once per layer); unrolled, a ViT-Ti gradient runs about 1.2x
+    faster, Mamba's token-by-token generation about 1.6x (the original projects
+    unroll their layers). With a barrier between the layers (``_between_layers``)
+    the unrolled program also compiles faster than the rolled one, for gradients
+    of stacks up to at least 32 layers; a forward pass alone compiles a little
+    slower (0.86 s against 0.62 s for 32 ViT-Ti blocks).
     """
     from ..function import config
 
@@ -480,7 +474,9 @@ def _fori(
                     f"`{names[j]}` ({_desc(state[j])}) changes inside the traced-length `for` "
                     f"at {site}; only arrays can change in a traced loop."
                 ))
-        return i + 1, tuple(out[j] for j in dyn)
+        new = tuple(out[j] for j in dyn)
+        _check_carry([names[j] for j in dyn], carry, new, "for", site)
+        return i + 1, new
 
     LOG[site] = "for -> lax.while_loop (traced number of iterations)"
     try:

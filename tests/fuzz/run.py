@@ -28,6 +28,8 @@ def run_one(seed: int, size: int, shrink: bool = True, modes: tuple[str, ...] | 
     import fuzzoracle
 
     prog = fuzzgen.generate(seed, size)
+    if modes is None and not ALL_MODES:  # eager and jit always; batched, vmap, grad in turn
+        modes = ("eager", "jit", ("batch", "vmap", "grad")[seed % 3])
     kw = {} if modes is None else {"modes": modes}
     rep = fuzzoracle.check(prog.source(), prog.source("truth"), seed, **kw)
     out: dict[str, Any] = {
@@ -47,7 +49,7 @@ def run_one(seed: int, size: int, shrink: bool = True, modes: tuple[str, ...] | 
                 r = fuzzoracle.check(q.source(), q.source("truth"), seed, modes=(o.mode if o.mode != "batch2" else "batch",) if o.mode != "define" else ("eager",))
                 return r.truth_failed is None and any(x.signature() == sig for x in r.failures)
 
-            small = fuzzgen.shrink(prog, still)
+            small = fuzzgen.shrink(prog, still, budget=150)
             fuzzgen.COVERAGE.clear()
         out["failures"].append(
             {"mode": o.mode, "kind": o.kind, "signature": sig, "detail": o.detail[:2000], "source": small.source(), "truth": small.source("truth")}
@@ -55,16 +57,42 @@ def run_one(seed: int, size: int, shrink: bool = True, modes: tuple[str, ...] | 
     return out
 
 
-def _worker(args: tuple[int, int, bool]) -> dict[str, Any]:
-    seed, size, shrink = args
+class Timeout(Exception):
+    pass
+
+
+def _alarm(*_: Any) -> None:
+    raise Timeout
+
+
+def _worker(args: tuple[int, int, bool, bool]) -> dict[str, Any]:
+    import signal
+
+    global ALL_MODES
+    seed, size, shrink, ALL_MODES = args
+    if os.getppid() == 1:  # the run was stopped: do not linger
+        os._exit(0)
+    signal.signal(signal.SIGALRM, _alarm)
+    signal.alarm(TIMEOUT)
     try:
         return run_one(seed, size, shrink)
-    except Exception as e:  # the harness itself failed: report, do not stop the run
+    except Timeout:
+        fuzzgen.COVERAGE.clear()
+        return {"seed": seed, "truth_failed": None, "outcomes": [("all", "timeout", None)], "coverage": {}, "failures": []}
+    except Exception:  # the harness itself failed: report, do not stop the run
         import traceback
 
         return {"seed": seed, "truth_failed": None, "outcomes": [], "coverage": {}, "failures": [
             {"mode": "harness", "kind": "error", "signature": "harness", "detail": traceback.format_exc()[-2000:], "source": "", "truth": ""}
         ]}
+    finally:
+        signal.alarm(0)
+
+
+#: Seconds a program (with its shrinking) may take before it is given up on.
+TIMEOUT = 240
+#: Every mode on every program (``--all-modes``), rather than eager and jit plus one in turn.
+ALL_MODES = False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -74,10 +102,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--size", type=int, default=1, help="program size (statements ~ 6 + 6 * size)")
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 0))
     ap.add_argument("--no-shrink", action="store_true")
+    ap.add_argument("--all-modes", action="store_true", help="every mode on every program (slower)")
     ap.add_argument("--only-seed", type=int, default=None)
     ap.add_argument("--out", default=None, help="write the failures as JSON here")
     ap.add_argument("--show", type=int, default=3, help="examples printed per distinct failure")
     a = ap.parse_args(argv)
+    global ALL_MODES
+    ALL_MODES = a.all_modes
     if a.only_seed is not None:
         r = run_one(a.only_seed, a.size, not a.no_shrink)
         prog = fuzzgen.generate(a.only_seed, a.size)
@@ -86,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
         for f in r["failures"]:
             print(f["signature"], f["detail"], "\n", f["source"], sep="\n")
         return 1 if r["failures"] else 0
-    seeds = [(a.seed + i, a.size, not a.no_shrink) for i in range(a.n)]
+    seeds = [(a.seed + i, a.size, not a.no_shrink, a.all_modes) for i in range(a.n)]
     t0 = time.time()
     stats: collections.Counter[str] = collections.Counter()
     coverage: collections.Counter[str] = collections.Counter()
@@ -103,8 +134,11 @@ def main(argv: list[str] | None = None) -> int:
                 stats[f"{mode}:{kind}" + (f":{code}" if code else "")] += 1
             for f in r["failures"]:
                 f["seed"] = r["seed"]
-                groups[f["signature"] + " | " + f["detail"].splitlines()[0][:90] if f["detail"] else f["signature"]].append(f)
-            if done % 200 == 0:
+                key = f["signature"] + " | " + f["detail"].splitlines()[0][:90] if f["detail"] else f["signature"]
+                if key not in groups:
+                    print(f"\n*** new failure (seed {r['seed']}): {key}\n{f['detail'][:800]}\n{f['source']}", flush=True)
+                groups[key].append(f)
+            if done % 100 == 0:
                 print(f"[{done}/{a.n}] {time.time() - t0:.0f}s, {sum(len(v) for v in groups.values())} failing programs, {len(groups)} kinds", flush=True)
     print(f"\n{a.n} programs in {time.time() - t0:.0f}s\n")
     print("outcomes:")

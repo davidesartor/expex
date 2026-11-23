@@ -117,6 +117,26 @@ def always(stmts: list[ast.stmt], kinds: tuple[type, ...]) -> bool:
     )
 
 
+def may_fall_off(stmts: list[ast.stmt]) -> bool:
+    """Can running ``stmts`` reach their end (for a function body: return None by falling off)?
+
+    Conservative the other way round from ``always``: ``while True`` without a ``break``
+    and ``raise`` end a path too.
+    """
+    for s in stmts:
+        if isinstance(s, (ast.Return, ast.Raise)):
+            return False
+        if isinstance(s, ast.If) and not may_fall_off(s.body) and not may_fall_off(s.orelse):
+            return False
+        if (
+            isinstance(s, ast.While)
+            and isinstance(s.test, ast.Constant) and s.test.value
+            and not has(s.body, (ast.Break,), into_loops=False)
+        ):  # fmt: skip
+            return False
+    return True
+
+
 def count_via_ifs(stmts: list[ast.stmt]) -> int:
     """How many ``break`` / ``continue`` / ``return`` are reachable through ``if`` only."""
     n = 0
@@ -215,8 +235,8 @@ def is_local_annotation(m: ast.AST) -> bool:
         isinstance(m, ast.AnnAssign)
         and m.value is not None
         and isinstance(m.target, ast.Name)
-        and not isinstance(m.annotation, ast.Constant)
-    )
+        and not (isinstance(m.annotation, ast.Constant) and not isinstance(m.annotation.value, str))
+    )  # `h: f32[B, T] = ...`, or in quotes
 
 
 MUTATORS = frozenset(
@@ -385,6 +405,7 @@ def size_asserts(
     params = {x.arg for x in a.posonlyargs + a.args + a.kwonlyargs}
     ints = {x.arg for x in a.posonlyargs + a.args + a.kwonlyargs if isinstance(x.annotation, ast.Name) and x.annotation.id == "int"}
     in_signature = signature_names(fdef)
+    declared = {getattr(t, "name", "") for t in getattr(fdef, "type_params", ())}
     allowed = sizes | params
 
     def plain(e: ast.AST) -> bool:
@@ -420,6 +441,8 @@ def size_asserts(
                 """A size of the signature, or a name computed once from sizes and int parameters."""
                 if not isinstance(n, ast.Name):
                     return False
+                if n.id in params or n.id in declared or any(isinstance(x, ast.Name) and x.id == n.id for x in ast.walk(v)):
+                    return False  # `n = n + 1`, `N = 3` rebind a parameter or a type parameter: ordinary assignments
                 if n.id in in_signature:
                     return True
                 used = [x for x in ast.walk(v) if isinstance(x, (ast.Name, ast.Attribute))]

@@ -4,7 +4,9 @@ The `.py` files are the source of truth (cells marked with `# %%`), and
 examples/notebooks/build.py writes the `.ipynb` files from them. Here each
 notebook's code cells run as one script, in a process of its own, against this
 checkout (the setup cell finds it through $EXPEX_REPO instead of installing
-from GitHub). None of this needs Jupyter: the notebooks are read as JSON.
+from GitHub), without the cells that only time things (`# %% [bench]`). They
+take a few tens of seconds each; EXPEX_SKIP_NOTEBOOKS=1 skips them. None of
+this needs Jupyter: the notebooks are read as JSON.
 """
 
 import importlib.util
@@ -27,18 +29,19 @@ _spec.loader.exec_module(build)
 NEEDS = {"ppo": "optax", "multidevice": "optax"}
 
 
+@pytest.mark.skipif(bool(os.environ.get("EXPEX_SKIP_NOTEBOOKS")), reason="EXPEX_SKIP_NOTEBOOKS is set")
 @pytest.mark.parametrize("name", build.NOTEBOOKS)
 def test_notebook_runs_as_a_script(name, tmp_path):
     if name in NEEDS:
         pytest.importorskip(NEEDS[name])
     script = tmp_path / f"{name}.py"
-    script.write_text(build.script(name), encoding="utf-8")
+    script.write_text(build.script(name, benchmarks=False), encoding="utf-8")
     env = dict(os.environ, EXPEX_REPO=str(ROOT), MPLBACKEND="Agg")
     env["PYTHONPATH"] = os.pathsep.join([str(ROOT / "src"), env.get("PYTHONPATH", "")])
     env.pop("XLA_FLAGS", None)
     p = subprocess.run([sys.executable, str(script)], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=600)
     assert p.returncode == 0, p.stdout[-3000:] + p.stderr[-5000:]
-    assert "examples from" in p.stdout  # the setup cell used this checkout
+    assert f"examples from {ROOT.name}" in p.stdout  # the setup cell used this checkout
 
 
 @pytest.mark.parametrize("name", build.NOTEBOOKS)
@@ -57,9 +60,9 @@ def test_notebook_is_committed_with_outputs_and_small(name):
     code = [c for c in nb["cells"] if c["cell_type"] == "code"]
     assert sum(bool(c["outputs"]) for c in code) > len(code) // 2, "run with build.py --execute"
     assert not [o for c in code for o in c["outputs"] if o["output_type"] == "error"]
-    text = json.dumps(nb)
-    assert str(ROOT) not in text  # no paths of the machine that ran it
-    assert f"EXPEX_REF = \"{build.BRANCH}\"" in text and build.colab_url(name) in text
+    assert str(ROOT) not in json.dumps(nb)  # no paths of the machine that ran it
+    sources = "".join("".join(c["source"]) for c in nb["cells"])
+    assert f'EXPEX_REF = "{build.BRANCH}"' in sources and build.colab_url(name) in sources
 
 
 def test_readme_links_every_notebook():

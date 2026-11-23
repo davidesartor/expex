@@ -90,6 +90,7 @@ for name, x in [("embed  f32[Vocab, D]", model.embed), ("blocks[0].mlp.w1  f32[D
 # and optimizer's buffers:
 
 # %%
+del model, adam  # no other references: the step can reuse (donate) the buffers
 losses, times, donated, state = train.train(state, mesh, 0, 10)
 for i, loss in enumerate(losses):
     print(f"step {i}: loss {loss:.4f}")
@@ -180,6 +181,6 @@ print(f"largest relative difference: {gap:.1e}")
 # Median step time, compile excluded. The 8 simulated devices share this machine's cores, so they
 # are no speedup: the point is that it runs. Timings depend on the machine.
 
-# %%
+# %% [bench]
 print(f"1 device:            {np.median(single['times'][1:]) * 1e3:6.1f} ms per step")
 print(f"8 simulated devices: {np.median(times[1:]) * 1e3:6.1f} ms per step  ({os.cpu_count()} CPU cores)")

@@ -230,7 +230,7 @@ print(expex.annotate(attend_jax, jnp.ones((2, 3, 8)), jnp.ones((2, 5, 8)), jnp.o
 # the same function, and the plain JAX version of the README (stacked weights, `lax.scan`, `vmap`).
 # Timings depend on the machine.
 
-# %%
+# %% [bench]
 def bench(f, *args, n=50):
     """Median seconds per call, after a first call that compiles."""
     jax.block_until_ready(f(*args))

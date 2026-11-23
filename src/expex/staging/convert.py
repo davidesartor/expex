@@ -360,13 +360,13 @@ class _Exprs(ast.NodeTransformer):
         return ast.copy_location(self._with_call(call), node)
 
     def visit_Compare(self, node: ast.Compare) -> Any:
-        # `if T > 1`, `if T == 6`: a size may be symbolic (under the prover), where
-        # a plain comparison is inconclusive or, for `==`, wrongly False (see ops.cmp_)
-        sized = len(node.ops) == 1 and any(
-            (isinstance(m, ast.Name) and m.id in self.axis_names)
-            or (isinstance(m, ast.Attribute) and m.attr == "shape")
-            or (isinstance(m, ast.Call) and isinstance(m.func, ast.Name) and m.func.id == "len")
-            for m in ast.walk(node)
+        # `if T == 6`, `n in (4, 5)`: a size may be symbolic (under the prover), where
+        # JAX answers a plain `==` by comparing expressions, False for T == 6 (see ops.cmp_)
+        operands = [node.left, *node.comparators]
+        sized = (
+            len(node.ops) == 1
+            and isinstance(node.ops[0], (ast.Eq, ast.NotEq, ast.In, ast.NotIn))
+            and not any(isinstance(e, ast.Constant) and type(e.value) is not int for e in operands)
         )
         self.generic_visit(node)
         if self.plain or (len(node.ops) < 2 and not sized) or _has_walrus(node):
@@ -416,6 +416,10 @@ class _Converter:
         self.lifted: list[list[str]] = []  # leading asserts on sizes, as constraints
         self.defs: dict[str, str] = {}  # leading size definitions, H = heads
         self.uses_return_flag = False
+        #: Some path may fall off the end of the function (returning None): every return sets the flag.
+        self.falloff = False
+        #: Names the annotated locals use (`n` in `h: f32[n + T] = ...`).
+        self.local_names: set[str] = set()
         args = fdef.args
         params = [a.arg for a in args.posonlyargs + args.args + args.kwonlyargs]
         if args.vararg:
@@ -546,7 +550,10 @@ class _Converter:
         base = getattr(target, "value", None)
         if not (isinstance(base, ast.Name) and base.id in self.locals):
             return None
-        if base.id in self.declared or base.id in self.captured or _has_walrus(s):
+        # A variable a nested function reads is rebound here, in its own scope, so the
+        # function sees the new value as it would the mutated array. (A statement that
+        # assigns it is then not moved into a generated helper: see `_blocked`.)
+        if base.id in self.declared or _has_walrus(s):
             return None
         if isinstance(target, ast.Subscript):
             where: ast.expr = _index_expr(target.slice)
@@ -593,11 +600,17 @@ class _Converter:
                     continue
                 for i, s in enumerate(seq):
                     if analysis.is_local_annotation(s) and s.target.id in self.locals:
+                        self.local_names |= analysis.reads([s.annotation])
+                        if isinstance(s.annotation, ast.Constant):  # in quotes
+                            try:
+                                self.local_names |= analysis.reads([ast.parse(s.annotation.value, mode="eval")])
+                            except SyntaxError:
+                                pass
                         ann = _thunk(s.annotation)
                         ann._expex_annotation = True  # type: ignore[attr-defined]
                         call = _call(
                             "local_", s.value, ann,
-                            ast.Constant(s.target.id), self.site(s),
+                            ast.Constant(s.target.id), self.site(s), ast.Constant(ast.unparse(s.annotation)),
                         )  # fmt: skip
                         seq[i] = _locate(
                             ast.Assign(targets=[_name(s.target.id, store=True)], value=call), s
@@ -712,7 +725,8 @@ class _Converter:
                 if isinstance(s, ast.Return):
                     state["return"] = True
                     value = s.value or ast.Constant(None)
-                    out.append(_locate(ast.Assign(targets=[_name(RET, store=True)], value=value), s))
+                    if not _is_ret(value):  # an inner loop's return, passed on: the value is there already
+                        out.append(_locate(ast.Assign(targets=[_name(RET, store=True)], value=value), s))
                     out.append(set_flag(RETF, s))
                 out.append(set_flag(brk, s))
                 if flagged:
@@ -750,8 +764,9 @@ class _Converter:
         for i, s in enumerate(stmts):
             if isinstance(s, ast.Return):
                 value = s.value or ast.Constant(None)
-                out.append(ast.copy_location(ast.Assign(targets=[_name(RET, store=True)], value=value), s))
-                if flagged:
+                if not _is_ret(value):  # `RET = RET` would read it in a traced branch where it is unset
+                    out.append(ast.copy_location(ast.Assign(targets=[_name(RET, store=True)], value=value), s))
+                if flagged or self.falloff:
                     self.uses_return_flag = True
                     out.append(_locate(ast.Assign(targets=[_name(RETF, store=True)], value=ast.Constant(True)), s))
                 return out, True
@@ -903,6 +918,11 @@ class _Converter:
 # ----------------------------------------------------------------- top level
 
 
+def _is_ret(e: ast.expr) -> bool:
+    """``__bn_ret__`` itself: a return passed on from a loop, whose value is already stored."""
+    return isinstance(e, ast.Name) and e.id == RET
+
+
 def _constant(v: str | tuple[str, ...] | None) -> ast.expr:
     """A name, or a tuple of names, as a literal."""
     return ast.Tuple(elts=[ast.Constant(x) for x in v], ctx=ast.Load()) if isinstance(v, tuple) else ast.Constant(v)
@@ -1006,6 +1026,7 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
     new.__expex_sizes__ = conv.sizes  # type: ignore[attr-defined]
     new.__expex_where__ = conv.lifted  # type: ignore[attr-defined]
     new.__expex_defs__ = conv.defs  # type: ignore[attr-defined]
+    new.__expex_local_names__ = conv.local_names  # type: ignore[attr-defined]
     return new
 
 
@@ -1034,6 +1055,7 @@ def _rewrite(tree: ast.Module, fdef: ast.FunctionDef, raw: Any) -> tuple[_Conver
             body=[stmt], orelse=[],
         )  # fmt: skip
         fdef.body[fdef.body.index(stmt)] = _locate(guard, stmt)
+    falloff = analysis.may_fall_off(fdef.body)  # before `raise` is rewritten
     conv = _Converter(fdef, code.co_filename, set(getattr(raw, "__globals__", {})) | set(code.co_freevars))
     conv.rewrite_appends(fdef.body)
     conv.rewrite_inplace(fdef.body)
@@ -1055,9 +1077,14 @@ def _rewrite(tree: ast.Module, fdef: ast.FunctionDef, raw: Any) -> tuple[_Conver
         isinstance(s, ast.If) and (analysis.returns_via_ifs(s.body) or analysis.returns_via_ifs(s.orelse))
         for s in fdef.body
     ):
+        conv.falloff = falloff
+        if falloff:  # whether a value was returned: a traced answer cannot be None or a value
+            conv.uses_return_flag = True
+            conv.locals.add(RETF)
         body, _ = conv.lower_returns(fdef.body)
         # a path that falls off the end leaves the variable unset: that is `None`
-        body.append(ast.Return(value=_call("ret_", _thunk(_name(RET)))))
+        args = [_thunk(_name(RET))] + ([_name(RETF)] if falloff else [])
+        body.append(ast.Return(value=_call("ret_", *args)))
         fdef.body = body
         conv.locals.add(RET)
     if conv.uses_return_flag:

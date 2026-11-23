@@ -134,13 +134,23 @@ def same(truth: Any, got: Any, exact_dtype: bool = False) -> str | None:
         if A.shape != B.shape:
             return f"shape {A.shape} vs {B.shape}"
         ka, kb = A.dtype.kind, B.dtype.kind
-        if ka != kb and not ({ka, kb} <= {"i", "u"}):
+        # A traced `if` gives a variable one dtype both branches can take: an int on one
+        # path and a float on the other is a float (expex's documented reconciliation)
+        promoted = not exact_dtype and {ka, kb} <= {"b", "i", "u", "f"} and "f" in (ka, kb)
+        if ka != kb and not ({ka, kb} <= {"i", "u"}) and not promoted:
             return f"dtype kind {A.dtype} vs {B.dtype} (values {A!r} vs {B!r})"
-        if exact_dtype and type(a) is not type(b) and (type(a) in (int, float, bool) or type(b) in (int, float, bool)):
+        # (a Python float against a float32 array is fine: `max(x[0], 1.0)` is jnp.maximum by design)
+        if exact_dtype and type(a) is not type(b) and {type(a), type(b)} <= {int, float, bool}:
             return f"type {type(a).__name__} vs {type(b).__name__} ({a!r} vs {b!r})"
         if not np.allclose(A.astype(np.float64), B.astype(np.float64), rtol=1e-5, atol=1e-5, equal_nan=True):
             return f"values {A.tolist()} vs {B.tolist()}"
     return None
+
+
+#: JAX's own limits, which expex documents rather than works around: (mode, part of the message).
+LIMITS = [
+    ("grad", "Reverse-mode differentiation does not work for lax.while_loop"),
+]
 
 
 def _err(mode: str, e: BaseException) -> Outcome:
@@ -148,6 +158,8 @@ def _err(mode: str, e: BaseException) -> Outcome:
     msg = f"{type(e).__name__}: {e}"
     if code is not None:
         return Outcome(mode, "coded", msg, code)
+    if any(m == mode and text in msg for m, text in LIMITS):
+        return Outcome(mode, "limit", msg)
     tb = "".join(traceback.format_exception(e)[-6:])
     return Outcome(mode, "error", msg + "\n" + tb)
 
@@ -233,7 +245,10 @@ def _mode(mode: str, fx: Any, truth_f: Any, args: dict[str, Any], want: Any, rng
                     wants.append(_call(truth_f, element(bargs, b)))
                 except Exception:
                     return Outcome(mode, "skip", "truth raised on a batch element")
-            want_b = jax.tree.map(lambda *xs: np.stack([np.asarray(x) for x in xs]), *wants)
+            try:
+                want_b = jax.tree.map(lambda *xs: np.stack([np.asarray(x) for x in xs]), *wants)
+            except Exception:
+                return Outcome(mode, "skip", "the elements' results differ in structure or shape")
             if mode == "batch":
                 got = _call(fx, bargs)
                 why = same(want_b, got)
@@ -273,20 +288,23 @@ def _grad(fx: Any, truth_f: Any, args: dict[str, Any], want: Any, rng: Any) -> O
     direction = [np.asarray(rng.standard_normal(np.shape(args[k])), np.float32) for k in names]
     gv = float(sum(np.vdot(np.asarray(gi), di) for gi, di in zip(g, direction)))
 
-    def fd(h: float) -> float:
-        def at(t: float) -> float:
-            a = dict(args)
-            for k, d in zip(names, direction):
-                a[k] = jnp.asarray(np.asarray(args[k], np.float64) + t * d, jnp.float32)
-            return float(np.asarray(_scalar(truth_f(**a)), np.float64))
+    def at(t: float) -> float:
+        a = dict(args)
+        for k, d in zip(names, direction):
+            a[k] = jnp.asarray(np.asarray(args[k], np.float64) + t * d, jnp.float32)
+        return float(np.asarray(_scalar(truth_f(**a)), np.float64))
 
+    def fd(h: float) -> float:
         return (at(h) - at(-h)) / (2 * h)
 
     try:
         d1, d2 = fd(1 / 64), fd(1 / 256)
+        f0, h = at(0.0), 1 / 256
+        right, left = (at(h) - f0) / h, (f0 - at(-h)) / h  # one-sided: differ at a kink (ties of max, abs at 0)
     except Exception:
         return Outcome("grad", "skip", "truth raised near the input")
-    if not (np.isfinite(d1) and np.isfinite(d2)) or abs(d1 - d2) > 1e-2 * (1 + abs(d1)):
+    smooth = all(np.isfinite(v) for v in (d1, d2, right, left))
+    if not smooth or abs(d1 - d2) > 1e-2 * (1 + abs(d1)) or abs(right - left) > 1e-2 * (1 + abs(right)):
         return Outcome("grad", "skip", "not smooth here")
     if not np.isfinite(gv):
         return Outcome("grad", "mismatch", f"gradient {gv} not finite, finite differences {d2}")

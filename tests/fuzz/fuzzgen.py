@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import copy
 import random
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -225,9 +226,12 @@ class Ctx:
         self.loops = loops  # enclosing loops (break / continue allowed when > 0)
         self.in_while = in_while
         self.staged = depth > 0  # inside a branch or loop: Python ints here may become traced
+        #: Variables of the enclosing loop's iterations before this one: their type may not change.
+        self.outer: set[str] = set()
 
     def child(self, loop: bool = False, in_while: bool = False) -> "Ctx":
         c = Ctx(dict(self.env), self.depth + 1, self.loops + (1 if loop else 0), in_while or (self.in_while and not loop))
+        c.outer = set(self.env) if loop else set(self.outer)
         return c
 
 
@@ -340,6 +344,9 @@ class Gen:
             j = self.fresh("j")
             if self.chance(0.5):
                 return E("F", f"sum([{{0}} for {j} in range({{1}})])", [self._with(env, j, "I", "F", d - 1), self.pick([lit("P", "N"), lit("P", "n"), lit("P", "3")])])
+            if self.chance(0.3):
+                _cov("comprehension with a condition")
+                return E("F", f"sum([{{0}} for {j} in range(N) if {{1}}], 0.0)", [self._with(env, j, "I", "F", d - 1), self._with(env, j, "I", "B", d - 1)])
             return E("F", f"jnp.asarray([{{0}} for {j} in x]).sum()", [self._with(env, j, "F", "F", d - 1)])
         ws = self.vars_of(env, "W")
         if ws:
@@ -503,7 +510,12 @@ class Gen:
         if t == "P" and ctx.staged:
             t = "I"
         name = self.fresh()
-        b.body.append(Line(f"{name} = {{0}}", [self.expr(t, ctx.env)]))
+        ann = {"V": "f32[N]", "W": "f32[D]", "F": "f32"}.get(t)
+        if ann is not None and self.chance(0.2):
+            _cov("annotated local variable")
+            b.body.append(Line(f"{name}: {ann} = jnp.asarray({{0}}, jnp.float32)", [self.expr(t, ctx.env)]))
+        else:
+            b.body.append(Line(f"{name} = {{0}}", [self.expr(t, ctx.env)]))
         ctx.env[name] = t
 
     def stmt(self, ctx: Ctx, b: Block) -> bool:
@@ -559,7 +571,7 @@ class Gen:
             self.assign_new(ctx, b)
             return False
         new = t
-        if t in ("P", "I") and self.chance(0.25):
+        if t in ("P", "I") and not ctx.loops and name not in PARAMS and self.chance(0.25):
             _cov("int accumulator becomes float")
             new = "F"
         if t == "P" and ctx.staged:
@@ -584,7 +596,7 @@ class Gen:
         if t == "F":
             val = self.e_F(ctx.env, 1) if op != "*=" else lit("F", self.pick(["0.5", "-1.0", "2.0"]))
         elif t in ("I", "P"):
-            if self.chance(0.25):
+            if self.chance(0.25) and (not ctx.loops or name not in ctx.outer) and name not in PARAMS:
                 _cov("int accumulator becomes float")
                 val, t = self.e_F(ctx.env, 1), "F"
                 op = "+="
@@ -632,7 +644,7 @@ class Gen:
                 val = self.e_F(ctx.env, 1)
         elif r < 0.8:
             _cov("subscript update: slice")
-            index = lit("I", self.pick(["1:", ":-1", "::2", ":"]))
+            index = lit("I", self.pick(["1:", ":-1", "::2", ":", f"jnp.array([0, 0, {size} - 1])", f"{size} // 2:"]))
             val = self.e_F(ctx.env, 1)
         else:
             _cov("subscript update: mask")
@@ -758,14 +770,21 @@ class Gen:
         if collect:
             lst = self.fresh("out")
             pre.append(Line(f"{lst} = []"))
-        body = self.block(c)
-        if collect:
+        promote = self.promoted(ctx, c)
+        if collect:  # from the variables at the top of the body: the append goes there or last
             assert lst is not None
             item_t = self.pick(["F", "F", "W", "I"])
             line = Line(f"{lst}.append({{0}})", [self.expr(item_t, c.env, 1)])
+            cond = self.e_B(c.env, 1)
+        body = self.block(c)
+        if promote is not None:
+            body.body.insert(0, promote)
+        maybe_empty = False
+        if collect:
             if self.chance(0.15):
+                maybe_empty = True
                 _cov("append under a condition")
-                body.body.insert(0, If(self.e_B(c.env, 1), Block([line])))
+                body.body.insert(0, If(cond, Block([line])))
             else:
                 _cov("list grown and stacked")
                 body.body.insert(0 if self.chance(0.5) else len(body.body), line)
@@ -779,9 +798,9 @@ class Gen:
                 [
                     ("jnp.asarray({}).sum()", "F"),
                     ("float(len({}))", "F"),
-                    ("sum({}, 0.0)", "F"),
                 ]
-                + ([("jnp.stack({}).sum()", "F")] if nonempty and not jumped else [])
+                + ([("sum({}, 0.0)", "F")] if item_t != "W" else [])
+                + ([("jnp.stack({}).sum()", "F")] if nonempty and not jumped and not maybe_empty else [])
             )
             name = self.fresh()
             b.body.append(Line(f"{name} = " + use[0].format(lst)))
@@ -810,12 +829,30 @@ class Gen:
             es = [cond]
         c = ctx.child(loop=True, in_while=True)
         c.env[j] = "I"
+        promote = self.promoted(ctx, c, " ".join(e.render("expex") for e in es))
         body = self.block(c)
+        if promote is not None:
+            body.body.insert(0, promote)
         body.body.insert(0, Line(f"{j} += 1"))
         b.body.append(Loop(head, es, body, pre))
         ctx.env[j] = "I"
         self.merge(ctx, [ctx.env, {k: c.env.get(k, ctx.env[k]) for k in ctx.env}])
         return False
+
+    def promoted(self, ctx: Ctx, c: Ctx, avoid: str = "") -> Line | None:
+        """``acc += <float>`` first in a loop body, for an int ``acc`` from before the loop:
+        a float from the first iteration on (the body sees it as one throughout)."""
+        ints = [
+            n for n, t in ctx.env.items()
+            if t in ("P", "I") and n not in PARAMS and n not in ctx.outer and not n.startswith(("w", "i"))
+            and not re.search(rf"\b{n}\b", avoid)
+        ]  # fmt: skip (not one an enclosing loop's earlier iterations, or the loop's test, use as an int)
+        if not ints or not self.chance(0.4):
+            return None
+        _cov("int accumulator becomes float in a loop")
+        name = self.pick(ints)
+        c.env[name] = "F"
+        return Line(f"{name} += {{0}}", [self.e_F(c.env, 1)])
 
     def helper(self, ctx: Ctx, b: Block) -> bool:
         _cov("nested helper")
@@ -826,6 +863,10 @@ class Gen:
         if self.chance(0.4):
             _cov("lambda")
             b.body.append(Line(f"{name} = lambda {a}: {{0}}", [self.e_F(inner, 1)]))
+        elif self.chance(0.3):
+            _cov("nested helper with its own if")
+            body = Block([If(self.e_B(inner, 1), Block([Line("return {0}", [self.e_F(inner, 1)])])), Line("return {0}", [self.e_F(inner, 1)])])
+            b.body.append(Def(name, a, body))
         else:
             body = Block([Line("return {0}", [self.e_F(inner, 2)])])
             b.body.append(Def(name, a, body))
@@ -838,7 +879,9 @@ class Gen:
         while self.budget > 0:
             if self.stmt(ctx, body):
                 break
-        if not body.body or not _always_jumps(body):
+        if self.chance(0.05) and body.body and _has_jump(body):
+            _cov("falls off the end on some paths")  # returns None there
+        elif not body.body or not _always_jumps(body):
             body.body.append(Line("return {0}", [self.ret_expr(ctx.env, final=True)]))
         return Program(body, self.ret, self.seed)
 
@@ -878,14 +921,14 @@ def _all_blocks(p: Program) -> list[Block]:
     return out
 
 
-SIMPLE = {
-    "F": ["s", "1.0", "x[0]"],
-    "I": ["k", "1", "0"],
+SIMPLE = {  # constants first: a variable may have another type where the expression was
+    "F": ["1.0", "x[0]"],
+    "I": ["1", "0"],
     "P": ["1", "N", "0"],
-    "V": ["x", "y"],
-    "W": ["m[0]"],
-    "M": ["m"],
-    "B": ["(s > 0)", "True", "(k > 0)"],
+    "V": ["jnp.ones(N)"],
+    "W": ["jnp.ones(D)"],
+    "M": ["jnp.ones((N, D))"],
+    "B": ["(x[0] > 0)", "True"],
 }
 
 

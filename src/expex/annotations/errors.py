@@ -32,6 +32,8 @@ CODES = {
     "EX209": "A Python object is updated inside traced control flow",
     "EX210": "Collected values of unknown number while proving",
     "EX211": "`expex.rows` / `expex.stack` with nothing to stack",
+    "EX212": "A variable changes shape or dtype inside a traced loop",
+    "EX213": "A traced condition decides whether the function returns a value",
     "EX221": "A key is needed while tracing, with no key in scope",
     "EX222": "The key in scope was set outside jit/vmap/grad",
     "EX223": "A random function under `jax.vmap` shares one key",

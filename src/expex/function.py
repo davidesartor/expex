@@ -25,6 +25,7 @@ import numpy as np
 from jax.core import Tracer
 
 from . import batching, keys
+from .annotations import jaxtyping as jt
 from .annotations import messages, sym
 from .annotations.dims import DExpr, DName, Env, is_symbolic, resolve
 from .annotations.errors import Mismatch, ShapeError, StageError, code_of, coded
@@ -71,8 +72,9 @@ class Config:
         self.lower_loops: bool = os.environ.get("EXPEX_LOWER_LOOPS", "1") not in ("0", "false", "")
         #: A loop over a list of identical layers is traced once, as one ``lax.scan``;
         #: lists of up to this many layers are unrolled in the compiled program
-        #: (``lax.scan(unroll=True)``), which runs faster (no stacked activations,
-        #: fusion across layers) but compiles in time growing with the depth. 0: never.
+        #: (``lax.scan(unroll=True)``, a barrier between layers), which runs faster (no
+        #: stacked activations) and, on CPU, compiles no slower than the rolled loop up
+        #: to at least 32 layers (benchmarks/results/compile-cpu-2026-11-23.md). 0: never.
         self.unroll_layers: int = int(os.environ.get("EXPEX_UNROLL_LAYERS", "16"))
         #: Map a call over extra leading axes of its arguments, when that is all that
         #: keeps them from matching (``@expex.fn(vectorize=False)`` opts one function out).
@@ -185,13 +187,6 @@ def _annotations(raw: Callable[..., Any], localns: dict[str, Any]) -> dict[str, 
     return out
 
 
-def _leafy(ann: Any) -> bool:
-    try:
-        return parse(ann).leafy
-    except Exception:
-        return True  # an error of its own, raised where it is parsed
-
-
 class Fn(Generic[P, R]):
     """A function whose shape annotations are checked, provable and usable.
 
@@ -282,12 +277,14 @@ class Fn(Generic[P, R]):
             raw_texts = sym.texts(raw)
             for k in self._pending:
                 self._unknown_in(k, raw_texts.get(k), glb, scope, names)
-        if not (names and names[0] in ("self", "cls")):
-            # read as something else (`Int` as jaxtyping's, with nothing imported): not dropped silently
-            glb = getattr(raw, "__globals__", {})
-            for k, text in sym.texts(raw).items():
-                if isinstance(text, str) and k not in self._pending and not _leafy(anns.get(k)):
-                    self._unknown_in(k, text, glb, _scope(raw, self._localns), names)
+        for k, v in anns.items():
+            if (bare := jt.bare_stand_in(v)) is not None:
+                # `x: Int` with nothing imported: read as jaxtyping's, which needs a subscript
+                what = "the result" if k == "return" else f"`{k}`"
+                raise coded("EX402", TypeError(
+                    f"{self.name}: the annotation of {what} uses {bare}, which is not defined, "
+                    f"so it could not be checked. Import it{sym.import_hint({bare})}."
+                ))
         self._derive = derive
         self.params: dict[str, Param] = {}
         for name, p in self._sig.parameters.items():
@@ -344,7 +341,9 @@ class Fn(Generic[P, R]):
 
         for spec in [*(p.spec for p in self.params.values()), self.ret]:
             spec.replace_dims(visit)
-        self.static_refs = [n for n in self.static_names if n in used]
+        # ... and in annotated locals, h: f32[n + T]: bound for every call, so that they are checked
+        local = getattr(self._impl, "__expex_local_names__", ())
+        self.static_refs = [n for n in self.static_names if n in used or n in local]
         # ... and so may a method's int fields of `self`: @fn(H="heads") for self.heads
         owner = getattr(self, "_owner_cls", None)
         # (of a class that is not a dataclass, such as a Flax NNX module: its annotated attributes)
@@ -424,8 +423,6 @@ class Fn(Generic[P, R]):
                 except Exception:
                     self._unknown_in(k, text, glb, scope, self.params)
                     continue
-                if not spec.leafy:
-                    self._unknown_in(k, text, glb, scope, self.params)
                 spec.names(self._declared)
                 if self.defs:
                     spec = spec.replace_dims(self._derive)
@@ -558,8 +555,10 @@ class Fn(Generic[P, R]):
             raise coded("EX402", TypeError(
                 f"{self.name}: the annotation of {what} ({text}) uses "
                 f"{', '.join(sorted(names))}, which is not defined, so it could not be "
-                f"checked. Import it{sym.import_hint(names)}, or declare the size "
-                f"(def f[*B, T](...))."
+                f"checked. " + (
+                    f"Import it{sym.import_hint(names)}." if names & sym.ANNOTATION_NAMES or any(sym.DTYPE_LIKE.fullmatch(n) for n in names)
+                    else "Sizes are type parameters (def f[*B, T](...)), int parameters, or fields of self."
+                )
             ))
         if missing and leafy:
             what = "the result" if where == "return" else f"`{where}`"
@@ -776,6 +775,32 @@ class Fn(Generic[P, R]):
             return f"{code.co_filename}:{code.co_firstlineno}"
         except AttributeError:
             return "<unknown>"
+
+    def _local_spec(self, name: str, text: str) -> Spec | None:
+        """The spec of the annotated local ``name: <text> = ...`` that Python could not evaluate.
+
+        None for an annotation that is not an array's (``n: int``, ``xs: list[int]``); an
+        error for one meant as an array that cannot be checked (``f32[B, Q]`` with ``Q``
+        undefined, ``i32[T]`` without ``i32`` imported).
+        """
+        from .annotations.expr import ExprError
+
+        glb = getattr(self.raw, "__globals__", {})
+        scope = {**_scope(self.raw, self._localns), **{k: typing.TypeVar(k) for k in self.defs}}  # type: ignore[misc]  # pyright: ignore[reportGeneralTypeIssues]
+        try:
+            spec = parse(sym.evaluate(text, glb, scope, list(self.params)))
+        except ExprError:
+            raise
+        except Exception:
+            spec = None
+        if spec is not None and spec.leafy:
+            return spec.replace_dims(self._derive) if self.defs else spec
+        if names := sym.dropped(text, glb, scope, list(self.params)):
+            raise coded("EX402", TypeError(
+                f"{self.name}: the annotation of the local variable `{name}` ({text}) uses "
+                f"{', '.join(sorted(names))}, which is not defined, so it could not be checked."
+            ))
+        return None
 
     def _check_local(self, spec: Spec, value: Any, name: str, site: str, env: Env) -> None:
         """Match an annotated local variable against this call's dimensions."""

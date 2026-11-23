@@ -219,6 +219,8 @@ class _Walk:
             if not stack and outer:  # a body traced apart from its caller: continue the caller's stack
                 stack = [*st, *outer[st[-1][0] == outer[0][0] :]] if st else outer
             name, p = eqn.primitive.name, eqn.params
+            if name == "optimization_barrier" and "expex-" not in str(eqn.source_info.name_stack):
+                continue  # between unrolled layers (staging/loops.py): writes nothing
             subs = [j for _, j in sub_jaxprs(p)]
             if name == "scan":
                 n = p["length"]

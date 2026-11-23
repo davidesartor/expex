@@ -58,14 +58,25 @@ def test_the_stand_in_keeps_the_declared_sizes():
 def running[T](x: f32[T]) -> f32[T]:
     total, out = 0.0, []
     for t in range(T):
-        if T > 1:  # a Python comparison of a size: inconclusive while proving
+        if T + 1 == 7:  # a Python comparison of a size: inconclusive while proving
+            total = total + x[t]
+        out.append(total)
+    return jnp.asarray(out)
+
+
+@expex.fn
+def running_split[T](x: f32[T]) -> f32[T]:
+    total, out = 0.0, []
+    for t in range(T):
+        if T > 1:  # proved region by region: T >= 2, and 1 >= T
             total = total + x[t]
         out.append(total)
     return jnp.asarray(out)
 
 
 def test_a_loop_of_symbolic_length_reports_the_error_inside_it():
-    # staging the loop failed on `T > 1`; the fallback to unrolling then failed
-    # on its own warning, `'T' > '16'`, and the report named that instead
+    # staging the loop failed on the comparison; the fallback to unrolling then
+    # failed on its own warning, `'T' > '16'`, and the report named that instead
     report = str(expex.prove(running))
-    assert "'T' > '1'" in report and "16" not in report
+    assert "'T + 1' == '7'" in report and "16" not in report
+    assert expex.prove(running_split).status == "proved"

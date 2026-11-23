@@ -168,7 +168,7 @@ for field, key in [("returned_episode", "episode"), ("returned_length", "lengths
 # Timings depend on the machine. The repository's [benchmarks/](../../benchmarks/) compare the
 # port with the original: about the same speed on CPU.
 
-# %%
+# %% [bench]
 cfg = Config(num_updates=20)
 run = jax.jit(lambda k: ppo.train(k, cfg))
 jax.block_until_ready(run(jr.key(0)))  # compile

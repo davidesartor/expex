@@ -198,6 +198,20 @@ class _StandIn:
         return self.name
 
 
+def bare_stand_in(ann: Any) -> str | None:
+    """The name of a stand-in used without its subscript (``x: Int`` with nothing imported), or None.
+
+    Such an annotation is neither jaxtyping's (which needs ``Int[Array, "..."]``) nor
+    expex's (whose ``Int`` was not imported): it must not be skipped as unchecked.
+    """
+    if isinstance(ann, _StandIn):
+        return ann.name
+    for a in typing.get_args(ann):
+        if (name := bare_stand_in(a)) is not None:
+            return name
+    return None
+
+
 class _Module:
     """``jaxtyping`` (or ``jt``) itself, for ``jaxtyping.Float[jaxtyping.Array, "b"]``."""
 

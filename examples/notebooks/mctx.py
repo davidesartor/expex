@@ -144,7 +144,7 @@ for case, diffs in compare.compare(reference).items():
 # machine. With mctx checked out, `python examples/mctx/compare.py` times both; the repository's
 # [benchmarks/](../../benchmarks/) report the same speed on CPU (0.8-1.3x across runs).
 
-# %%
+# %% [bench]
 roots64 = mdp.root(jnp.arange(64) % 12)
 for policy in (muzero_policy, gumbel_muzero_policy):
     run = jax.jit(policy, static_argnums=(3, 4))

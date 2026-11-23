@@ -198,7 +198,7 @@ ANNOTATION_NAMES = frozenset(
     "Inexact Num Key Static Batch Shaped Real Integer Array Float16 Float32 Float64 Int32 Int64 "
     "BFloat16 PRNGKeyArray".split()
 )
-_DTYPE_LIKE = re.compile(r"(bf|[fiuc])(8|16|32|64|128)")
+DTYPE_LIKE = re.compile(r"(bf|[fiuc])(8|16|32|64|128)")
 
 
 def dropped(text: str, glb: dict[str, Any], scope: dict[str, Any], params: Any = ()) -> set[str]:
@@ -222,7 +222,7 @@ def dropped(text: str, glb: dict[str, Any], scope: dict[str, Any], params: Any =
     out: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and node.id in missing:
-            if node.id in ANNOTATION_NAMES or _DTYPE_LIKE.fullmatch(node.id):
+            if node.id in ANNOTATION_NAMES or DTYPE_LIKE.fullmatch(node.id):
                 out.add(node.id)
         if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
             head = scope.get(node.value.id, glb.get(node.value.id))

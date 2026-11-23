@@ -53,7 +53,20 @@ python benchmarks/run.py --config realistic --only pgx    # named configs instea
 python benchmarks/run.py --rounds 30                      # more rounds (default 15; --quick 5)
 python benchmarks/run.py --out results/a100.json          # default results/<cpu|gpu>-<date>[-quick].json
 python benchmarks/fetch.py --list                         # the pinned originals and whether they are fetched
+python benchmarks/run.py --compile-only --repeats 5       # compile times only: trace and XLA, original and port
+python benchmarks/unroll.py --values 0,4,16               # each unroll_layers setting, compiled and timed in one process
 ```
+
+`--compile-only` skips the timed runs: each measure is compiled `--repeats`
+times from cold caches, original and port alternating, and the table splits
+the best time into tracing + lowering ("trace") and XLA. The JSON also keeps
+process CPU seconds of each phase, which change less than wall time when other
+jobs share the machine.
+
+`unroll.py` compares `expex.config(unroll_layers=...)` settings for the ports
+whose models loop over a list of identical layers (Llama, Mamba, NeRF, ViT).
+Every setting of a port is compiled and timed in the same process, its rounds
+interleaved with the original's, so that a change in load hits all of them.
 
 Default configs: `--quick` runs each port's `quick` config (small: three to
 four minutes in all on a busy 4-core CPU, nearly all of it compiling; for
@@ -76,6 +89,7 @@ on; `tiny` / `default` for ports without a claim); on GPU, `readme` and `realist
 ```
 benchmarks/
   run.py            the runner: one process per (port, config), writes results/<name>.json
+  unroll.py         compile and run time per unroll_layers setting, all settings in one process
   report.py         JSON -> markdown table
   harness.py        timing (compile, interleaved best-of-N, stats) and environment capture
   fetch.py          clones the originals pinned in originals.toml into .originals/ (gitignored)

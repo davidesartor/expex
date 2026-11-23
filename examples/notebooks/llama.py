@@ -62,7 +62,8 @@ print(expex.debug.shapes(llama.Attention.__call__))
 model = Llama(jr.key(0), V=100, D=64, F=172, G=2, R=4, K=8, layers=3)
 tokens = jr.randint(jr.key(1), (16, 24), 0, 100)  # 16 sequences of 24 tokens
 
-print("logits", model(tokens[0]).shape, "for one sequence;", model(tokens).shape, "for the batch")
+forward = jax.jit(lambda m, t: m(t))  # checked while tracing, then plain XLA
+print("logits", forward(model, tokens[0]).shape, "for one sequence;", forward(model, tokens).shape, "for the batch")
 
 
 @expex.fn(jit=True, donate="auto")
@@ -109,7 +110,7 @@ expex.diagram(Llama.__call__, depth=3)
 # activations and gradients of a loss, and the FLOPs per source line.
 
 # %%
-expex.inspect(model, tokens[0], loss=lambda m, t: m.loss(t))
+expex.inspect(model, tokens[0, :12], loss=lambda m, t: m.loss(t))
 
 # %% [markdown]
 # ## A shape error
@@ -142,7 +143,7 @@ error
 
 # %%
 broken = model.at.layers[1].mlp.down.multiply(1e3)
-watch = expex.debug.watch(lambda m: m.loss(tokens[0]), broken)
+watch = expex.debug.watch(lambda m: m.loss(tokens[0, :12]), broken)
 for row in watch.flagged:
     print(f"{row.name:32} {'; '.join(row.flags)}")
 
@@ -169,7 +170,7 @@ for name, diff in compare.compare(reference).items():
 # repository's [benchmarks/](../../benchmarks/) compare the port with the original: 1.3x forward
 # and gradients on CPU.
 
-# %%
+# %% [bench]
 def bench(f, *args, n=20):
     """Median seconds per call, after a first call that compiles."""
     jax.block_until_ready(f(*args))
@@ -181,7 +182,6 @@ def bench(f, *args, n=20):
     return float(np.median(times))
 
 
-forward = jax.jit(lambda m, t: m(t))
 grads = jax.jit(jax.grad(lambda m, t: m.loss(t).mean()))
 print(f"forward, 16 x 24 tokens   {bench(forward, model, tokens) * 1e3:7.2f} ms")
 print(f"gradients, 16 x 24 tokens {bench(grads, model, tokens) * 1e3:7.2f} ms")

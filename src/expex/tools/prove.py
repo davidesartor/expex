@@ -318,7 +318,7 @@ def _prove_case(
 ) -> Report:
     # 1. Symbolic sizes: a proof of the declared output, for all sizes at once.
     try:
-        jaxprs, sym_err = _symbolic(f, fixed, abstract, var_rank, constraints, statics)
+        jaxprs, sym_err, witness = _symbolic(f, fixed, abstract, var_rank, constraints, statics)
     except Unsynthesizable as u:
         return Report(
             f, UNCHECKED,
@@ -330,8 +330,8 @@ def _prove_case(
     # 2. Concrete sizes: confirms failures, and validates what symbolic tracing
     #    cannot (JAX defers some checks when sizes are symbolic).
     used: list[dict[str, int]] = []
-    for attempt in range(4):
-        sizes = _concrete_sizes(f, attempt, statics)
+    for attempt in range(5):
+        sizes = _concrete_sizes(f, attempt, statics) if attempt < 4 else _witness_sizes(f, witness, statics)
         if sizes is None:
             continue
         try:
@@ -422,7 +422,7 @@ def _symbolic(
     var_rank: dict[str, int],
     constraints: list[str],
     statics: dict[str, int],
-) -> tuple[list[Any], BaseException | None]:
+) -> tuple[list[Any], BaseException | None, dict[str, int]]:
     """Trace on symbolic sizes: (jaxprs, error).
 
     A comparison of sizes that is true for some sizes and false for others
@@ -446,7 +446,7 @@ def _symbolic(
             continue  # no sizes in this region
         m = _INCONCLUSIVE.search(str(err))
         if m is None or splits >= _MAX_SPLITS:
-            return jaxprs, err
+            return jaxprs, err, _pins(cs) if isinstance(err, ShapeError) else {}
         splits += 1
         for region in _regions(*m.groups()):
             for c in region:  # the first form of the constraint that JAX accepts
@@ -459,8 +459,36 @@ def _symbolic(
                 todo.append(_pinned_equal([*cs, c], *m.group(1, 3)))
                 break
             else:
-                return jaxprs, err  # a region that cannot be written as a constraint
-    return jaxprs, None
+                return jaxprs, err, {}  # a region that cannot be written as a constraint
+    return jaxprs, None, {}
+
+
+_PIN = re.compile(r"\s*([A-Za-z_]\w*)\s*==\s*(-?\d+)\s*$|\s*(-?\d+)\s*==\s*([A-Za-z_]\w*)\s*$")
+
+
+def _pins(constraints: list[str]) -> dict[str, int]:
+    """The sizes a region's constraints fix (``T == 6``): where a symbolic failure can be confirmed."""
+    out: dict[str, int] = {}
+    for c in constraints:
+        if m := _PIN.match(c):
+            name, value = (m[1], m[2]) if m[1] else (m[4], m[3])
+            out[name] = int(value)
+    return out
+
+
+def _witness_sizes(f: Fn[Any, Any], pins: dict[str, int], statics: dict[str, int]) -> dict[str, int] | None:
+    """The sizes of the first attempt, with those a failing region fixes; None if there are none."""
+    if not pins:
+        return None
+    base = _concrete_sizes(f, 0, statics) or {}
+    sizes = {**base, **{k: v for k, v in pins.items() if k in base or k in f.input_names}}
+    try:
+        env = {**sizes, **statics}
+        if not all(bool(w(env)) for w in [*f.where, *f.assumed] if w.names <= env.keys()):
+            return None
+    except Exception:
+        return None
+    return sizes
 
 
 class Reports(list):  # type: ignore[type-arg]

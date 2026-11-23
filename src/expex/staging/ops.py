@@ -37,10 +37,11 @@ CALLS = _Calls()
 _LOCAL_SPECS: dict[str, Any] = {}
 
 
-def local_(value: Any, ann: Callable[[], Any], name: str, site: str) -> Any:
+def local_(value: Any, ann: Callable[[], Any], name: str, site: str, text: str | None = None) -> Any:
     """Check ``name: <annotation> = value`` against the enclosing call's dimensions."""
     if not CALLS.stack:
         return value
+    env, fn = CALLS.stack[-1]
     spec = _LOCAL_SPECS.get(site, _LOCAL_SPECS)
     if spec is _LOCAL_SPECS:
         from ..annotations.spec import parse
@@ -49,12 +50,15 @@ def local_(value: Any, ann: Callable[[], Any], name: str, site: str) -> Any:
             spec = parse(ann())
             if not spec.leafy:
                 spec = None
-        except Exception:  # not a expex annotation, or names not available here
+        except Exception:  # size arithmetic, a name not defined: read from the text below
             spec = None
+        if spec is None and text is not None and hasattr(fn, "_local_spec"):
+            # `h: f32[B, T + 1]`, `h: "f32[T]"`: evaluated from the text as the signature's
+            # annotations are; one that cannot be checked is an error, not skipped
+            spec = fn._local_spec(name, text)
         _LOCAL_SPECS[site] = spec
     if spec is None:
         return value
-    env, fn = CALLS.stack[-1]
     env.locals[name] = spec
     from ..function import config
 
@@ -125,7 +129,55 @@ def _sym_eq(a: Any, b: Any, op: str) -> bool:
 
 
 def _symbolic(v: Any) -> bool:
-    return type(v) not in (int, bool) and not isinstance(v, (Tracer, jax.Array, np.ndarray)) and jax.export.is_symbolic_dim(v)
+    """A symbolic size, or a shape (a tuple or list) with one."""
+    t = type(v)
+    if t is int or t is bool or t is float or t is str or v is None:
+        return False
+    if t is tuple or t is list:  # a shape, or a few sizes (`n in (4, 5)`)
+        return len(v) <= 16 and any(type(x) not in (int, bool) and _symbolic(x) for x in v)
+    return not isinstance(v, (Tracer, jax.Array, np.ndarray)) and jax.export.is_symbolic_dim(v)
+
+
+def _sym_cmp(a: Any, b: Any, op: str) -> bool:
+    """``==`` / ``!=`` / ``in`` / ``not in`` with a symbolic size on either side, decided soundly."""
+    if op == "NotEq":
+        return not _sym_cmp(a, b, "Eq")
+    if op == "NotIn":
+        return not _sym_cmp(a, b, "In")
+    if op == "In":
+        if not isinstance(b, (tuple, list)):
+            return a in b
+        from jax._src.export.shape_poly import InconclusiveDimensionOperation
+
+        unsure: BaseException | None = None
+        for x in b:
+            try:
+                if _sym_cmp(a, x, "Eq"):
+                    return True
+            except InconclusiveDimensionOperation as e:
+                unsure = e
+        if unsure is not None:
+            raise unsure
+        return False
+    seq = (tuple, list)
+    if isinstance(a, seq) or isinstance(b, seq):  # shapes
+        if not (isinstance(a, seq) and isinstance(b, seq)) or type(a) is not type(b) or len(a) != len(b):
+            return a == b
+        from jax._src.export.shape_poly import InconclusiveDimensionOperation
+
+        unsure = None
+        for x, y in zip(a, b):
+            try:
+                if not _sym_cmp(x, y, "Eq"):
+                    return False  # one axis differs for sure: decided, even if another is unsure
+            except InconclusiveDimensionOperation as e:
+                unsure = e
+        if unsure is not None:
+            raise unsure
+        return True
+    if not (_symbolic(a) or _symbolic(b)):
+        return a == b
+    return _sym_eq(a, b, "Eq")
 
 
 def cmp_(left: Any, ops: tuple[str, ...], *rights: Callable[[], Any]) -> Any:
@@ -134,12 +186,17 @@ def cmp_(left: Any, ops: tuple[str, ...], *rights: Callable[[], Any]) -> Any:
     Converted where a comparison may meet a symbolic size (the prover's ``T``):
     ``T == 6`` is then decided soundly, or inconclusive (see :func:`_sym_eq`).
     """
+    if len(ops) == 1:  # exactly Python's `a op b` (no truth test of the result)
+        op, right = ops[0], rights[0]()
+        if op in ("Eq", "NotEq", "In", "NotIn") and (_symbolic(left) or _symbolic(right)):
+            return _sym_cmp(left, right, op)
+        return _CMP[op](left, right)
     acc: Any = None
     r: Any = True
     for op, thunk in zip(ops, rights):
         right = thunk()
-        if op in ("Eq", "NotEq") and (_symbolic(left) or _symbolic(right)):
-            r = _sym_eq(left, right, op)
+        if op in ("Eq", "NotEq", "In", "NotIn") and (_symbolic(left) or _symbolic(right)):
+            r = _sym_cmp(left, right, op)
         else:
             r = _CMP[op](left, right)
         if acc is not None:

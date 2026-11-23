@@ -156,7 +156,7 @@ for name, diff in compare.compare(reference).items():
 # compare them only with each other. The repository's [benchmarks/](../../benchmarks/) compare
 # the port with the original: about the same on CPU.
 
-# %%
+# %% [bench]
 def bench(f, *args, n=20):
     """Median seconds per call, after a first call that compiles."""
     jax.block_until_ready(f(*args))

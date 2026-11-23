@@ -203,3 +203,62 @@ def test_staged_loop_bodies_are_traced_once():
     assert len(grows) == 1
     assert len(tests) == 2  # once to find the condition traced, once as the loop's condition
     assert int(jax.jit(doubling)(jnp.int32(9))) == 16
+
+
+# ------------------------------------------- a list of layers, unrolled
+
+
+@expex.struct
+class Norm[D]:
+    scale: f32[D] = 1.0
+
+    def __call__(self, x: f32[D]) -> f32[D]:
+        return (x - x.mean()) * jax.lax.rsqrt(x.var() + 1e-6) * self.scale
+
+
+@expex.struct
+class Residual[D]:
+    norm: Norm[D]
+    w: f32[D, D] = jax.nn.initializers.normal(0.3)
+
+    def __call__(self, x: f32[D]) -> f32[D]:
+        return x + jnp.tanh(self.norm(x) @ self.w)
+
+
+@expex.struct
+class Tower[D]:
+    blocks: list[Residual[D]]
+
+    def __call__(self, x: f32[D]) -> f32[D]:
+        for block in self.blocks:
+            x = block(x)
+        return x
+
+
+def optimized_multiplies(depth: int) -> int:
+    """Multiplies in XLA's optimized gradient of a pre-norm residual tower, fusions included."""
+    import re
+
+    model, x = Tower(jr.key(0), D=16, blocks=depth), jnp.ones((8, 16))
+    jax.clear_caches()  # the setting is read while tracing, which jax.jit caches
+    text = jax.jit(jax.grad(lambda m, x: m(x).sum())).lower(model, x).compile().as_text()
+    return len(re.findall(r"= \S+ multiply\(", text))
+
+
+def test_unrolled_layers_compile_to_a_program_linear_in_the_depth():
+    # Unrolled without a barrier between layers, XLA:CPU fuses the residual stream's
+    # gradient into every later layer's fusions: 139 multiplies for 4 layers, 923 for 12.
+    assert expex.config.unroll_layers >= 12
+    shallow, deep = optimized_multiplies(4), optimized_multiplies(12)
+    assert deep <= 3 * shallow * 1.25, (shallow, deep)
+    (scan,) = [e for e in jax.make_jaxpr(Tower(jr.key(0), D=16, blocks=12))(jnp.ones(16)).jaxpr.eqns
+               if e.primitive.name == "scan"]  # fmt: skip
+    assert scan.params["unroll"] == 12  # still traced once
+    body = collections.Counter(e.primitive.name for e in scan.params["jaxpr"].jaxpr.eqns)
+    assert body["optimization_barrier"] == 1
+
+
+def test_tools_see_through_the_barrier():
+    with expex.config(unroll_layers=0):
+        rolled = expex.cost(Tower.__call__)
+    assert str(expex.cost(Tower.__call__).flops) == str(rolled.flops)

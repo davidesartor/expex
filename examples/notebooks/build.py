@@ -7,6 +7,7 @@ by every notebook:
 
     # %% [header] Title of the notebook     -> the title, the Colab badge and the Python note
     # %% [setup] llama                      -> the install cell, with examples/llama on the path
+    # %% [bench]                            -> a code cell that only times things (tests skip it)
 
 Usage:
 
@@ -99,11 +100,16 @@ else:
     except ImportError:
         run(sys.executable, "-m", "pip", "install", "-q", "-e", str(REPO){extra})
 sys.path.insert(0, str(REPO / "examples"{path}))
-print("examples from", REPO)'''
+print("Python", sys.version.split()[0], "| examples from", REPO.name)'''
 
 
 def cells(name: str) -> list[tuple[str, str]]:
     """The cells of notebook `name`: (kind, source) with kind "markdown" or "code"."""
+    return [(kind if kind == "markdown" else "code", src) for kind, src in parse(name)]
+
+
+def parse(name: str) -> list[tuple[str, str]]:
+    """The cells of notebook `name`: (kind, source), kind "markdown", "code" or "bench" (a benchmark's code)."""
     text = (HERE / f"{name}.py").read_text(encoding="utf-8")
     out: list[tuple[str, list[str]]] = []
     for line in text.splitlines():
@@ -125,7 +131,7 @@ def cells(name: str) -> list[tuple[str, str]]:
         kind, lines = out[-1]
         if kind == "markdown":
             lines.append(re.sub(r"^# ?", "", line))
-        elif kind == "code":
+        elif kind in ("code", "bench"):
             lines.append(line)
         else:
             raise SystemExit(f"{name}.py: lines after a [{kind}] marker")
@@ -139,18 +145,20 @@ def cells(name: str) -> list[tuple[str, str]]:
     return result
 
 
-def script(name: str) -> str:
-    """The notebook's code cells as one script."""
-    return "\n\n".join(src for kind, src in cells(name) if kind == "code") + "\n"
+def script(name: str, benchmarks: bool = True) -> str:
+    """The notebook's code cells as one script (without the `# %% [bench]` cells if not `benchmarks`)."""
+    return "\n\n".join(src for kind, src in parse(name) if kind == "code" or (kind == "bench" and benchmarks)) + "\n"
 
 
 def notebook(name: str):
     import nbformat
 
     nb = nbformat.v4.new_notebook()
-    for kind, src in cells(name):
+    for kind, src in parse(name):
         make = nbformat.v4.new_markdown_cell if kind == "markdown" else nbformat.v4.new_code_cell
         nb.cells.append(make(src))
+        if kind == "bench":
+            nb.cells[-1].metadata["tags"] = ["benchmark"]
     for i, cell in enumerate(nb.cells):
         cell.id = f"{name}-{i}"  # stable ids: rebuilding does not change the file
     nb.metadata = {

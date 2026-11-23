@@ -29,7 +29,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 #: Ports whose models loop over a list of identical layers (the others are unaffected by the setting).
-LAYERED = ["llama", "mamba", "nerf", "ppo", "vit"]
+LAYERED = ["llama", "mamba", "nerf", "vit"]
 
 
 def compile_once(fn, settings: dict) -> tuple[dict, object]:
@@ -78,17 +78,14 @@ def measure(m, values: list[str], rounds: int, repeats: int, min_sample_s: float
     calls: dict[str, tuple] = {}
     todo: dict[str, tuple] = {}
     if m.original is not None and hasattr(m.original.call, "lower"):
-        todo["original"] = (m.original, {}, "")
+        todo["original"] = (m.original, {})
     for v in values:
-        value, _, mode = v.partition("@")  # EXPLORATION ONLY
-        todo[f"unroll_layers={v}"] = (m.port, {"unroll_layers": int(value)}, mode)
+        todo[f"unroll_layers={v}"] = (m.port, {"unroll_layers": int(v)})
     times: dict[str, list[dict]] = {k: [] for k in todo}
     for r in range(repeats):  # compiles interleaved too, the order rotating
         order = list(todo)[r % len(todo):] + list(todo)[: r % len(todo)]
         for label in order:
-            fn, settings, mode = todo[label]
-            from expex.staging import loops
-            loops.VARIANT["mode"] = mode or "scan"
+            fn, settings = todo[label]
             t, exe = compile_once(fn, settings)
             times[label].append(t)
             calls[label] = (exe, fn.args)

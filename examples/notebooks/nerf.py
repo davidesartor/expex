@@ -125,12 +125,13 @@ error
 # %% [markdown]
 # ## Activations and gradients, call by call
 #
-# `expex.debug.watch` of the training loss on the 64 rays, with the untrained model's colours as
+# `expex.debug.watch` of the training loss on 16 of the rays, with the untrained model's colours as
 # targets plus noise:
 
 # %%
 pixels = jnp.clip(fine.rgb + 0.1 * jr.normal(jr.key(3), fine.rgb.shape), 0, 1)
-watch = expex.debug.watch(lambda m: m.loss(rays, pixels, jr.key(1), jr.key(2)), model)
+few = jax.tree.map(lambda x: x[:16], rays)  # 16 of the rays
+watch = expex.debug.watch(lambda m: m.loss(few, pixels[:16], jr.key(1), jr.key(2)), model)
 print(f"{len(watch.rows)} calls, {len(watch.flagged)} flagged")
 watch
 
@@ -156,8 +157,8 @@ for name, diff in compare.compare(reference).items():
 # them only with each other. The repository's [benchmarks/](../../benchmarks/) compare the port
 # with the original: about the same on CPU.
 
-# %%
-def bench(f, *args, n=20):
+# %% [bench]
+def bench(f, *args, n=10):
     """Median seconds per call, after a first call that compiles."""
     jax.block_until_ready(f(*args))
     times = []

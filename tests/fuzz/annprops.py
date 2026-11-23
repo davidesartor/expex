@@ -116,7 +116,7 @@ def _array(rng: random.Random) -> tuple[str, Callable[[str], Any], list[tuple[st
 def case(seed: int) -> Case:
     rng = random.Random(seed)
     text, good, wrong = _array(rng)
-    wrap = rng.choice(["plain", "plain", "optional", "tuple", "list", "dict", "quoted", "union"])
+    wrap = rng.choice(["plain", "plain", "optional", "tuple", "list", "dict", "quoted", "union", "local", "local"])
     g = good("")
     if wrap == "optional":
         ann, gv, wv = f"{text} | None", g, [(w, f()) for w, f in wrong]
@@ -134,6 +134,10 @@ def case(seed: int) -> Case:
     if rng.random() < 0.15:
         drop = text.split("[")[0]
     src = f"def f[T, D](a: {ann}, t: f32[T], d: f32[D], n: int):\n    return a\n"
+    if wrap == "local":  # an annotated local variable, checked when the line runs
+        quoted = rng.random() < 0.3
+        local = f'"{text}"' if quoted else text
+        src = f"def f[T, D](a, t: f32[T], d: f32[D], n: int):\n    h: {local} = a\n    return h\n"
     if drop == "f32":
         src = src.replace("t: f32[T], d: f32[D]", "t: i32[T], d: i32[D]")
     return Case(src, ann, gv, wv, drop)
@@ -147,7 +151,7 @@ def run_case(c: Case) -> list[str]:
         if code_of(e) is None:
             return [f"{c.ann}: defining raised without a code: {type(e).__name__}: {e}"]
         return []
-    if c.drop is not None:
+    if c.drop is not None and "h: " not in c.src:
         return [f"{c.ann} with `{c.drop}` undefined: defined without an error"]
     tdt = jnp.int32 if c.drop == "f32" else jnp.float32
     t, d = jnp.zeros(T, tdt), jnp.zeros(D, tdt)
@@ -158,6 +162,8 @@ def run_case(c: Case) -> list[str]:
         if code_of(e) is None:
             out.append(f"{c.ann}: the matching value raised without a code: {type(e).__name__}: {e}")
         return out  # refused at the first call: the annotation is not dropped
+    if c.drop is not None:  # a local annotation is read when its line runs
+        return [f"{c.ann} with `{c.drop}` undefined: the local variable went unchecked"]
     for what, v in c.wrong:
         try:
             f(v, t, d, N_ARG)
@@ -196,6 +202,12 @@ BODIES: list[tuple[str, str, Callable[[int], int]]] = [
     ("jnp.zeros(max(T, 3))", "max(T, 3)", lambda t: max(t, 3)),
     ("jnp.zeros(T - 1 if T > 2 else T)", "T - 1", lambda t: t - 1 if t > 2 else t),
     ("x[1:] if 1 < T else x", "T - 1", lambda t: t - 1 if t > 1 else t),
+    ("x[1:] if T == 6 else x", "T", lambda t: t - 1 if t == 6 else t),
+    ("x if T != 5 else x[1:]", "T", lambda t: t - 1 if t == 5 else t),
+    ("x[1:] if x.shape[0] in (4, 7) else x", "T", lambda t: t - 1 if t in (4, 7) else t),
+    ("x[1:] if x.shape == (8,) else x", "T", lambda t: t - 1 if t == 8 else t),
+    ("x[:-1] if T % 2 == 0 else x", "T - T % 2", lambda t: t - 1 if t % 2 == 0 else t),
+    ("x[1:] if T >= 9 else x", "T", lambda t: t - 1 if t >= 9 else t),
 ]
 
 DECLS = ["T", "T - 1", "T + 1", "2 * T", "(T + 1) // 2", "T // 2", "T * T", "T + T % 2", "T - T % 2", "3", "T + 0"]
@@ -208,11 +220,52 @@ def _decl_size(decl: str, t: int) -> int:
 def prover_case(seed: int) -> tuple[str, str, bool]:
     """A function, its source, and whether its declared result is right for every T >= 1 tried."""
     rng = random.Random(seed)
-    body, _, size = rng.choice(BODIES)
-    decl = rng.choice(DECLS)
+    body, natural, size = BODIES[seed % len(BODIES)]
+    decl = natural if rng.random() < 0.4 else rng.choice(DECLS)
     right = all(_decl_size(decl, t) == size(t) for t in range(1, 40))
     src = f"def f[T](x: f32[T]) -> f32[{decl}]:\n    return {body}\n"
     return src, decl, right
+
+
+#: Two sizes: (body, the result's shape as a function of (T, D)).
+BODIES2: list[tuple[str, Callable[[int, int], tuple[int, ...]]]] = [
+    ("x", lambda t, d: (t, d)),
+    ("x.T", lambda t, d: (d, t)),
+    ("x.reshape(D, T)", lambda t, d: (d, t)),
+    ("x[:, :T]", lambda t, d: (t, min(t, d))),
+    ("x[: D]", lambda t, d: (min(t, d), d)),
+    ("x @ x.T", lambda t, d: (t, t)),
+    ("jnp.zeros((T, D)) if T == D else x", lambda t, d: (t, d)),
+    ("x.T if T == D else x", lambda t, d: (t, d)),
+    ("x[:, :1] if D > 1 else x", lambda t, d: (t, 1)),
+    ("x.sum(1, keepdims=True) if D == 3 else x", lambda t, d: (t, 1) if d == 3 else (t, d)),
+]
+DECLS2 = ["T, D", "D, T", "T, T", "T, 1", "T, min(T, D)"]
+
+
+def prover_case2(seed: int) -> tuple[str, bool]:
+    rng = random.Random(seed)
+    body, shape = BODIES2[seed % len(BODIES2)]
+    decl = rng.choice(DECLS2[:4])
+    right = all(
+        tuple(eval(decl, {"T": t, "D": d, "min": min})) == shape(t, d)  # noqa: S307
+        for t in range(1, 12) for d in range(1, 12)
+    )
+    return f"def f[T, D](x: f32[T, D]) -> f32[{decl}]:\n    return {body}\n", right
+
+
+def run_prover_case2(seed: int) -> str | None:
+    src, right = prover_case2(seed)
+    try:
+        f = expex.fn(define(src, namespace()))
+    except Exception as e:
+        return None if code_of(e) else f"defining raised without a code: {e}\n{src}"
+    rep = expex.prove(f)
+    if not right and rep.status == "proved":
+        return f"proved, but the result is wrong for some sizes:\n{src}"
+    if right and rep.status == "failed":
+        return f"failed, but the result is right for every size tried:\n{src}{rep}"
+    return None
 
 
 def run_prover_case(seed: int) -> str | None:

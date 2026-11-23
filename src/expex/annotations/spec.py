@@ -748,6 +748,11 @@ def _class_annotations(cls: type) -> dict[str, Any]:
                             f"be checked. Import it{import_hint(dtypes)}."
                         )) from None
                     continue
+                if (bare := jt.bare_stand_in(v)) is not None:
+                    raise coded("EX402", TypeError(
+                        f"{cls.__name__}: the annotation of the field `{k}` ({text}) uses {bare}, "
+                        f"which is not defined, so it could not be checked. Import it{import_hint({bare})}."
+                    ))
             out[k] = v
     return out
 
