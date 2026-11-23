@@ -204,6 +204,7 @@ class KeySpec(Spec):
 
 
 _LENIENT = {int: (int, np.integer), float: (int, float, np.integer, np.floating)}
+_SCALAR_KINDS = {bool: "b", int: "biu", float: "biuf", complex: "biufc"}
 
 
 def _ann_name(ann: Any) -> str:
@@ -211,7 +212,11 @@ def _ann_name(ann: Any) -> str:
 
 
 class StaticSpec(Spec):
-    """A value that must be concrete at trace time."""
+    """A plain Python value: a number, a string, a function, a config object, ...
+
+    Numbers (``int``, ``float``, ``bool``, ``complex``) also accept scalar arrays,
+    so that ``jax.jit`` may trace them. Anything else must be concrete.
+    """
 
     def __init__(self, inner: Any):
         self.inner = inner
@@ -220,29 +225,30 @@ class StaticSpec(Spec):
         return _ann_name(self.inner)
 
     def match(self, value: Any, path: str, env: Env) -> None:
-        if isinstance(value, Tracer):
+        inner = self.inner
+        kinds = _SCALAR_KINDS.get(inner) if type(inner) is type else None
+        if kinds is not None and getattr(value, "shape", None) == () and hasattr(value, "dtype"):
+            if np.dtype(value.dtype).kind in kinds:
+                return
+        if any(isinstance(x, Tracer) for x in jax.tree.leaves(value)):
+            root = path.split(".")[0].split("[")[0]
             m = Mismatch(
                 path, self, value,
-                f"it is a traced value, but `{_ann_name(self.inner)}` is a plain Python "
-                f"type, so the parameter is static: it must be a concrete Python value "
-                f"at trace time. If it is meant to be traced, annotate it with a dtype "
-                f"instead (f32, i32, Bool, ...).",
+                f"it is traced, but a `{_ann_name(inner)}` must be known when the function is "
+                f"traced. Under jax.jit, mark it static: jax.jit(f, static_argnames=\"{root}\"). "
+                f"If it is meant to be an array, annotate it with a dtype (f32, i32, ...).",
             )  # fmt: skip
             m.stage = True  # type: ignore[attr-defined]
             raise m
-        inner = self.inner
         if type(inner) is type:
             ok = _LENIENT.get(inner, inner)
             if not isinstance(value, ok) or (inner is not bool and type(value) is bool and inner in _LENIENT):
                 hint = ""
                 if hasattr(value, "shape") and inner in _LENIENT:
-                    hint = (
-                        f" A plain `{inner.__name__}` annotation makes the parameter static; "
-                        f"to pass arrays, annotate it with a dtype (f32, i32, ...)."
-                    )
+                    hint = f" A `{inner.__name__}` takes a Python number or a scalar array."
                 raise Mismatch(
                     path, self, value,
-                    f"expected {inner.__name__}, got {type(value).__name__}.{hint}",
+                    f"expected {inner.__name__}, got {describe(value) if hasattr(value, 'shape') else type(value).__name__}.{hint}",
                 )  # fmt: skip
 
 

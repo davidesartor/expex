@@ -10,6 +10,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
+import typax as tx
 from typax import (
     Arr, Bool, Dim, Etc, Float, Int, Key, ShapeError, StageError, Static, config, f32, fn, i32,
 )  # fmt: skip
@@ -348,10 +349,26 @@ def test_static():
         f(jnp.ones(3), 2.0)  # type: ignore[arg-type]
     with pytest.raises(ShapeError, match="expected str, got int"):
         f(jnp.ones(3), 2, 3)  # type: ignore[arg-type]
-    with pytest.raises(StageError, match="annotate it with a dtype instead"):
-        jax.jit(lambda x, n: f(x, n))(jnp.ones(3), 2)
-    with pytest.raises(ShapeError, match="to pass arrays, annotate it with a dtype"):
-        f(jnp.ones(3), jnp.int32(2))
+    # numbers may be scalar arrays, so jax.jit can trace them
+    assert f(jnp.ones(3), jnp.int32(2)).tolist() == [2.0, 2.0, 2.0]
+    assert jax.jit(f)(jnp.ones(3), 2).tolist() == [2.0, 2.0, 2.0]
+    with pytest.raises(ShapeError, match="expected int, got f32"):
+        f(jnp.ones(3), jnp.float32(2))
+
+    @fn
+    def zeros(shape: tuple[int, ...]) -> f32[...]:
+        return jnp.zeros(shape)
+
+    with pytest.raises(StageError, match='static_argnames="shape"'):
+        jax.jit(zeros)((2, 3))
+    assert jax.jit(zeros, static_argnames="shape")((2, 3)).shape == (2, 3)
+
+    @fn(K="n")
+    def first[N, K](x: f32[N], n: int) -> f32[K]:
+        return x[:n]
+
+    with pytest.raises(StageError, match='`n` sets a size.*static_argnames="n"'):
+        jax.jit(first)(jnp.ones(3), 2)
 
     @fn
     def g[N](x: f32[N], n: Static[int]) -> f32[N]:  # the explicit form still works
@@ -409,12 +426,6 @@ def test_wrong_arity_is_pythons_error():
 
 
 def test_disable_per_function_and_globally(monkeypatch):
-    @fn(checked=False)
-    def f[N](x: f32[N]) -> f32[N]:
-        return x[1:]
-
-    f(jnp.ones(3))
-
     @fn
     def g[N](x: f32[N]) -> f32[N]:
         return x[1:]
@@ -534,16 +545,14 @@ def test_hints():
 
 
 def test_info():
-    @fn(U="T + 1", where="T >= 2", jit=True)
+    @tx.lift
+    @fn(U="T + 1", where="T >= 2")
     def pad[B, T, U](x: f32[B, T]) -> f32[B, U]:
         return jnp.pad(x, ((0, 0), (0, 1)))
 
-    pad(jnp.ones((2, 3)))
-    pad(jnp.ones((2, 4)))
     text = pad.info()
     assert "pad[B, T, U](x: f32[B, T]) -> f32[B, T + 1]" in text
-    assert "U = T + 1" in text and "where T >= 2" in text and "options: jit" in text
-    assert "traced 2 time(s)" in text and "x: f32[2, 3]  ->  f32[2, 4]" in text
+    assert "U = T + 1" in text and "where T >= 2" in text and "options: lift" in text
     assert "not converted (no control flow to convert)" in text
 
 

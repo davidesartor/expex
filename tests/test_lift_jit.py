@@ -1,16 +1,18 @@
-"""``.lift`` (vectorising from the signature) and ``jit=True`` (retrace reports)."""
+"""``.lift`` / ``@tx.lift`` (vectorising from the signature) and ``jax.jit`` on typed functions."""
 
 import warnings
 from typing import NamedTuple
 
 import pytest
 
+import functools
+
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 
 import typax as tx
-from typax import Key, RetraceWarning, ShapeError, Static, config, f32, fn
+from typax import Key, ShapeError, Static, f32, fn
 
 
 @fn
@@ -98,74 +100,26 @@ def test_lift_composes_with_jit_and_grad():
     assert jnp.allclose(g, 20.0)
 
 
-def test_jit_runs_and_checks_once_per_trace():
+def test_checks_run_once_per_trace_under_jax_jit():
     calls = []
 
-    @fn(jit=True)
+    @functools.partial(jax.jit, static_argnames="n")
+    @fn
     def step[B](x: f32[B], lr: f32, n: Static[int]) -> f32[B]:
         calls.append(1)
         return x * lr * n
 
     for _ in range(3):
         assert jnp.allclose(step(jnp.ones(3), 0.5, 2), 1.0)
-    assert len(calls) == 1 and len(step.traces) == 1
+    assert len(calls) == 1
     with pytest.raises(ShapeError):
         step(jnp.ones((3, 3)), 0.5, 2)
 
 
-def test_static_by_position_and_keyword():
-    @fn(jit=True)
-    def f[B](x: f32[B], n: Static[int] = 3) -> f32[B]:
-        return x * n
-
-    assert jnp.allclose(f(jnp.ones(2)), 3)
-    assert jnp.allclose(f(jnp.ones(2), 4), 4)
-    assert jnp.allclose(f(jnp.ones(2), n=5), 5)
-
-
-def test_retrace_explanation(monkeypatch):
-    @fn(jit=True)
-    def step[B](x: f32[B], lr: f32, n: Static[int]) -> f32[B]:
-        return x * lr * n
-
-    monkeypatch.setattr(config, "retrace_warn", 1)
-    step(jnp.ones(3), 0.1, 2)
-    with pytest.warns(RetraceWarning) as w:
-        step(jnp.ones(4), 0.1, 2)
-    assert "x: f32[3]  ->  f32[4]" in str(w[0].message)
-    with pytest.warns(RetraceWarning) as w:
-        step(jnp.ones(4), jnp.float32(0.1), 3)
-    msg = str(w[0].message)
-    assert "lr: weak f32[()] (a Python scalar)  ->  f32[()]" in msg
-    assert "n: static 2  ->  static 3" in msg
-    assert len(step.traces) == 3
-    assert "trace #3 differs from trace #2" in step.explain_retrace()
-    assert "first call" in step.explain_retrace(0)
-
-
-def test_no_warning_below_threshold(monkeypatch):
-    monkeypatch.setattr(config, "retrace_warn", 4)
-
-    @fn(jit=True)
-    def f[B](x: f32[B]) -> f32[B]:
-        return x
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        for n in range(1, 5):
-            f(jnp.ones(n))
-    with pytest.warns(RetraceWarning, match="traced 5 times"):
-        f(jnp.ones(9))
-
-
-def test_unhashable_static_gets_a_note():
-    @fn(jit=True)
-    def f[B](x: f32[B], n: Static[list]) -> f32[B]:
-        return x
-
-    f(jnp.ones(2), [1])  # lists are fine: static values are keyed by content
-    with pytest.raises(TypeError, match="must be hashable"):
-        f(jnp.ones(2), [jnp.ones(2)])
+def test_old_options_point_to_their_replacements():
+    for opt, hint in [("jit", "jax.jit"), ("remat", "jax.checkpoint"), ("random", "tx.random")]:
+        with pytest.raises(TypeError, match=hint):
+            fn(**{opt: True})
 
 
 def test_nested_lift_traces_each_function_once_per_example_shape():
@@ -185,38 +139,6 @@ def test_nested_lift_traces_each_function_once_per_example_shape():
     assert out.shape == (32,)
     # tracing and checking see one example at each level, never the batch
     assert calls == {"inner": 1, "outer": 1}
-
-
-def test_jit_treats_non_array_values_as_static():
-    from typing import Callable, NamedTuple
-
-    class Model(NamedTuple):
-        act: Static[Callable]
-        mode: Static[str]
-        w: f32[3]  # type: ignore[valid-type]
-        scale: f32 | None
-
-    @fn(jit=True)
-    def apply(m: Model, x: f32[3], post=None, opts: dict | None = None) -> f32[3]:  # type: ignore[valid-type]
-        y = m.act(x * m.w)
-        if m.mode == "neg":
-            y = -y
-        if m.scale is not None:
-            y = y * m.scale
-        if post is not None:
-            y = post(y)
-        return y + (opts or {}).get("bias", 0.0)
-
-    x = jnp.arange(3.0)
-    m = Model(jnp.tanh, "pos", jnp.ones(3), None)
-    assert jnp.allclose(apply(m, x), jnp.tanh(x))
-    assert jnp.allclose(apply(m._replace(w=jnp.ones(3) * 2), x), jnp.tanh(2 * x))
-    assert len(apply.traces) == 1  # new array values: no retrace
-    assert jnp.allclose(apply(m._replace(mode="neg"), x), -jnp.tanh(x))
-    assert jnp.allclose(apply(m._replace(scale=jnp.float32(3.0)), x), 3 * jnp.tanh(x))
-    assert jnp.allclose(apply(m, x, jnp.abs, {"bias": 1.0}), jnp.abs(jnp.tanh(x)) + 1)
-    assert jnp.allclose(apply(m, x, jnp.abs, {"bias": 2.0}), jnp.abs(jnp.tanh(x)) + 2)
-    assert len(apply.traces) == 4  # mode, scale present, post given; bias is a traced number
 
 
 def test_rows_chunk_runs_like_lax_map():
@@ -239,7 +161,8 @@ def test_rows_chunk_runs_like_lax_map():
 def test_lift_option_and_forward_references():
     from typing import NamedTuple
 
-    @fn(lift=True)
+    @tx.lift
+    @fn
     def safe_sqrt(x: f32) -> f32:
         if x > 0:
             return jnp.sqrt(x)
@@ -250,7 +173,8 @@ def test_lift_option_and_forward_references():
     g = jax.grad(lambda v: safe_sqrt(v).sum())(jnp.array([4.0, 0.0, -1.0]))
     assert g.tolist() == [0.25, 0.0, 0.0]
 
-    @fn(lift=True)
+    @tx.lift
+    @fn
     def dot[D](a: f32[D], b: f32[D]) -> f32:
         return a @ b
 

@@ -4,7 +4,7 @@ A *key context* holds a key and a counter. ``key()`` returns
 ``fold_in(context key, counter)`` and bumps the counter, so every draw gets a
 distinct key without the user threading and splitting keys by hand.
 
-Contexts nest: a ``@fn(random=True)`` function, each branch of a converted
+Contexts nest: a ``@tx.random`` function, each branch of a converted
 ``if`` and each iteration of a converted loop gets a child context derived
 from its parent, so results are the same whether the code runs eagerly, under
 ``jit``, as a ``scan`` or as a ``vmap``.
@@ -97,9 +97,8 @@ def fresh(what: str = "typax.key()") -> Any:
             f"in scope.\n"
             f"    The global key lives in Python, so inside a compiled function it would be "
             f"frozen into a constant and every call would draw the same numbers.\n"
-            f"    - let typax own the jit:   @fn(jit=True, random=True)\n"
-            f"    - or pass a key explicitly:   with typax.rng(key): ...   (key being an "
-            f"argument of the jitted function)"
+            f"    - pass the key to a @tx.random function:   f(x, key=key)\n"
+            f"    - or open a key scope inside the jitted function:   with tx.rng(key): ..."
         )
     if _state.root is None:
         _state.root = KeyCtx(jr.key(0))

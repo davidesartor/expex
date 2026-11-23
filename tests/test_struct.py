@@ -83,26 +83,36 @@ def test_nested_structs_and_proofs():
     assert tx.prove(MLP.__call__).status == "proved"
 
 
-def test_struct_options_apply_to_methods():
-    @tx.struct(jit=True)
+def test_methods_keep_their_own_decorators():
+    @tx.struct
     class Scaled:
         k: float
         v: f32[3]  # type: ignore[valid-type]
 
+        @jax.jit
+        @fn
         def apply(self, x: f32[3]) -> f32[3]:  # type: ignore[valid-type]
             return x * self.k + self.v
 
-        @fn
-        def eager(self, x: f32[3]) -> f32[3]:  # type: ignore[valid-type]
-            return x
+        @tx.lift
+        def norm(self, x: f32[3]) -> f32:  # type: ignore[valid-type]
+            return jnp.linalg.norm(x * self.k)
 
     s = Scaled(2.0, jnp.ones(3))
     assert s.apply(jnp.ones(3)).tolist() == [3.0, 3.0, 3.0]
     assert s.replace(v=jnp.zeros(3)).apply(jnp.ones(3)).tolist() == [2.0, 2.0, 2.0]
-    assert len(Scaled.apply.traces) == 1  # new array field values: no retrace
-    assert s.replace(k=3.0).apply(jnp.ones(3)).tolist() == [4.0, 4.0, 4.0]
-    assert len(Scaled.apply.traces) == 2  # k is static
-    assert not Scaled.eager.jit
+    assert s.replace(k=3.0).apply(jnp.ones(3)).tolist() == [4.0, 4.0, 4.0]  # k is static
+    with pytest.raises(tx.ShapeError):
+        s.apply(jnp.ones(4))
+    assert s.norm(jnp.ones((5, 3))).shape == (5,)
+
+    with pytest.raises(TypeError, match="Put @tx.fn under @jax.jit"):
+
+        @tx.struct
+        class Bare:
+            @jax.jit
+            def f(self, x):
+                return x
 
 
 @tx.struct

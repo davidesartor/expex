@@ -7,6 +7,8 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
+import functools
+
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -22,7 +24,8 @@ def scoped(f, key, *args):
 
 
 def test_keys_agree_in_ternaries_and_boolean_operators():
-    @fn(random=True)
+    @tx.random
+    @fn
     def f(x):
         a = jr.uniform(tx.key()) if x > 0 else -jr.uniform(tx.key())
         b = (x > 100) or (jr.uniform(tx.key()) > 2)
@@ -42,7 +45,8 @@ def test_while_test_and_body_draw_different_numbers():
         seen.append(v)
         return v
 
-    @fn(random=True)
+    @tx.random
+    @fn
     def f():
         n = 0
         while draw() < 2.0 and n < 3:
@@ -55,7 +59,8 @@ def test_while_test_and_body_draw_different_numbers():
     assert len(seen) == 7 and len(set(seen)) == 7
 
 
-@fn(random=True)
+@tx.random
+@fn
 def noise(x: f32) -> f32:
     return x + jr.uniform(tx.key())
 
@@ -96,23 +101,6 @@ def test_augmented_assignment_reads_the_target_first():
     assert convert(f)([1]) == f([1]) == [2]
     assert convert(g)(C()) == g(C()) == 2
     assert convert(h)([1]) == [6] and log == ["i", "v"]
-
-
-def test_static_values_that_compare_equal_get_their_own_compilation():
-    @fn(jit=True)
-    def pick(x: f32[2], idx: Static[tuple]):  # type: ignore[valid-type]
-        return x[np.asarray(idx)]
-
-    x = jnp.array([10.0, 20.0])
-    assert pick(x, (1, 0)).tolist() == [20.0, 10.0]
-    assert pick(x, (True, False)).tolist() == [10.0]
-    assert len(pick.traces) == 2
-
-    @fn(jit=True)
-    def signed(x: f32, s: Static[float]) -> f32:
-        return x + np.copysign(1.0, s)
-
-    assert signed(0.0, 0.0) == 1.0 and signed(0.0, -0.0) == -1.0
 
 
 def test_max_min_agree_between_eager_and_jit():
@@ -198,18 +186,6 @@ class Layer:
     k: Static[int]
 
 
-def test_jit_takes_dataclass_arguments():
-    @fn(jit=True)
-    def apply(d: Layer, x: f32) -> f32[2]:  # type: ignore[valid-type]
-        return x * d.w * d.k
-
-    assert apply(Layer(jnp.ones(2), 2), 1.0).tolist() == [2.0, 2.0]
-    assert apply(Layer(jnp.ones(2) * 3, 2), 1.0).tolist() == [6.0, 6.0]
-    assert len(apply.traces) == 1  # new array values do not retrace
-    assert apply(Layer(jnp.ones(2), 5), 1.0).tolist() == [5.0, 5.0]
-    assert len(apply.traces) == 2
-
-
 def test_reversed_range_with_traced_length():
     @fn
     def f(xs, n):
@@ -231,7 +207,8 @@ def test_a_variable_named_slice():
 
 
 def test_lift_maps_optional_arguments():
-    @fn(lift=True)
+    @tx.lift
+    @fn
     def f(x: f32, opt: f32 | None = None) -> f32:
         return x + (0 if opt is None else opt)
 
@@ -250,7 +227,8 @@ def test_and_or_operands_are_evaluated_inside_their_branch():
 
 
 def test_minor_findings():
-    @fn(jit=True)
+    @functools.partial(jax.jit, static_argnames="n")
+    @fn
     def f(x: f32, n: Static[int] | None = None) -> f32:
         return x if n is None else x * n
 

@@ -17,16 +17,20 @@ python -m typax examples/bofus/bofus/kernels.py             # shape proofs
 The two core objects are modules (`@tx.struct`) with methods:
 
 ```python
-@tx.struct(lift=True)
+@tx.struct
 class RBFMixture[M, D]:          # one mixture; a set of them is Batch[RBFMixture[M, D], N, O]
     l: Float[M, D]
     x: Float[M, D]
     a: Float[M]
 
+    @tx.lift
     def __call__(self, x: Float[D], periodic: Periodic = None) -> Float: ...
+    @tx.lift
     def inner[K](self, other: "RBFMixture[K, D]", l0=None, periodic=None) -> Float: ...
+    @tx.lift
     def distance[K](self, other: "RBFMixture[K, D]", l0=None, periodic=None) -> Float: ...
-    @fn(lift=True, K="m", where="m >= M")
+    @tx.lift
+    @fn(K="m", where="m >= M")
     def pad_to[K](self, m: int) -> "RBFMixture[K, D]": ...
 
 @tx.struct
@@ -34,7 +38,7 @@ class GaussianProcess[N, O, M, D]:
     ...
     f: Batch[RBFMixture[M, D], N, O]
     def __init__(self, key, f, y, *, l0=None, ...): ...     # fits the GP
-    @fn(jit=True)
+    @fn
     def predict_joint[Q](self, f: Batch[RBFMixture[M, D], Q, O]) -> tuple[Float[Q], Float[Q, Q]]: ...
 ```
 
@@ -51,7 +55,7 @@ API stays as aliases (`rkhs.inner(f1, f2)`, `rkhs.distance(...)`,
 | `GaussianProcess.fit(...)` building a NamedTuple | `GaussianProcess(key, f, y, ...)`: a module whose constructor fits it; the result is checked against its annotations |
 | Free functions over mixtures with `[..., None, :]` indexing for any leading axes | Methods written for one mixture, lifted over the rest |
 | Sanitised double `where` for every piecewise function (`rbf`, the log-EI branches, `safe_sqrt`, the periodic series) | A plain `if` on one element, then `lift`; the gradient is NaN-free without sanitising inputs |
-| `eqx.filter_jit` to keep functions and tuples out of the trace | `@fn(jit=True)`: non-array values are static automatically, and parameters annotated `int`, `float`, `tuple[...]`... are static by type |
+| `eqx.filter_jit` to keep functions and tuples out of the trace | `jax.jit` with `static_argnames` for sizes, shapes and functions; a struct's non-array fields are static automatically |
 | `jax.lax.map(f, xs, batch_size=k)` and `jax.vmap(solve)(starts)` | `for x in tx.rows(xs, chunk=k): out.append(f(x))` |
 | `eqx.error_if(x, cond, msg)` | `assert not cond, msg` |
 | `logits.at[i].set(jnp.inf)` | `logits[i] = jnp.inf` |

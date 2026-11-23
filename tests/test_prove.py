@@ -4,6 +4,8 @@ from typing import NamedTuple
 
 import pytest
 
+import functools
+
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -324,7 +326,7 @@ def test_unannotated_parameter():
 
 
 def test_checked_false_is_still_proved():
-    @fn(checked=False)
+    @fn
     def bad[T](x: f32[T]) -> f32[T]:
         return x[1:]
 
@@ -332,12 +334,16 @@ def test_checked_false_is_still_proved():
 
 
 def test_jit_functions_are_proved_without_compiling():
-    @fn(jit=True)
+    calls = []
+
+    @functools.partial(jax.jit, static_argnames="n")
+    @fn
     def f[T](x: f32[T], n: Static[int] = 2) -> f32[T]:
+        calls.append(n)
         return x * n
 
     assert status(f) == "proved"
-    assert f.traces == []
+    assert f._cache_size() == 0
 
 
 def test_format_reports():

@@ -9,10 +9,6 @@ class StageError(TypeError):
     """A value that must be known at trace time was traced (or vice versa)."""
 
 
-class RetraceWarning(UserWarning):
-    """A jitted ``@fn`` was traced again; the message says which argument changed."""
-
-
 class Mismatch(Exception):
     """Internal: raised while matching a value against a spec.
 

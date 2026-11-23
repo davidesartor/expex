@@ -68,7 +68,8 @@ def test_find_nan_inside_reverse_scan_and_while_and_cond():
 
 
 def test_find_nan_through_fn_jit_grad_and_converted_loops():
-    @fn(jit=True)
+    @jax.jit
+    @fn
     def norm[D](x: f32[D]) -> f32[D]:
         return x / jnp.linalg.norm(x)
 
@@ -133,7 +134,9 @@ def test_timing():
     assert t.trace > 0 and t.compile > 0 and t.run > 0 and t.ops >= 2
     assert "trace" in str(t) and "compile" in str(t)
 
-    @fn(jit=True, random=True)
+    @jax.jit
+    @tx.random
+    @fn
     def r[D](x: f32[D]) -> f32[D]:
         return x + jr.normal(tx.key(), x.shape)
 
@@ -195,20 +198,21 @@ def test_shapes_concrete_and_symbolic():
     assert "# y: f32[5]" in str(debug.shapes(plain, jnp.ones((4, 5))))
 
 
-def test_remat_saves_memory_and_keeps_gradients():
+def test_jax_checkpoint_on_methods_saves_memory_and_keeps_gradients():
     import typax as tx
 
-    def make(remat):
+    def make(policy):
         @tx.struct
         class Layer[D]:
             w: f32[D, D]
 
-            @fn(remat=remat)
             def __call__[B](self, x: f32[B, D]) -> f32[B, D]:
                 h = jnp.tanh(x @ self.w)
                 h = jnp.tanh(h @ self.w) * h
                 return jnp.tanh(h @ self.w) + x
 
+        if policy is not None:
+            Layer.__call__ = jax.checkpoint(Layer.__call__, policy=policy)
         return Layer
 
     x = jnp.ones((128, 64))
@@ -219,15 +223,17 @@ def test_remat_saves_memory_and_keeps_gradients():
         return (x**2).mean()
 
     results = {}
-    for remat in (False, True, "dots"):
-        Layer = make(remat)
+    for name, policy in [
+        ("plain", None),
+        ("remat", jax.checkpoint_policies.nothing_saveable),
+        ("dots", jax.checkpoint_policies.dots_saveable),
+    ]:
+        Layer = make(policy)
         layers = [Layer(jnp.eye(64) * 0.5 + 0.01 * i) for i in range(8)]
         grads = jax.jit(jax.grad(loss))(layers, x)
-        results[remat] = (debug.memory(jax.grad(loss), layers, x), grads)
-    plain, (low, _), _ = results[False], results[True], results["dots"]
-    assert low.live_peak < plain[0].live_peak / 2
-    for a, b in zip(jax.tree.leaves(plain[1]), jax.tree.leaves(results[True][1])):
+        results[name] = (debug.memory(jax.grad(loss), layers, x), grads)
+    plain, low = results["plain"], results["remat"]
+    assert low[0].live_peak < plain[0].live_peak / 2
+    for a, b in zip(jax.tree.leaves(plain[1]), jax.tree.leaves(low[1])):
         assert jnp.allclose(a, b, atol=1e-6)
-    assert "compiled:" in str(low) and "alive at once" in str(low)
-    with pytest.raises(ValueError, match="remat must be"):
-        fn(remat="sometimes")(lambda x: x)
+    assert "compiled:" in str(low[0]) and "alive at once" in str(low[0])

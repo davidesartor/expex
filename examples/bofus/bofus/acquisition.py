@@ -1,3 +1,4 @@
+import functools
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -11,7 +12,8 @@ from . import gp, rkhs, utils
 from .rkhs import RBFMixture
 
 
-@fn(jit=True)
+@jax.jit
+@fn
 def upper_confidence_bound(mu, sigma, beta):
     return -mu + jnp.sqrt(beta) * sigma
 
@@ -29,7 +31,8 @@ def _student_t_cdf_jvp(primals, tangents):
     return student_t_cdf(z, dof), jsp.stats.t.pdf(z, dof) * tangents[0]
 
 
-@fn(lift=True)
+@tx.lift
+@fn
 def log_student_t_expected_improvement(mu: Float, sigma: Float, y_best: Float, dof: Float) -> Float:
     """Stable log EI under a student-t, log1mexp in the tail is safe since the ratio stays < (dof-1)/dof."""
     z = (y_best - mu) / sigma
@@ -43,7 +46,8 @@ def log_student_t_expected_improvement(mu: Float, sigma: Float, y_best: Float, d
     return jnp.log(sigma) + log_h
 
 
-@fn(lift=True)
+@tx.lift
+@fn
 def log_expected_improvement(mu: Float, sigma: Float, y_best: Float) -> Float:
     """Stable log EI: log(sigma) + log(pdf(z) + z * cdf(z)) (Ament et al. 2023).
     https://arxiv.org/abs/2310.20708
@@ -64,7 +68,8 @@ def log_expected_improvement(mu: Float, sigma: Float, y_best: Float) -> Float:
     return jnp.log(sigma) + log_h
 
 
-@fn(lift=True)
+@tx.lift
+@fn
 def _log_softplus(z: Float) -> Float:
     """log softplus(z), finite gradients for large |z|."""
     if z > 30.0:
@@ -74,7 +79,8 @@ def _log_softplus(z: Float) -> Float:
     return jnp.log(jax.nn.softplus(z))
 
 
-@fn(lift=True)
+@tx.lift
+@fn
 def q_log_expected_improvement[Q, S](
     mu: Float[Q],
     cov: Float[Q, Q],
@@ -101,7 +107,8 @@ def q_log_expected_improvement[Q, S](
     return jax.nn.logsumexp(log_max, axis=-1) - jnp.log(len(eps))
 
 
-@fn(jit=True, K="n", where="n <= N")
+@functools.partial(jax.jit, static_argnames="n")
+@fn(K="n", where="n <= N")
 def boltzmann_select[N, K](
     key: Key, values: Float[N], n: int, eta: float = 2.0
 ) -> Int[K]:
@@ -126,7 +133,11 @@ def _perturb(key, z, lo, hi, sigma):
     return (z + sigma * (hi - lo) * jr.normal(key, z.shape)).clip(lo, hi)
 
 
-@fn(jit=True, Q="batch_size")
+@functools.partial(
+    jax.jit,
+    static_argnames=("batch_size", "multi_starts", "n_probes", "probe_chunk", "solve_chunk", "n_mc", "n_best"),
+)
+@fn(Q="batch_size")
 def optimize_expected_improvement[N, O, M, D, Q](
     key: Key,
     surrogate: gp.GaussianProcess[N, O, M, D],

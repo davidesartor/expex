@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import functools
 import inspect
 import os
-import warnings
 import weakref
 from typing import (
     TYPE_CHECKING,
@@ -21,14 +21,14 @@ from typing import (
 
 import jax
 import numpy as np
+from jax.core import Tracer
 
 from . import _flow, _lift, _messages, _ops, _rng
 from ._convert import NotConverted
 from ._convert import convert as _convert
 from ._dims import DExpr, DName, Env, describe, is_symbolic, resolve
-from ._errors import Mismatch, RetraceWarning, ShapeError, StageError
+from ._errors import Mismatch, ShapeError, StageError
 from ._expr import Expr
-from ._jit import _avals, _Frozen, _is_traced_leaf, _mark
 from ._spec import (
     OpaqueSpec,
     Spec,
@@ -68,8 +68,6 @@ class Config:
         #: Turn ``for`` loops into ``lax.scan`` / ``vmap`` when tracing. With False,
         #: loops over arrays and ranges are unrolled, as in plain JAX.
         self.lower_loops: bool = os.environ.get("TYPAX_LOWER_LOOPS", "1") not in ("0", "false", "")
-        #: Warn when a ``jit=True`` function has been traced more than this many times.
-        self.retrace_warn: int = int(os.environ.get("TYPAX_RETRACE_WARN", "16"))
 
 
     def __call__(self, **changes: Any) -> "_Scoped":
@@ -98,13 +96,6 @@ class _Scoped:
 
 
 config = Config()
-
-_REMAT_POLICIES = {
-    "nothing": jax.checkpoint_policies.nothing_saveable,
-    "dots": jax.checkpoint_policies.dots_saveable,
-    "dots_no_batch": jax.checkpoint_policies.dots_with_no_batch_dims_saveable,
-}
-
 
 def compile_cache(path: str = "~/.cache/typax", min_compile_seconds: float = 1.0) -> str:
     """Keep compiled functions on disk, so later runs of a program skip compilation.
@@ -182,26 +173,18 @@ class Fn(Generic[P, R]):
         self,
         raw: Callable[P, R],
         *,
-        jit: bool = False,
-        checked: bool = True,
         prove: bool = True,
         convert: bool = True,
-        random: bool = False,
-        lift: bool = False,
-        remat: Any = False,
         examples: dict[str, Any] | None = None,
         where: str | list[str] | tuple[str, ...] = (),
         defs: dict[str, str] | None = None,
     ):
         functools.update_wrapper(self, raw)
         self.raw = raw
-        self.random = random
-        if isinstance(remat, str) and remat not in _REMAT_POLICIES:
-            raise ValueError(f"remat must be True, a policy or one of {sorted(_REMAT_POLICIES)}")
-        #: Recompute this function's intermediates in the backward pass (``jax.checkpoint``)
-        self.remat = remat
-        #: With ``lift=True``, a plain call maps over extra leading axes by itself.
-        self.auto_lift = lift
+        #: Set by ``@tx.random``: the function gets an implicit PRNG key.
+        self.random = False
+        #: Set by ``@tx.lift``: a plain call maps over extra leading axes by itself.
+        self.auto_lift = False
         #: The function that actually runs: ``raw`` with its control flow converted.
         self._impl: Callable[..., Any] = raw
         #: Why the control flow was not converted ("" if it was).
@@ -216,10 +199,8 @@ class Fn(Generic[P, R]):
         self.converted = self._impl is not raw
         self._has_locals = bool(getattr(self._impl, "__typax_locals__", 0))
         self.name: str = getattr(raw, "__qualname__", getattr(raw, "__name__", repr(raw)))
-        self.checked = checked
         self.prove = prove
         self.examples = dict(examples or {})
-        self.jit = jit
         self._sig = inspect.signature(raw)
 
         defs = defs or {}
@@ -277,28 +258,6 @@ class Fn(Generic[P, R]):
         self.static_names = [n for n, p in self.params.items() if isinstance(p.spec, StaticSpec)]
         self._declared = declared
         self._index()
-
-        #: One entry per trace of the jitted function (``jit=True`` only).
-        self.traces: list[dict[str, str]] = []
-        self._jitted: Callable[..., Any] | None = None
-        self._out_struct: dict[Any, tuple[Any, tuple[Any, ...]]] = {}
-        if jit:
-
-            def core(frozen: "_Frozen", dyn: tuple[Any, ...], key: Any) -> Any:
-                args, kwargs = frozen.rebuild(self, dyn)
-                self._record_trace(args, kwargs)
-                out = _mark(self.ret, self._run(args, kwargs, key=key), True)
-                # Only arrays can leave a compiled function. Anything else in the
-                # result (a function, a string, a Static field) depends only on
-                # the static inputs, so it is remembered here and put back after.
-                leaves, tree = jax.tree.flatten(out)
-                static = tuple(_Frozen if _is_traced_leaf(x) else x for x in leaves)
-                self._out_struct[(frozen, _avals(dyn), key is None)] = (tree, static)
-                return tuple(x for x in leaves if _is_traced_leaf(x))
-
-            core.__name__ = getattr(raw, "__name__", "fn")
-            core.__qualname__ = self.name
-            self._jitted = jax.jit(core, static_argnums=(0,))
 
         REGISTRY.add(self)
 
@@ -404,42 +363,11 @@ class Fn(Generic[P, R]):
 
     def _direct(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
         __tracebackhide__ = True
-        if self._jitted is not None:
-            # The key is drawn out here and passed in as a real argument, so the
-            # compiled function gets fresh randomness on every call.
-            k = _rng.fresh(f"{self.name}()") if self.random else None
-            return self._call_jit(args, kwargs, k)
-        return self._run(args, kwargs)
-
-    def _call_jit(self, args: tuple[Any, ...], kwargs: dict[str, Any], key: Any) -> Any:
-        """Call the compiled function: arrays are traced, everything else is static.
-
-        ``Static[...]`` parameters and fields, and any non-array value inside an
-        argument (a function, a string, an arbitrary object), become part of the
-        compilation key, so no manual ``static_argnames`` is needed.
-        """
-        __tracebackhide__ = True
-        assert self._jitted is not None
-        if self._lazy:
-            self._resolve_owner()
-        try:
-            bound = self._sig.bind(*args, **kwargs)
-        except TypeError:
-            return self.raw(*args, **kwargs)  # let Python raise its own error
-        frozen, dyn = _Frozen.split(self, bound.arguments)
-        try:
-            hash(frozen)
-        except TypeError as e:
-            raise TypeError(
-                f"{self.name}() is jit=True, so its non-array arguments are part of the "
-                f"compilation key and must be hashable ({e}). Use tuples instead of lists "
-                f"for Static values."
-            ) from None
-        dyn_out = self._jitted(frozen, dyn, key)
-        tree, static = self._out_struct[(frozen, _avals(dyn), key is None)]
-        it = iter(dyn_out)
-        out = tree.unflatten([next(it) if x is _Frozen else x for x in static])
-        return _mark(self.ret, out, False)
+        key = None
+        if self.random and "key" in kwargs and "key" not in self.params:
+            kwargs = dict(kwargs)
+            key = kwargs.pop("key")
+        return self._run(args, kwargs, key=key)
 
     def _run(
         self,
@@ -460,7 +388,7 @@ class Fn(Generic[P, R]):
                     f"{self.name}() is being mapped with jax.vmap, but its random key is "
                     f"shared by the whole batch: every element would draw the same numbers.\n"
                     f"    - use {self.name}.lift(...), which gives each element its own key\n"
-                    f"    - or split a key yourself and pass the keys as a mapped argument"
+                    f"    - or split a key yourself and pass the keys: {self.name}(..., key=keys)"
                 )
             with _rng.child(key):
                 return self._run_checked(args, kwargs, env, force)
@@ -470,7 +398,7 @@ class Fn(Generic[P, R]):
         self, args: tuple[Any, ...], kwargs: dict[str, Any], env: Env | None, force: bool
     ) -> Any:
         __tracebackhide__ = True
-        if not force and not (self.checked and config.checked):
+        if not force and not config.checked:
             out = self._impl(*args, **kwargs)
             return _flow.unstack(out) if self.converted else out
         if self._lazy:
@@ -483,6 +411,12 @@ class Fn(Generic[P, R]):
             return self._impl(*args, **kwargs)  # let Python raise its own error
         for name in self.static_refs:
             v = bound[name] if name in bound else self.params[name].default
+            if isinstance(v, Tracer):
+                raise StageError(
+                    f"{self.name}(): `{name}` sets a size, so it must be known when the "
+                    f"function is traced, but it is traced. Under jax.jit, mark it static: "
+                    f"jax.jit(f, static_argnames=\"{name}\")."
+                )
             if isinstance(v, (int, np.integer)) and not isinstance(v, bool):
                 env.dims[name] = int(v)
                 env.origin[name] = f"the argument `{name}`"
@@ -518,11 +452,11 @@ class Fn(Generic[P, R]):
             if self._has_locals:
                 _ops.CALLS.stack.append((env, self))
                 try:
-                    out = self._call_impl(args, kwargs)
+                    out = self._impl(*args, **kwargs)
                 finally:
                     _ops.CALLS.stack.pop()
             else:
-                out = self._call_impl(args, kwargs)
+                out = self._impl(*args, **kwargs)
         except Exception as e:
             _flow._STAGE.depth = depth
             if config.notes and not getattr(e, "_typax_local", None) is self:
@@ -541,28 +475,6 @@ class Fn(Generic[P, R]):
             if self.where:
                 self._check_where(env, final=True)
         return out
-
-    def _call_impl(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        """Run the function body, under ``jax.checkpoint`` if ``remat`` was asked for."""
-        if not self.remat:
-            return self._impl(*args, **kwargs)
-        policy = _REMAT_POLICIES.get(self.remat) if isinstance(self.remat, str) else (
-            None if self.remat is True else self.remat
-        )
-        bound = self._sig.bind(*args, **kwargs)
-        frozen, dyn = _Frozen.split(self, bound.arguments)
-        box: dict[str, Any] = {}
-
-        def body(dyn: tuple[Any, ...]) -> tuple[Any, ...]:
-            a, k = frozen.rebuild(self, dyn)
-            leaves, tree = jax.tree.flatten(self._impl(*a, **k))
-            box["tree"] = tree
-            box["static"] = tuple(_Frozen if _is_traced_leaf(x) else x for x in leaves)
-            return tuple(x for x in leaves if _is_traced_leaf(x))
-
-        out = jax.checkpoint(body, policy=policy)(dyn)
-        it = iter(out)
-        return box["tree"].unflatten([next(it) if x is _Frozen else x for x in box["static"]])
 
     def _check_where(self, env: Env, final: bool) -> None:
         for w in self.where:
@@ -623,57 +535,6 @@ class Fn(Generic[P, R]):
             setattr(e, "_typax_local", self)
             raise e from None
 
-
-    # ------------------------------------------------------------------- jit
-
-    def _record_trace(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
-        try:
-            bound = self._sig.bind(*args, **kwargs).arguments
-        except TypeError:
-            return
-        rec: dict[str, str] = {}
-        for name, v in bound.items():
-            if name in self.static_names:
-                rec[name] = f"static {v!r}"
-            else:
-                leaves = jax.tree.leaves(v)
-                rec[name] = ", ".join(map(_trace_desc, leaves)) if leaves else repr(v)
-        self.traces.append(rec)
-        n = len(self.traces)
-        # warn at the threshold, then only each time the count doubles
-        if n > max(config.retrace_warn, 1) and (n - 1) & (n - 2) == 0 or n == config.retrace_warn + 1 > 1:
-            warnings.warn(
-                f"{self.name}() has been traced {n} times; each trace recompiles.\n"
-                + self.explain_retrace()
-                + f"\n(inspect `{self.name}.traces`, or raise typax.config.retrace_warn)",
-                RetraceWarning,
-                stacklevel=4,
-            )
-
-    def explain_retrace(self, index: int = -1) -> str:
-        """Describe what changed between trace ``index`` and the closest earlier trace."""
-        if not self.traces:
-            return f"{self.name}() has not been traced."
-        index = index % len(self.traces)
-        cur = self.traces[index]
-        if index == 0:
-            return f"{self.name}(): trace #1 (first call)."
-        best, best_i = None, 0
-        for i, prev in enumerate(self.traces[:index]):
-            diff = [k for k in cur.keys() | prev.keys() if cur.get(k) != prev.get(k)]
-            if best is None or len(diff) < len(best):
-                best, best_i = diff, i
-        assert best is not None
-        prev = self.traces[best_i]
-        lines = [f"{self.name}(): trace #{index + 1} differs from trace #{best_i + 1} in:"]
-        if not best:
-            lines.append(
-                "    nothing visible: same shapes, dtypes and static values. A static "
-                "argument may hash differently, or the jit cache was cleared."
-            )
-        for k in sorted(best):
-            lines.append(f"    {k}: {prev.get(k, '<not passed>')}  ->  {cur.get(k, '<not passed>')}")
-        return "\n".join(lines)
 
     # ------------------------------------------------------------------ lift
 
@@ -760,9 +621,7 @@ class Fn(Generic[P, R]):
     def info(self) -> str:
         """Everything typax knows about this function, as text."""
         lines = [self.signature, f"  defined at {self.location}"]
-        opts = [
-            k for k, v in (("jit", self.jit), ("random", self.random), ("unchecked", not self.checked)) if v
-        ]
+        opts = [k for k, v in (("lift", self.auto_lift), ("random", self.random)) if v]
         if opts:
             lines.append("  options: " + ", ".join(opts))
         for k, e in self.defs.items():
@@ -775,10 +634,6 @@ class Fn(Generic[P, R]):
                 lines.append(f"    line {line}: {how}")
         else:
             lines.append(f"  control flow: not converted ({self.convert_note})")
-        if self.jit:
-            lines.append(f"  traced {len(self.traces)} time(s)")
-            for i in range(1, len(self.traces)):
-                lines.append("    " + self.explain_retrace(i).replace("\n", "\n    "))
         return "\n".join(lines)
 
     def __repr__(self) -> str:
@@ -808,20 +663,24 @@ class BoundFn(Generic[P, R]):
         return f"<bound {self.fn!r} of {type(self.obj).__name__}>"
 
 
+def unwrap(f: Any) -> Any:
+    """The ``Fn`` (or ``BoundFn``) under wrappers such as ``jax.jit``, else ``f`` itself."""
+    g = f
+    for _ in range(16):
+        if isinstance(g, (Fn, BoundFn)):
+            return g
+        g = getattr(g, "__wrapped__", None)
+        if g is None:
+            break
+    return f
+
+
 def _field_names(cls: Any) -> set[str]:
     if cls is None:
         return set()
     if dataclasses.is_dataclass(cls):
         return {f.name for f in dataclasses.fields(cls)}
     return set(getattr(cls, "_fields", ()))
-
-
-def _trace_desc(leaf: Any) -> str:
-    d = describe(leaf)
-    aval = getattr(leaf, "aval", None)
-    if getattr(aval, "weak_type", False):
-        d = f"weak {d}" + (" (a Python scalar)" if d.endswith("[()]") else "")
-    return d
 
 
 # ---------------------------------------------------------------- stage hints
@@ -835,82 +694,118 @@ def fn(f: Callable[P, R], /) -> Fn[P, R]: ...
 @overload
 def fn(
     *,
-    jit: bool = False,
-    checked: bool = True,
+    where: str | list[str] | tuple[str, ...] = (),
+    examples: dict[str, Any] | None = None,
     prove: bool = True,
     convert: bool = True,
-    random: bool = False,
-    lift: bool = False,
-    remat: Any = False,
-    examples: dict[str, Any] | None = None,
-    where: str | list[str] | tuple[str, ...] = (),
     **dims: str,
 ) -> Callable[[Callable[P, R]], Fn[P, R]]: ...
 def fn(
     f: Any = None,
     /,
     *,
-    jit: bool = False,
-    checked: bool = True,
+    where: str | list[str] | tuple[str, ...] = (),
+    examples: dict[str, Any] | None = None,
     prove: bool = True,
     convert: bool = True,
-    random: bool = False,
-    lift: bool = False,
-    remat: Any = False,
-    examples: dict[str, Any] | None = None,
-    where: str | list[str] | tuple[str, ...] = (),
     **dims: str,
 ) -> Any:
     """Make a function's shape annotations real.
 
     ::
 
-        @fn
+        @tx.fn
         def attend[B, T, D](q: f32[B, T, D], k: f32[B, T, D]) -> f32[B, T, T]: ...
 
-    Options (all keyword-only):
+    Arguments and the result are checked on every call (once per trace under
+    ``jax.jit``), the prover can check the shapes for all sizes, and plain
+    ``if`` / ``while`` / ``for`` work on traced values.
 
-    ``jit``
-        Also ``jax.jit`` the function. ``Static[...]`` parameters become static
-        arguments, and retraces are recorded in ``.traces``.
-    ``checked``
-        Check arguments and results on each call (default). Under ``jit`` this
-        runs once per trace and costs nothing in the compiled function.
-    ``prove``
-        Include the function when the prover / pytest plugin runs (default).
-    ``convert``
-        Rewrite plain ``if`` / ``while`` / ``for`` so that they also work on traced
-        values (default). See ``.flow`` for how each statement ran.
-    ``random``
-        Give the function an implicit PRNG key: ``typax.key()`` inside it
-        returns a fresh key on every call.
-    ``lift``
-        Map over extra leading axes on a plain call, as ``f.lift(...)`` does. For
-        functions written for one element that should also accept batches.
-    ``remat``
-        Gradient checkpointing: in the backward pass, recompute this function's
-        intermediates instead of storing them. ``True`` saves nothing,
-        ``"dots"`` keeps matrix-multiply results, ``"dots_no_batch"`` keeps
-        those without batch dimensions; or pass a ``jax.checkpoint_policies``
-        policy. Trades compute for memory, usually per layer.
-    ``examples``
-        Values the prover should use for ``Static`` or unannotated parameters,
-        as ``{"name": [value, ...]}``.
     ``where``
-        Constraints on dimensions, e.g. ``where="T >= 2"``.
+        Constraints on sizes, e.g. ``where="T >= 2"``.
     ``**dims``
-        Derived dimensions, e.g. ``U="T + 1"``. Expressions (here and in ``where``)
-        may also use ``Static`` int parameters by name: ``H="heads"``.
+        Derived sizes, e.g. ``U="T + 1"``. These and ``where`` may also use int
+        parameters and int fields of ``self`` by name: ``H="heads"``.
+    ``examples``
+        Values the prover should try for parameters it cannot guess,
+        as ``{"name": [value, ...]}``.
+    ``prove``
+        ``False`` leaves the function out of ``tx.prove`` and ``pytest --typax``.
+    ``convert``
+        ``False`` keeps Python control flow as it is (no rewriting).
+
+    Combine with :func:`lift` and :func:`random`, and with JAX's own
+    ``jax.jit``, ``jax.grad``, ``jax.checkpoint``, ... in any order.
     """
 
+    moved = {
+        "jit": "decorate with @jax.jit (above @tx.fn) or call jax.jit(f)",
+        "remat": "use jax.checkpoint(f, policy=...)",
+        "random": "decorate with @tx.random",
+        "lift": "decorate with @tx.lift",
+        "checked": "use `with tx.config(checked=False):`",
+    }
+    for k, v in dims.items():
+        if not isinstance(v, str):
+            hint = moved.get(k, "derived sizes are strings, e.g. U=\"T + 1\"")
+            raise TypeError(f"@tx.fn got {k}={v!r}: {hint}.")
+
     def wrap(raw: Callable[..., Any]) -> Fn[Any, Any]:
+        flags: dict[str, bool] = {}
         if isinstance(raw, Fn):
+            flags = {"random": raw.random, "auto_lift": raw.auto_lift}
             raw = raw.raw
-        return Fn(
-            raw, jit=jit, checked=checked, prove=prove, convert=convert, random=random,
-            lift=lift, remat=remat, examples=examples, where=where, defs=dims,
-        )  # fmt: skip
+        out = Fn(raw, prove=prove, convert=convert, examples=examples, where=where, defs=dims)
+        vars(out).update(flags)
+        return out
 
     if f is not None:
         return wrap(f)
     return wrap
+
+
+def _flagged(f: Any, flag: str) -> Any:
+    if isinstance(f, (staticmethod, classmethod)):
+        return type(f)(_flagged(f.__func__, flag))
+    g = copy.copy(f) if isinstance(f, Fn) else fn(f)
+    setattr(g, flag, True)
+    REGISTRY.add(g)
+    return g
+
+
+def lift(f: Callable[P, R], /) -> Fn[P, R]:
+    """Let plain calls take extra leading batch axes, as ``f.lift(...)`` does.
+
+    ::
+
+        @tx.lift
+        @tx.fn
+        def norm[D](x: f32[D]) -> f32: ...
+
+        norm(jnp.ones((8, 3, 5)))   # f32[8, 3]
+
+    Arguments without extra axes are shared by every element. A plain
+    function is wrapped with :func:`fn` first.
+    """
+    return _flagged(f, "auto_lift")
+
+
+def random(f: Callable[P, R], /) -> Fn[P, R]:
+    """Give a function an implicit PRNG key: ``tx.key()`` inside it is fresh on every call.
+
+    Each call draws a new key from the global key (``tx.seed``) or from the
+    enclosing ``with tx.rng(key):`` block. Pass ``key=`` to choose it, which is
+    required under ``jax.jit`` (the global key is Python state and would be
+    frozen into the compiled function)::
+
+        @tx.random
+        @tx.fn
+        def noisy[N](x: f32[N]) -> f32[N]:
+            return x + jr.normal(tx.key(), x.shape)
+
+        noisy(x)                                    # a new draw every time
+        jax.jit(noisy)(x, key=jr.key(0))            # compiled: pass the key
+
+    Under ``f.lift(...)`` each element gets its own key.
+    """
+    return _flagged(f, "random")

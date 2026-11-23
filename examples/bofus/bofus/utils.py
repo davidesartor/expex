@@ -6,10 +6,12 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
+import typax as tx
 from typax import Bool, Float, Key, fn
 
 
-@fn(jit=True)
+@jax.jit
+@fn
 def mask_covariance[*B, N](cov: Float[*B, N, N], mask: Bool[*B, N]) -> Float[*B, N, N]:
     """Zero the masked-out rows/columns, an identity block keeps the factorization valid."""
     I = jnp.eye(cov.shape[-1], dtype=cov.dtype)
@@ -17,7 +19,8 @@ def mask_covariance[*B, N](cov: Float[*B, N, N], mask: Bool[*B, N]) -> Float[*B,
     return jnp.where(observed, cov, I)
 
 
-@fn(lift=True)
+@tx.lift
+@fn
 def safe_sqrt(x: Float) -> Float:
     """Square root with a zero subgradient wherever x <= 0."""
     if x > 0.0:
@@ -25,7 +28,8 @@ def safe_sqrt(x: Float) -> Float:
     return 0.0
 
 
-@fn(jit=True)
+@functools.partial(jax.jit, static_argnames="shape")
+@fn
 def latin_hypercube_sample(key: Key, shape: tuple[int, ...]):
     """Sample shape[0] unit-cube points, stratified over the flattened trailing dims."""
     n, *rest = shape
@@ -39,7 +43,8 @@ def latin_hypercube_sample(key: Key, shape: tuple[int, ...]):
     return x.reshape(shape)
 
 
-@fn(jit=True)
+@jax.jit
+@fn
 def rescale(x, low, high):
     """Map unit-cube points to the box [low, high]."""
     return low + x * (high - low)

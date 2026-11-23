@@ -1,3 +1,4 @@
+import functools
 
 import numpy as np
 import jax
@@ -15,7 +16,7 @@ X_MAX = 1.0  # domain is [-X_MAX, X_MAX]^d, periodic dimensions wrap
 Periodic = tuple[bool, ...] | None
 
 
-@tx.struct(lift=True)
+@tx.struct
 class RBFMixture[M, D]:
     """One RBF mixture f = sum_i a_i prod_j phi(x_j - x_ij; l_ij).
 
@@ -27,12 +28,14 @@ class RBFMixture[M, D]:
     x: Float[M, D]
     a: Float[M]
 
+    @tx.lift
     def __call__(self, x: Float[D], periodic: Periodic = None) -> Float:
         """Evaluate f at a single point x. Periodic dimensions wrap."""
         return jnp.sum(self.a * jnp.exp(log_rbf(x - self.x, self.l, periodic)))
 
     @staticmethod
-    @fn(jit=True)
+    @functools.partial(jax.jit, static_argnames="shape")
+    @fn
     def sample[*B, K, E](
         key: Key,
         shape: tuple[int, ...],
@@ -67,7 +70,8 @@ class RBFMixture[M, D]:
         a = jr.normal(key_a, (*b, m)) * jnp.sqrt((m + 1) / (m * coverage))
         return RBFMixture(l.clip(*l_range), x, a.clip(*a_range))
 
-    @fn(lift=True, K="m", where="m >= M")
+    @tx.lift
+    @fn(K="m", where="m >= M")
     def pad_to[K](self, m: int) -> "RBFMixture[K, D]":
         """Pad with inert atoms: zero amplitude, period wide lengthscale, at the origin."""
         m0, d = self.l.shape
@@ -76,6 +80,7 @@ class RBFMixture[M, D]:
         a = jnp.concat([self.a, jnp.zeros(m - m0)])
         return self.replace(l=l, x=x, a=a)
 
+    @tx.lift
     def inner[K](
         self, other: "RBFMixture[K, D]", l0: Float[D] | None = None, periodic: Periodic = None
     ) -> Float:
@@ -109,6 +114,7 @@ class RBFMixture[M, D]:
         K = jnp.exp(jnp.sum(log_scale, axis=-1) + log_rbf(x1 - x2, ls, periodic))
         return jnp.einsum("ij,i,j->", K, self.a, other.a)
 
+    @tx.lift
     def distance[K](
         self, other: "RBFMixture[K, D]", l0: Float[D] | None = None, periodic: Periodic = None
     ) -> Float:
@@ -123,7 +129,8 @@ class RBFMixture[M, D]:
 RBFMixture._replace = RBFMixture.replace  # the NamedTuple spelling the original API used
 
 
-@fn(lift=True)
+@tx.lift
+@fn
 def _log_circle(theta: Float, s: Float, terms: int = 4) -> Float:
     """log of a unit-mass gaussian of angular variance s wrapped on the circle, at angle theta."""
     n = jnp.arange(-terms, terms + 1, dtype=theta.dtype)

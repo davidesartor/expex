@@ -331,6 +331,18 @@ class _Shown:
         return self.text
 
 
+class _From:
+    """Where a size came from, formatted only when an error message needs it."""
+
+    __slots__ = ("path", "value")
+
+    def __init__(self, path: str, value: Any):
+        self.path, self.value = path, value
+
+    def __str__(self) -> str:
+        return f"`{self.path}: {describe(self.value)}`"
+
+
 def _match_shape(
     dims: tuple[Any, ...],
     var_index: int | None,
@@ -361,7 +373,7 @@ def _match_shape(
                 have = env.vars.get(d.name)
                 if have is None:
                     env.vars[d.name] = got
-                    env.origin["*" + d.name] = f"`{path}: {describe(value)}`"
+                    env.origin["*" + d.name] = _From(path, value)  # type: ignore[assignment]
                 elif len(have) != len(got) or not all(map(_same, have, got)):
                     raise Mismatch(
                         path, spec, value,
@@ -375,7 +387,7 @@ def _match_shape(
             have = env.dims.get(d.name)
             if have is None:
                 env.dims[d.name] = size
-                env.origin[d.name] = f"`{path}: {describe(value)}`"
+                env.origin[d.name] = _From(path, value)  # type: ignore[assignment]
             elif have is not size and not _same(have, size):
                 if str(have) == d.name:  # symbolic: the name stands for itself
                     reason = f"axis {axis} of `{path}` should be {d.name}, but is {size}."

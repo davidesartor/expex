@@ -20,7 +20,16 @@ That signature then does four jobs:
 - **Checks** every call, with errors that name the axis and where its size came from.
 - **Proves** the shapes for all sizes: `tx.prove(attend)`, with no test data.
 - **Vectorises**: `attend.lift(...)` maps over any extra leading axes.
-- **Compiles** with `@fn(jit=True)`, with no `static_argnames`.
+- **Works with JAX's own transformations**: `jax.jit`, `jax.grad`, `jax.vmap`,
+  `jax.checkpoint` take an `@fn` like any function, and the checks run once per trace.
+
+Three decorators, stacked in any order:
+
+| | |
+|---|---|
+| `@tx.fn` | check shapes, prove them, and let plain Python control flow run on traced values |
+| `@tx.lift` | plain calls take extra leading batch axes |
+| `@tx.random` | `tx.key()` inside gives a fresh PRNG key on every call |
 
 `@tx.struct` does the same for classes: typed, immutable modules that JAX can
 trace.
@@ -127,8 +136,8 @@ A struct is a frozen dataclass registered as a pytree:
   annotations. JAX and `.replace(...)` rebuild objects without calling it.
 - Every method is an `@fn` that checks `self`'s fields and shares the class's
   sizes, so `tx.prove(Block.__call__)` works without an instance.
-- `model.lift(x)` maps `__call__` over extra leading axes, and
-  `@tx.struct(jit=True)` compiles every method.
+- `model.lift(x)` maps `__call__` over extra leading axes. Other decorators go
+  on the methods themselves (`@tx.lift`, `@tx.random`, `@jax.jit` over `@tx.fn`).
 - `@tx.struct(where="D % heads == 0")` states an invariant. It is checked
   whenever an instance is built or passed in, and assumed by every function
   that receives one; a method's derived sizes can name its int fields
@@ -235,7 +244,7 @@ def score[T, D](x: f32[T, D], w: f32[D]) -> f32[T]:
 score.lift(jnp.ones((32, 5, 3)), jnp.ones(3)).shape                # (32, 5)
 score.lift(jnp.ones((8, 1, 5, 3)), jnp.ones((7, 3))).shape         # (8, 7, 5)
 
-@fn(lift=True)                       # written for one element, takes batches
+@tx.lift                             # written for one element, takes batches
 def safe_log(x: f32) -> f32:
     if x > 0:
         return jnp.log(x)
@@ -245,34 +254,37 @@ safe_log(jnp.ones((4, 5)))
 ```
 
 `lift` aligns batch axes on the left and broadcasts them like NumPy. A plain
-call with extra axes stays an error unless the function says `lift=True`.
+call with extra axes stays an error unless the function is `@tx.lift`.
 
-`@fn(jit=True)` traces arrays and treats every other value as static, in
-arguments and results, including functions and strings inside a NamedTuple or
-dataclass. Each retrace is recorded with the reason:
+Compile with `jax.jit`. Checks run while tracing, so they cost nothing in the
+compiled function. Arguments that must be known at trace time (a size, a shape
+tuple, a function) are marked static the usual way:
 
 ```python
-@fn(jit=True)
-def scale[N](x: f32[N], by: f32) -> f32[N]:
-    return x * by
+import functools
 
-scale(jnp.ones(3), 2.0)
-scale(jnp.ones(4), 2.0)
-print(scale.explain_retrace())       # x: f32[3]  ->  f32[4]
+@functools.partial(jax.jit, static_argnames="n")
+@fn
+def repeat[N, K](x: f32[N], n: int) -> f32[K]:
+    return jnp.tile(x, n)
 ```
+
+(`repeat` returns `f32[K]` without saying what `K` is; `@fn(K="N * n")` would
+tie it down.) Typed numbers such as `rate: float` may be traced as they are.
 
 Compile time does not grow with batch size (measured from 1 to 4096) as long as
 loops are staged. `tx.compile_cache(path)` keeps compiled functions on disk
 across runs.
 
-`@fn(remat=True)` recomputes a function's intermediates in the backward pass
-instead of storing them (`remat="dots"` keeps matrix products). Put it on a
-layer: with the layer scan, a 12-layer backward pass went from 57 MB to 22 MB.
+`jax.checkpoint` (remat) works on a layer's `__call__` as on any function:
+with the layer scan, a 12-layer backward pass went from 57 MB to 22 MB.
+`tx.debug.memory` measures it.
 
 ## Random keys
 
 ```python
-@fn(random=True)
+@tx.random
+@fn
 def dropout[D](x: f32[D], rate: float = 0.5) -> f32[D]:
     keep = jr.bernoulli(tx.key(), 1 - rate, x.shape)
     return jnp.where(keep, x / (1 - rate), 0.0)
@@ -283,9 +295,11 @@ dropout(jnp.ones(6))         # different on every call, reproducible after tx.se
 
 Each `tx.key()` returns a new key. Nested calls, branches and loop iterations
 derive their own keys, so eager, `jit`, `scan` and `vmap` runs draw the same
-numbers. Under a plain `jax.jit`, put a key in scope with `with tx.rng(key):`,
-or use `@fn(jit=True, random=True)`, which passes a fresh key on every call.
-`f.lift` gives each element its own key.
+numbers. `f.lift` gives each element its own key.
+
+The global key is Python state, so a compiled function takes its key as an
+argument: `jax.jit(dropout)(x, key=k)`. Any `@tx.random` function accepts
+`key=` to choose the key.
 
 ## Debugging
 

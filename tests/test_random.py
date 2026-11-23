@@ -10,7 +10,8 @@ import typax as tx
 from typax import Key, StageError, Static, f32, fn
 
 
-@fn(random=True)
+@tx.random
+@fn
 def noise[D](x: f32[D]) -> f32[D]:
     return x + jr.normal(tx.key(), x.shape)
 
@@ -25,7 +26,8 @@ def test_fresh_key_each_call_and_reproducible_with_seed():
 
 
 def test_several_draws_inside_one_call_differ():
-    @fn(random=True)
+    @tx.random
+    @fn
     def two() -> tuple[f32, f32]:
         return jr.normal(tx.key()), jr.normal(tx.key())
 
@@ -42,7 +44,8 @@ def test_explicit_key_scope():
 
 
 def test_nested_random_functions_get_distinct_keys():
-    @fn(random=True)
+    @tx.random
+    @fn
     def outer[D](x: f32[D]) -> tuple[f32[D], f32[D]]:
         return noise(x), noise(x)
 
@@ -68,18 +71,19 @@ def test_plain_jit_with_explicit_key_scope():
         assert jnp.allclose(a, noise(jnp.zeros(3)))  # same result eagerly
 
 
-def test_owned_jit_gets_fresh_randomness_without_retracing():
-    @fn(jit=True, random=True)
-    def jnoise[D](x: f32[D]) -> f32[D]:
+def test_jax_jit_takes_the_key_as_an_argument():
+    @tx.random
+    @fn
+    def noise[D](x: f32[D]) -> f32[D]:
         return x + jr.normal(tx.key(), x.shape)
 
-    outs = [jnoise(jnp.zeros(3)) for _ in range(4)]
+    jnoise = jax.jit(noise)
+    outs = [jnoise(jnp.zeros(3), key=jr.key(i)) for i in range(4)]
     assert len({tuple(o.tolist()) for o in outs}) == 4
-    assert len(jnoise.traces) == 1
-    tx.seed(7)
-    a = jnoise(jnp.zeros(3))
-    tx.seed(7)
-    assert jnp.allclose(a, jnoise(jnp.zeros(3)))
+    assert jnoise._cache_size() == 1
+    assert jnp.allclose(jnoise(jnp.zeros(3), key=jr.key(1)), noise(jnp.zeros(3), key=jr.key(1)))
+    with pytest.raises(tx.StageError, match="key=key"):
+        jnoise(jnp.zeros(3))
 
 
 def test_lift_gives_each_example_its_own_key():
@@ -99,7 +103,8 @@ def test_random_functions_are_provable():
 
 
 def test_keys_agree_between_eager_and_staged_control_flow():
-    @fn(random=True)
+    @tx.random
+    @fn
     def walk[T](steps: f32[T]) -> f32[T]:
         pos = 0.0
         out = []
@@ -127,7 +132,8 @@ def test_keys_agree_between_eager_and_staged_control_flow():
 
 
 def test_independent_random_loop_uses_vmap_with_distinct_keys():
-    @fn(random=True)
+    @tx.random
+    @fn
     def samples[T](x: f32[T]) -> f32[T]:
         out = []
         for v in x:

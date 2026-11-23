@@ -37,7 +37,8 @@ def pad[B, T, U](x: f32[B, T]) -> f32[B, U]:
     return jnp.pad(x, ((0, 0), (0, 1)))
 
 
-@fn(jit=True, random=True, examples={"n": [1, 2]})
+@tx.random
+@fn(examples={"n": [1, 2]})
 def step[B](x: f32[B], lr: f32, n: int, key: Key, mode: str = "a") -> f32[B]:
     return x * lr * n + jr.normal(tx.key(), x.shape)
 
@@ -73,8 +74,9 @@ assert_type(Model().call.lift(x[0], scale=2.0), jax.Array)
 report = tx.prove(attend)
 assert_type(report.ok, bool)
 attend.check().raise_if_failed()
-step.traces
-step.explain_retrace()
+jax.jit(step, static_argnames=("n", "mode"))(x[0, 0], jnp.float32(0.1), 2, jr.key(0))
+lifted = tx.lift(attend)
+assert_type(lifted(x, x), jax.Array)
 attend.flow
 with tx.rng(0):
     tx.key()

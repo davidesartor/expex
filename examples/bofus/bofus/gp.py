@@ -1,3 +1,4 @@
+import functools
 from typing import Literal
 
 import jax
@@ -15,7 +16,8 @@ from .rkhs import Periodic, RBFMixture
 type Two = Literal[2]
 
 
-@fn(jit=True)
+@jax.jit
+@fn
 def factorize[N](
     K: Float[N, N], y: Float[N]
 ) -> tuple[Float[N, N], Float[N], Float[N], Float, Float]:
@@ -43,7 +45,8 @@ def factorize[N](
     return K_chol, Ki_1, Ki_r, b, nu
 
 
-@fn(jit=True)
+@jax.jit
+@fn
 def loglikelihood[N](K: Float[N, N], y: Float[N], nu: Float | None = None) -> Float:
     """REML likelihood: trend integrated out under a flat prior, scale nu concentrated unless given."""
     K_chol, Ki_1, _, _, nu_hat = factorize(K, y)
@@ -62,7 +65,8 @@ def _take(tree, index):
     return jax.tree.map(lambda z: z[index], tree)
 
 
-@fn(jit=True)
+@functools.partial(jax.jit, static_argnames="periodic")
+@fn
 def pairwise_squared_distance[N1, N2, O, M, D](
     l0: Float[D] | None,
     f1: Batch[RBFMixture[M, D], N1, O],
@@ -84,7 +88,8 @@ def pairwise_squared_distance[N1, N2, O, M, D](
     return d2
 
 
-@fn(jit=True)
+@functools.partial(jax.jit, static_argnames=("profile", "periodic", "restarts"))
+@fn
 def _fit[N, O, M, D](
     key: Key,
     f: Batch[RBFMixture[M, D], N, O],
@@ -212,7 +217,7 @@ class GaussianProcess[N, O, M, D]:
         self.rho, self.g, self.nu, self.dof, self.b, self.K_chol, self.Ki_1, self.Ki_r = fitted
         self.profile, self.l0, self.periodic, self.f, self.y = profile, l0, periodic, f, y
 
-    @fn(jit=True)
+    @fn
     def predict_joint[Q](self, f: Batch[RBFMixture[M, D], Q, O]) -> tuple[Float[Q], Float[Q, Q]]:
         """Posterior location and scale at f, student-t with self.dof dof (gaussian if None)."""
         # cancellation only approximates the exact zeros of coincident functions
@@ -237,7 +242,8 @@ class GaussianProcess[N, O, M, D]:
         cov = cov + jnp.outer(Kbq, Kbq) / self.Ki_1.sum()
         return mean, self.nu * cov
 
-    @fn(jit=True)
+    @jax.jit
+    @fn
     def predict_marginal[Q](self, f: Batch[RBFMixture[M, D], Q, O]) -> tuple[Float[Q], Float[Q]]:
         """Posterior location and squared scale of each function on its own."""
         mean, cov = self.predict_joint.lift(_expand(f, 1))

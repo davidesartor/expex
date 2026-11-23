@@ -30,24 +30,31 @@ def lift(f: Fn[Any, Any], args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
     do not share randomness.
     """
     __tracebackhide__ = True
+    key = None
+    original = kwargs
+    if f.random and "key" in kwargs and "key" not in f.params:
+        kwargs = dict(kwargs)
+        key = kwargs.pop("key")
     try:
         ba = f._sig.bind(*args, **kwargs)
     except TypeError:
-        return f._direct(args, kwargs)  # let Python raise its own error
+        return f._direct(args, original)  # let Python raise its own error
     try:
         leaves, batches, bshape = batch_plan(f, ba.arguments, "lift")
     except TypeError:
         if not f.auto_lift:
             raise
-        return f._direct(args, kwargs)  # variadic shapes: nothing to infer
+        return f._direct(args, original)  # variadic shapes: nothing to infer
     if not bshape:
-        return f._direct(args, kwargs)
+        return f._direct(args, original)
 
     n = len(bshape)
     prepared: list[Any] = []
     levels: list[set[int]] = []
     if f.random:  # one key per example
-        prepared.append(jr.split(_rng.fresh(f"{f.name}.lift()"), bshape))
+        if key is None:
+            key = _rng.fresh(f"{f.name}.lift()")
+        prepared.append(jr.split(key, bshape))
         levels.append(set(range(n)))
     for (spec, v, path), b in zip(leaves, batches):
         if isinstance(spec, KeySpec) and not b:
@@ -69,8 +76,6 @@ def lift(f: Fn[Any, Any], args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
         k = next(it) if f.random else None
         new = f._walk(ba.arguments, lambda s, x, p: next(it))
         b2 = inspect.BoundArguments(f._sig, new)  # type: ignore[arg-type]
-        if f._jitted is not None:
-            return f._call_jit(b2.args, b2.kwargs, k)
         return f._run(b2.args, b2.kwargs, key=k)
 
     g: Callable[..., Any] = core_fn

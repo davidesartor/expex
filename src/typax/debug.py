@@ -37,7 +37,7 @@ from jax.core import eval_jaxpr
 
 from . import _rng
 from ._dims import describe
-from ._fn import BoundFn, Fn
+from ._fn import BoundFn, Fn, unwrap
 from ._jaxpr import iter_eqns, source_key, source_of, sub_jaxprs
 
 __all__ = [
@@ -54,6 +54,7 @@ def _plain(
     ``Static`` arguments of an ``@fn`` are closed over, so that tracing the
     result does not turn them into traced values.
     """
+    f = unwrap(f)
     if isinstance(f, BoundFn):
         fn, args = f.fn, (f.obj, *args)
     elif isinstance(f, Fn):
@@ -467,7 +468,7 @@ class Timing:
         if self.run > 0 and setup > 10 * self.run:
             out += (
                 f"\n  setup costs as much as {setup / self.run:,.0f} runs: avoid retracing "
-                f"(see `.traces` on a jit=True @fn) and keep the program small."
+                f"(JAX_EXPLAIN_CACHE_MISSES=1 says why one happens) and keep the program small."
             )
         return out
 
@@ -556,6 +557,7 @@ def shapes(f: Callable[..., Any], *args: Any, **kwargs: Any) -> ShapeTrace:
 
     from . import _check
 
+    f = unwrap(f)
     target = f.fn if isinstance(f, BoundFn) else f
     raw: Any = getattr(target, "raw", target)
     raw = getattr(raw, "__func__", raw)
@@ -695,7 +697,7 @@ def memory(f: Callable[..., Any], *args: Any, **kwargs: Any) -> Memory:
     analysis of the traced program (before XLA's optimisations): the largest
     amount of data alive at once and which values, created on which source
     lines, make it up. Pass ``jax.grad(f)`` to see the cost of a backward pass;
-    ``@fn(remat=...)`` reduces it.
+    ``jax.checkpoint`` on a layer reduces it.
     """
     g, args, kwargs = _plain(f, args, kwargs)
     key = jr.key(0)

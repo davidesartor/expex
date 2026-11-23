@@ -6,17 +6,20 @@ from jax.scipy.special import gammaln
 from typax import Float, fn
 
 from . import utils
+import typax as tx
 
 Profile = Callable[..., Any]
 
 
-@fn(lift=True)
+@tx.lift
+@fn
 def euclidean_distance[D](l: Float[D], x1: Float[D], x2: Float[D]) -> Float:
     """Euclidean distance scaled by squared lengthscales l."""
     return utils.safe_sqrt(jnp.sum(jnp.square(x1 - x2) / l))
 
 
-@fn(lift=True)
+@tx.lift
+@fn
 def rbf(d: Float) -> Float:
     """Radial basis function kernel."""
     if jnp.isinf(d):
@@ -24,7 +27,8 @@ def rbf(d: Float) -> Float:
     return jnp.exp(-0.5 * d**2)
 
 
-@fn(lift=True)
+@tx.lift
+@fn
 def matern12(d: Float) -> Float:
     """Matern 1/2 kernel."""
     if jnp.isinf(d):
@@ -32,7 +36,8 @@ def matern12(d: Float) -> Float:
     return jnp.exp(-d)
 
 
-@fn(lift=True)
+@tx.lift
+@fn
 def matern32(d: Float) -> Float:
     """Matern 3/2 kernel."""
     if jnp.isinf(d):
@@ -40,7 +45,8 @@ def matern32(d: Float) -> Float:
     return (1 + jnp.sqrt(3.0) * d) * jnp.exp(-jnp.sqrt(3.0) * d)
 
 
-@fn(lift=True)
+@tx.lift
+@fn
 def matern52(d: Float) -> Float:
     """Matern 5/2 kernel."""
     if jnp.isinf(d):
@@ -53,7 +59,8 @@ def _log_coef(p, i):
 
 
 def matern(p: int):
-    @fn(lift=True)
+    @tx.lift
+    @fn
     def profile(d: Float) -> Float:
         """Matern kernel with half-integer smoothness p + 1/2."""
         if jnp.isinf(d):

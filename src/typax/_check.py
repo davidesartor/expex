@@ -35,7 +35,7 @@ from . import _rng
 from ._dims import DAny, DConst, DEtc, DExpr, DName, DVar, Env
 from ._errors import ShapeError, StageError
 from ._expr import to_jax_constraint
-from ._fn import REGISTRY, BoundFn, Fn
+from ._fn import REGISTRY, BoundFn, Fn, unwrap
 from ._jaxpr import iter_eqns, source_of
 from ._spec import Spec, StaticSpec, Unsynthesizable
 
@@ -418,8 +418,9 @@ def prove(target: Any, examples: dict[str, Any] | None = None) -> Any:
 
     ``target`` may be an ``@fn`` function (returns a :class:`Report`), or a
     module, package or dotted name (returns a list of reports, one for every
-    ``@fn`` defined inside it).
+    ``@fn`` defined inside it). A jitted ``@fn`` is proved without compiling it.
     """
+    target = unwrap(target)
     if isinstance(target, BoundFn):
         f = target.fn
         if f._lazy:

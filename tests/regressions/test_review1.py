@@ -154,7 +154,7 @@ def test_wrapped_functions_are_not_replaced_by_their_inner_function():
 
         return w
 
-    @fn(checked=False)
+    @fn
     @doubled
     def g(x):
         if x > 0:
@@ -219,7 +219,7 @@ def agree(f, *args):
 
 
 def test_or_and_return_operands_not_booleans():
-    @fn(checked=False)
+    @fn
     def f(x, d):
         y = x or d
         z = x and d
@@ -232,7 +232,7 @@ def test_or_and_return_operands_not_booleans():
 
 
 def test_variable_read_in_loop_else():
-    @fn(checked=False)
+    @fn
     def f(x):
         t = jnp.float32(0.0)
         for a in (1, 2):
@@ -246,7 +246,7 @@ def test_variable_read_in_loop_else():
 
 
 def test_in_place_container_updates_in_loops():
-    @fn(checked=False)
+    @fn
     def mean(x):
         stats = {"n": 0}
         tot = jnp.float32(0.0)
@@ -255,7 +255,7 @@ def test_in_place_container_updates_in_loops():
             tot = tot + v
         return tot / stats["n"]
 
-    @fn(checked=False)
+    @fn
     def ema(x):
         st = {"h": jnp.float32(0.0)}
         for v in x:
@@ -266,7 +266,7 @@ def test_in_place_container_updates_in_loops():
     assert agree(mean, X) == 3.0
     agree(ema, X)
 
-    @fn(checked=False)
+    @fn
     def cond_mutation(x):
         d = {"n": 0}
         if x > 0:
@@ -279,7 +279,7 @@ def test_in_place_container_updates_in_loops():
 
 
 def test_reusing_names_across_traced_loops():
-    @fn(checked=False)
+    @fn
     def f(n, x):
         acc = 0.0
         for i in range(n):
@@ -290,7 +290,7 @@ def test_reusing_names_across_traced_loops():
 
     assert agree(f, jnp.int32(3), jnp.arange(1.0, 6.0)) == 36.0
 
-    @fn(checked=False)
+    @fn
     def g(x):
         while x > 10:
             t = x / 2
@@ -305,7 +305,7 @@ def test_reusing_names_across_traced_loops():
 
 
 def test_collected_lists_can_be_returned_and_combined():
-    @fn(checked=False)
+    @fn
     def f(x):
         ys = []
         for v in x:
@@ -315,7 +315,7 @@ def test_collected_lists_can_be_returned_and_combined():
     out = jax.jit(f)(jnp.arange(3.0))
     assert isinstance(out, list) and [float(v) for v in out] == [0.0, 2.0, 4.0]
 
-    @fn(checked=False)
+    @fn
     def g(x):
         ys = []
         for v in x:
@@ -328,21 +328,21 @@ def test_collected_lists_can_be_returned_and_combined():
 
 
 def test_dtypes_match_between_eager_and_jit():
-    @fn(checked=False)
+    @fn
     def idx(x):
         ys = []
         for i in range(3):
             ys.append(x * i)
         return jnp.stack(ys)
 
-    @fn(checked=False)
+    @fn
     def enum(x):
         t = x[0] * 0
         for i, v in enumerate(x):
             t = t + v * i
         return t
 
-    @fn(checked=False)
+    @fn
     def branch(c, x):
         if c:
             k = 1
@@ -357,7 +357,7 @@ def test_dtypes_match_between_eager_and_jit():
 
 
 def test_jit_only_crashes():
-    @fn(checked=False)
+    @fn
     def chained(x):
         if 0.0 < x < 10.0:
             return x
@@ -366,7 +366,7 @@ def test_jit_only_crashes():
     assert agree(chained, jnp.float32(5.0)) == 5.0
     assert agree(chained, jnp.float32(50.0)) == -50.0
 
-    @fn(checked=False)
+    @fn
     def countdown(n):
         s = 0
         while n:
@@ -376,7 +376,7 @@ def test_jit_only_crashes():
 
     assert agree(countdown, jnp.int32(4)) == 10
 
-    @fn(checked=False)
+    @fn
     def pair(x):
         if x > 0:
             return x, 1
@@ -388,7 +388,7 @@ def test_jit_only_crashes():
 
 def test_nested_function_parameters_do_not_block_conversion():
     # `v` is a parameter of the nested function, not a captured variable
-    @fn(checked=False)
+    @fn
     def f(xs):
         def double(v):
             return v * 2

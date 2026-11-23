@@ -31,7 +31,7 @@ import jax
 
 from ._dims import Env, resolve
 from ._errors import Mismatch, ShapeError
-from ._fn import Fn, fn
+from ._fn import Fn, fn, unwrap
 from ._spec import _class_annotations, parse_owner, rebuild, static_type
 
 T = TypeVar("T", bound=type)
@@ -42,17 +42,8 @@ _SKIP = {"__init__", "__post_init__", "__repr__", "__eq__", "__hash__", "__init_
 @overload
 def struct(cls: T, /) -> T: ...
 @overload
-def struct(
-    *, where: str | list[str] | tuple[str, ...] = (), jit: bool = False, **options: Any
-) -> Callable[[T], T]: ...
-def struct(
-    cls: Any = None,
-    /,
-    *,
-    where: str | list[str] | tuple[str, ...] = (),
-    jit: bool = False,
-    **options: Any,
-) -> Any:
+def struct(*, where: str | list[str] | tuple[str, ...] = ()) -> Callable[[T], T]: ...
+def struct(cls: Any = None, /, *, where: str | list[str] | tuple[str, ...] = ()) -> Any:
     """Turn a class into a typed module. See the module docstring.
 
     ``where`` states invariants over the class's dimensions and int fields,
@@ -60,8 +51,8 @@ def struct(
     passed to an ``@fn``, and every function that receives an instance, however
     deeply nested, may assume them (the prover does).
 
-    Other options (``jit=True``, ``random=True``, ...) are passed to every
-    method's ``@fn``. A method already decorated with ``@fn(...)`` keeps its own.
+    Methods are wrapped with ``@tx.fn``; one already decorated (``@tx.fn(...)``,
+    ``@tx.lift``, ``@tx.random``) keeps its own options.
     """
     from ._expr import Expr
 
@@ -82,15 +73,25 @@ def struct(
         if custom_init:
             _wrap_init(cls)
 
+        fields = {f.name for f in dataclasses.fields(cls)}
         for name, value in list(vars(cls).items()):
-            if name in _SKIP or (name.startswith("__") and name != "__call__"):
+            if name in _SKIP or name in fields or (name.startswith("__") and name != "__call__"):
                 continue
             wrapper = None
             if isinstance(value, (staticmethod, classmethod)):
                 wrapper, value = type(value), value.__func__
+            inner = unwrap(value)
+            if inner is not value and isinstance(inner, Fn):  # e.g. @jax.jit over @tx.fn
+                inner.__set_name__(cls, name)
+                continue
+            if inspect.isfunction(getattr(value, "__wrapped__", None)) and hasattr(value, "lower"):
+                raise TypeError(
+                    f"{cls.__name__}.{name} is jitted but not checked. Put @tx.fn under "
+                    f"@jax.jit:\n\n    @jax.jit\n    @tx.fn\n    def {name}(self, ...): ..."
+                )
             if not inspect.isfunction(value) and not isinstance(value, Fn):
                 continue
-            method = value if isinstance(value, Fn) else fn(jit=jit, **options)(value)
+            method = value if isinstance(value, Fn) else fn(value)
             method.__set_name__(cls, name)
             setattr(cls, name, wrapper(method) if wrapper else method)
 

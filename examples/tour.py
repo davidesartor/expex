@@ -101,17 +101,19 @@ if __name__ == "__main__":
 
     section("5. Implicit random keys")
 
-    @fn(random=True)
+    @tx.random
+    @fn
     def dropout[D](x: f32[D], rate: float = 0.5) -> f32[D]:
         keep = jr.bernoulli(tx.key(), 1 - rate, x.shape)
         return jnp.where(keep, x / (1 - rate), 0.0)
 
     tx.seed(0)
     print(dropout(jnp.ones(6)), dropout(jnp.ones(6)), sep="\n")
+    print("compiled, key passed in:", jax.jit(dropout)(jnp.ones(6), key=jr.key(1)))
     try:
         jax.jit(dropout)(jnp.ones(6))
     except tx.StageError as e:
-        print("\nunder a plain jit:", str(e).splitlines()[0])
+        print("\nwithout a key:", str(e).splitlines()[0])
 
     section("6. Finding a NaN")
 
@@ -125,14 +127,3 @@ if __name__ == "__main__":
     section("7. Where the time goes")
     print(debug.timing(loss, p, xs, xs))
 
-    section("8. Retraces, explained")
-
-    @fn(jit=True)
-    def scale[N](x: f32[N], by: f32) -> f32[N]:
-        return x * by
-
-    scale(jnp.ones(3), 2.0)
-    scale(jnp.ones(4), 2.0)
-    scale(jnp.ones(4), jnp.float32(2.0))
-    print(scale.explain_retrace(1))
-    print(scale.explain_retrace(2))
