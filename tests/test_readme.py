@@ -23,16 +23,28 @@ def run_blocks(doc: str | list[str], tmp_path: pathlib.Path) -> dict:
     return runpy.run_path(str(path))
 
 
+def test_readme_images_exist():
+    text = (ROOT / "README.md").read_text()
+    for src in re.findall(r'<img src="([^"]+)"', text):
+        assert (ROOT / src).is_file(), src
+
+
 def test_readme_blocks_run(tmp_path, capsys):
     ns = run_blocks("README.md", tmp_path)
-    assert "B is 2 (from `q: f32[2, 3, 4]`), but axis 0 of `k` is 5." in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "B is 2 (from `q: f32[2, 3, 4]`), but axis 0 of `k` is 5." in out
+    assert "Stack.__call__: proved for all sizes" in out
+    assert "flops        2·D²·L + 10·D·L" in out
+    assert "49,920  D²·L + D·L" in out
+    assert "y = self.w @ x + self.b     # y: f32[D]" in out
+    assert "NaN first appears at" in out and "operation: mul" in out
 
 
 def test_readme_comparisons_agree(tmp_path):
     """Each JAX / expex pair on the front page computes the same thing."""
     text = (ROOT / "README.md").read_text()
     blocks = re.findall(r"```python\n(.*?)```", text, flags=re.S)
-    pairs = [b.split("\n# expex\n") for b in blocks[1:-1]]
+    pairs = [b.split("\n# expex\n") for b in blocks if "\n# expex\n" in b]
     jax_side, expex_side = [j for j, _ in pairs], [e for _, e in pairs]
     src = blocks[0] + "".join(
         f"\n{j}\njax_{i} = dict(globals())\n{e}\n" for i, (j, e) in enumerate(zip(jax_side, expex_side))

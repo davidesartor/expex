@@ -60,7 +60,7 @@ def rnn[T, D](w: f32[D, D], xs: f32[T, D]) -> f32[T, D]:
     return jnp.asarray(hs)
 ```
 
-### Branches are `if`
+### Branches are `if` / `else`
 
 ```python
 # JAX
@@ -73,9 +73,7 @@ def safe_log(x):
 # expex
 @expex.fn(jit=True, vectorize=True)
 def safe_log(x: f32) -> f32:
-    if x > 0:  # lax.cond, on any batch shape
-        return jnp.log(x)
-    return -jnp.inf
+    return jnp.log(x) if x > 0 else -jnp.inf  # a select per element
 ```
 
 ### Models are classes; identical layers scan themselves
@@ -97,11 +95,9 @@ def stack(params, x):
 params = init(key, D=64, L=12)
 
 # expex
-normal = jax.nn.initializers.normal(0.1)
-
 @expex.struct
 class Block[D]:
-    w: f32[D, D] = normal
+    w: f32[D, D] = jax.nn.initializers.normal(0.1)
     b: f32[D] = 0.0
 
     def __call__(self, x: f32[D]) -> f32[D]:
@@ -138,23 +134,112 @@ attend(): argument `k` does not match its annotation.
     B is 2 (from `q: f32[2, 3, 4]`), but axis 0 of `k` is 5.
 ```
 
-## Tools
+## What else the annotations give you
 
-They all read the same annotations, so none needs example data unless it
-measures something.
+None of this needs example data, unless it measures something.
+
+**Proofs for every size**, also from the command line (`python -m expex pkg/`) and
+in pytest (`pytest --expex pkg`):
+
+```python
+print(expex.prove(Stack.__call__))
+```
+
+```
+__main__.Stack.__call__: proved for all sizes
+```
+
+**Cost as formulas in the sizes**, or as numbers for given sizes:
+
+```python
+print(expex.cost(Stack.__call__))
+```
+
+```
+Stack.__call__   (sizes: D, L)
+  flops        2·D²·L + 10·D·L
+  parameters   D²·L + D·L
+  largest      f32[D] (D elements)
+  note: L = len(self.blocks)
+```
+
+**Model summaries:**
+
+```python
+print(expex.summary(model))
+```
+
+```
+Stack   (D=64, L=12)
+module     class              params  formula       bytes   flops  flops formula
+────────────────────────────────────────────────────────────────────────────────
+blocks[*]  Block[D=64]  × 12   4,160  D² + D      16.6 kB  8.83 k  2·D² + 10·D
+  w        f32[D, D]           4,096  D²          16.4 kB
+  b        f32[D]                 64  D             256 B
+────────────────────────────────────────────────────────────────────────────────
+total      Stack              49,920  D²·L + D·L   200 kB   106 k  2·D²·L + 10·D·L
+```
+
+**Architecture diagrams**, drawn from the code. `expex.diagram(Transformer.__call__)`
+for the transformer in [`examples/`](examples/transformer.py); save it as `.svg`,
+`.png`, or an interactive `.html` page where you click a call to open it:
+
+<img src="docs/images/transformer.png" alt="Diagram of a transformer: tokens, index, Block × L, LayerNorm, matmul, with each block's internals on the right" width="720">
+
+The same diagram timed on real inputs (`expex.diagram.timed(model, tokens)`), and
+the one a `ShapeError` carries (`e.diagram`), with the failing call and the path
+into it in red:
+
+<table><tr>
+<td><img src="docs/images/transformer_timed.png" alt="The transformer diagram with each call coloured by its share of the measured time"></td>
+<td><img src="docs/images/transformer_error.png" alt="The transformer diagram with the MLP call that failed in red"></td>
+</tr></table>
+
+**Debugging:** shapes line by line, and where a NaN first appeared:
+
+```python
+print(expex.debug.shapes(Block.__call__))
+```
+
+```
+__call__(self: Block, x: f32[D]) -> f32[D]   [symbolic D]
+   75 |         y = self.w @ x + self.b     # y: f32[D]
+   76 |         return x + jax.nn.gelu(y)   # -> f32[D]
+```
+
+```python
+@expex.fn
+def entropy[N](logits: f32[N]) -> f32:
+    p = jax.nn.softmax(logits)
+    return -(p * jnp.log(p)).sum()
+
+print(expex.debug.find_nan(entropy, jnp.array([0.0, 200.0, -200.0])))
+```
+
+```
+NaN first appears at example.py:4 (entropy)
+    > return -(p * jnp.log(p)).sum()
+  operation: mul
+  inputs:
+    #0: f32[3]  min=0  max=1  (2 zero, of 3)
+    #1: f32[3]  min=0  max=0  (2 -inf, 1 zero, of 3)
+  output:
+    f32[3]  min=0  max=0  (2 nan, 1 zero, of 3)
+  infinities appeared earlier at:
+    example.py:4 (entropy)  (log)  > return -(p * jnp.log(p)).sum()
+```
+
+**And the rest:**
 
 | | |
 |---|---|
-| `expex.prove(f)` | the shapes hold for every size (also `python -m expex pkg`, `pytest --expex pkg`) |
-| `expex.cost(f)` | FLOPs and parameters as formulas in the sizes |
-| `expex.summary(model)` | one row per module: parameters, FLOPs, shapes |
-| `expex.diagram(f)` | an interactive architecture diagram; `.timed(...)` colours it by measured time |
-| `expex.diff(a, b)` | two models or checkpoints compared field by field |
+| `@expex.fn(jit=, vectorize=, random=, remat=, donate="auto")` | compile, batch, split keys, rematerialise, donate the buffers a call site overwrites |
 | `expex.save` / `expex.load` | checkpoints checked against the annotations |
-| `expex.shard(f, mesh, B="data")` | shardings from axis names |
-| `@expex.fn(jit=, vectorize=, random=, remat=, donate="auto")` | compile, batch, keys, rematerialise, donate buffers |
-| `expex.eps`, `expex.tiny` | constants that take the dtype of the array they meet |
-| `expex.debug.find_nan` / `watch` / `profile` | where a NaN appeared; activations and gradients per layer; FLOPs per line |
+| `expex.diff(a, b)` | two models or checkpoints compared field by field |
+| `expex.shard(f, mesh, B="data", D="model")` | shardings from axis names |
+| `expex.eps`, `expex.tiny`, `expex.huge` | constants in the dtype of the array they meet |
+| `expex.debug.watch(loss, model)` | activations and gradients of every layer, flagging exploding or dead ones |
+| `expex.debug.profile(f, ...)` | FLOPs and bytes per source line |
 
 ## Ported projects
 
