@@ -105,6 +105,9 @@ parameter or an annotated local (`h: f32[B, T, D] = ...`), and otherwise from
 its sizes. When two axes have the same size and nothing says which is which,
 the call is an error asking for an annotation.
 
+`tx.size(T)` is the size of `T` in the current call, a tuple for `*B` and the
+value of a derived size such as `U = T + 1`: `jnp.zeros((tx.size(B), tx.size(T)))`.
+
 ## Proofs without data
 
 `tx.prove` traces a function with symbolic sizes, so a passing proof holds for

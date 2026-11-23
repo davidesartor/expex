@@ -198,7 +198,6 @@ class Fn(Generic[P, R]):
             except Exception as e:  # never let conversion break a working function
                 self.convert_note = f"conversion failed: {type(e).__name__}: {e}"
         self.converted = self._impl is not raw
-        self._has_locals = bool(getattr(self._impl, "__typax_locals__", 0))
         self.name: str = getattr(raw, "__qualname__", getattr(raw, "__name__", repr(raw)))
         self.prove = prove
         self.examples = dict(examples or {})
@@ -250,8 +249,10 @@ class Fn(Generic[P, R]):
         for name in self._sig.parameters:
             parse(anns.get(name, inspect.Parameter.empty)).names(declared)
         parse(anns.get("return", inspect.Parameter.empty)).names(declared)
+        type_params = {t.__name__ for t in getattr(raw, "__type_params__", ())}
         for k in self.defs:
-            if k not in declared and not self._pending:
+            # a size may also be declared as a type parameter and used only in the body
+            if k not in declared and k not in type_params and not self._pending:
                 raise TypeError(
                     f"{self.name}: `{k}=...` was given to @fn, but `{k}` does not appear "
                     f"in the signature."
@@ -467,14 +468,11 @@ class Fn(Generic[P, R]):
         # even when the call itself sits inside a traced branch of the caller.
         depth, _flow._STAGE.depth = _flow._STAGE.depth, 0
         try:
-            if self._has_locals:
-                _ops.CALLS.stack.append((env, self))
-                try:
-                    out = self._impl(*args, **kwargs)
-                finally:
-                    _ops.CALLS.stack.pop()
-            else:
+            _ops.CALLS.stack.append((env, self))  # for checked locals, axis names, tx.size
+            try:
                 out = self._impl(*args, **kwargs)
+            finally:
+                _ops.CALLS.stack.pop()
         except Exception as e:
             _flow._STAGE.depth = depth
             if config.notes and not getattr(e, "_typax_local", None) is self:

@@ -45,6 +45,42 @@ def axis_name(v: Any) -> str | None:
     return None
 
 
+def size(name: Any) -> Any:
+    """The size of axis ``name`` in the current ``@fn`` call.
+
+    ::
+
+        @tx.fn
+        def init[B, T](x: f32[B, T]) -> f32[B, T]:
+            return jnp.zeros((tx.size(B), tx.size(T)))
+
+    For a variadic ``*B`` it is a tuple of sizes. Under the prover the sizes
+    are symbolic, so code built from them is proved for all sizes.
+    """
+    from ._ops import CALLS
+
+    n = axis_name(name)
+    if n is None:
+        raise TypeError(f"tx.size() takes a size name (a type parameter or a Dim class), not {name!r}")
+    if not CALLS.stack:
+        raise ShapeError(
+            f"tx.size({n}) is only available inside an @fn call (with checks on: "
+            f"the sizes come from matching the arguments)."
+        )
+    env, fn = CALLS.stack[-1]
+    if n.startswith("*"):
+        if n[1:] in env.vars:
+            return tuple(env.vars[n[1:]])
+    elif n in env.dims:
+        return env.dims[n]
+    elif n in getattr(fn, "defs", {}) and fn.defs[n].names <= env.dims.keys():
+        return fn.defs[n](env.dims)  # a derived size, e.g. U = T + 1
+    raise ShapeError(
+        f"tx.size({n.lstrip('*')}): {n} is not bound in this call. Only sizes that appear in "
+        f"the arguments (or are derived from them) are known inside the body."
+    )
+
+
 def named_(target: Any, attr: str | None, args: tuple[Any, ...], kwargs: dict[str, Any], site: str, var: str | None) -> Any:
     """Call ``target.attr(*args, **kwargs)`` (or ``target(...)``) with axis names resolved."""
     __tracebackhide__ = True

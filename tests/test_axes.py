@@ -101,3 +101,19 @@ def test_names_that_are_not_axes_are_left_alone():
         return x.sum(axis) + k
 
     assert f(jnp.ones(3), 0) == 3.0
+
+
+def test_size_gives_the_size_of_a_name():
+    @fn
+    def init[*B, T](x: f32[*B, T]) -> f32[*B, T]:
+        return jnp.zeros((*tx.size(B), tx.size(T)))
+
+    @fn(U="T + 1")
+    def pad[T, U](x: f32[T]) -> f32[U]:
+        return jnp.zeros(tx.size(U)).at[: tx.size(T)].set(x)
+
+    assert init(jnp.ones((2, 5, 3))).shape == (2, 5, 3) and tx.prove(init).ok
+    assert jax.jit(init)(jnp.ones((4, 3))).shape == (4, 3)
+    assert pad(jnp.ones(3)).tolist() == [1, 1, 1, 0] and tx.prove(pad).ok
+    with pytest.raises(ShapeError, match="only available inside an @fn"):
+        tx.size(Vocab)

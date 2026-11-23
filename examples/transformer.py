@@ -46,8 +46,8 @@ class Attention[D]:
 
     @tx.fn(H="heads", K="D // heads")
     def split[T, H, K](self, x: f32[T, D]) -> f32[H, T, K]:
-        t, d = x.shape
-        return x.reshape(t, self.heads, d // self.heads).transpose(1, 0, 2)
+        h: f32[T, H, K] = x.reshape(tx.size(T), tx.size(H), tx.size(K))
+        return h.transpose(H, T, K)
 
     @staticmethod
     @tx.fn
@@ -57,10 +57,11 @@ class Attention[D]:
         weights = jax.nn.softmax(jnp.where(mask, scores, -jnp.inf), axis=-1)
         return weights @ v
 
-    def __call__[T](self, x: f32[T, D]) -> f32[T, D]:
+    @tx.fn(H="heads", K="D // heads")
+    def __call__[T, H, K](self, x: f32[T, D]) -> f32[T, D]:
         q, k, v = self.split(x @ self.wq), self.split(x @ self.wk), self.split(x @ self.wv)
-        out = Attention.causal.lift(q, k, v)  # over heads
-        return out.transpose(1, 0, 2).reshape(x.shape) @ self.wo
+        out: f32[H, T, K] = Attention.causal.lift(q, k, v)  # over heads
+        return out.transpose(T, H, K).reshape(x.shape) @ self.wo
 
 
 @tx.struct
