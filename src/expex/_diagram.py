@@ -264,7 +264,10 @@ class _Builder:
         self.fail = -1  # the failing call's box (see ``error``)
         self.error: dict[str, Any] | None = None
         self.boxes: list[dict[str, Any]] = []
-        self.atoms: list[list[Any]] = []  # [box, label or None (passed through), kind]
+        self.atoms: list[list[Any]] = []  # [box, label or None (passed through), kind, primitive]
+        self.sums: dict[Any, tuple[int, int]] = {}  # a reduce_sum's result (through reshapes) -> (atom, count)
+        self.within: list[str] = []  # the names of the jit-ed functions being walked (``_var``, ...)
+        self.made: dict[Any, str] = {}  # each variable's primitive
         self.data: list[bool] = []  # depends on an input (else on constants and sizes only)
         self.near: list[frozenset[int]] = []  # the nearest drawn atoms each atom is computed from
         self.edges: list[tuple[int, int, int]] = []  # (from atom, to atom, type index)
@@ -288,7 +291,7 @@ class _Builder:
 
     def atom(self, box: int, label: str | None, kind: str, ins: list[Any], env: dict[Any, list[int]], eqn: Any = None) -> int:  # fmt: skip
         me = len(self.atoms)
-        self.atoms.append([box, label, kind])
+        self.atoms.append([box, label, kind, eqn.primitive.name if eqn is not None else ""])
         if self.flops is not None:
             n = _cost.flops(types.SimpleNamespace(eqns=[eqn]), []).value if eqn is not None else 0
             self.flops.append(float(n or 0) * self.mult)
@@ -336,15 +339,45 @@ class _Builder:
                 body = self.sub(p["body_jaxpr"], box, srcs(eqn.invars[nc : nc + nb]) + init)
                 outs = [a + c for a, c in zip(init, body)]
             elif (subs := [j for _, j in sub_jaxprs(p)]) and len(subs[0].invars) == len(eqn.invars):
+                self.within.append(str(p.get("name", "")))
                 outs = self.sub(subs[0], b, srcs(eqn.invars))  # jit, custom_jvp, remat, ...: inline
+                self.within.pop()
             if outs is None:
                 label = OPS.get(name)
+                if name == "reduce_sum" and self.within and self.within[-1].lstrip("_") == "var":
+                    label = "var"  # inside jnp.var (or std): the sum of squared deviations
+                self.mean(eqn, env)
                 if name == "gather" and not any(self.data[a] for a in _get(env, eqn.invars[1])):
                     label = None  # a slice by sizes, not a lookup
                 if name == "add" and self.joins(eqn, env):
                     label = "+"  # two computed values of one shape: a residual or skip connection
                 outs = [[self.atom(b, label, "op", eqn.invars, env, eqn)]] * len(eqn.outvars)
+                if name == "reduce_sum" and label:
+                    shape = getattr(eqn.invars[0].aval, "shape", ())
+                    self.sums[eqn.outvars[0]] = (outs[0][0], math.prod(shape[a] for a in p["axes"]) if shape else 1)
             env.update({o: s for o, s in zip(eqn.outvars, outs) if _type(o.aval) is not None})
+            self.made.update((o, name) for o in eqn.outvars)
+
+    def mean(self, eqn: Any, env: dict[Any, list[int]]) -> None:
+        """Relabel a ``sum`` divided by the number of elements it adds up (``jnp.mean``) as ``mean``."""
+        name, ins = eqn.primitive.name, eqn.invars
+        if not ins or type(ins[0]).__name__ == "Literal" or ins[0] not in self.sums:
+            return
+        if name in ("broadcast_in_dim", "reshape", "squeeze", "expand_dims", "convert_element_type"):
+            self.sums[eqn.outvars[0]] = self.sums[ins[0]]
+        elif name == "div" and len(ins) == 2:
+            atom, n = self.sums[ins[0]]
+            d = ins[1]
+            if type(d).__name__ == "Literal":
+                try:
+                    count = float(d.val) == n
+                except (TypeError, ValueError):
+                    count = False
+            else:  # a symbolic size: the count itself as a float, not a sum of it with something (n - ddof)
+                count = (self.made.get(d) == "convert_element_type" and getattr(d.aval, "shape", None) == ()
+                         and not any(self.data[a] for a in _get(env, d)))  # fmt: skip
+            if count and self.atoms[atom][1] in ("sum", "var"):
+                self.atoms[atom][1] = "mean"
 
     def joins(self, eqn: Any, env: dict[Any, list[int]]) -> bool:
         """Whether an ``add`` joins two branches: both depend on the inputs, have one shape, and neither is
@@ -459,7 +492,7 @@ def _view(m: dict[str, Any], expanded: set[int], full: bool = False) -> tuple[li
         rep.append(up if up is not None else i if b["k"] == "call" and not (b["o"] and i in expanded) else None)
     nodes: dict[str, tuple[str, str, str, int]] = {}
     key: list[str] = []
-    for i, (box, label, kind) in enumerate(atoms):
+    for i, (box, label, kind, *_) in enumerate(atoms):
         r = rep[box] if box >= 0 else None
         if r is not None:
             key.append(f"b{r}")
@@ -469,6 +502,7 @@ def _view(m: dict[str, Any], expanded: set[int], full: bool = False) -> tuple[li
             nodes[key[-1]] = (key[-1], kind, label, box)
         else:
             key.append(f"h{i}")
+    _elementwise(m, key, nodes)
     succ: dict[str, list[tuple[str, int]]] = {}
     for a, b, t in m["edges"]:
         if key[a] != key[b]:
@@ -494,6 +528,77 @@ def _view(m: dict[str, Any], expanded: set[int], full: bool = False) -> tuple[li
     if full:  # (from, to, type, type leaving the source, type entering the target)
         return list(nodes.values()), [(u, v, *t) for (u, v), t in edges.items()], sorted(drawn), fail
     return list(nodes.values()), [(u, v, t[0]) for (u, v), t in edges.items()], sorted(drawn), fail
+
+
+#: Short names for the operations an ``elementwise`` node stands for; others (reshapes, ...) go unnamed.
+_MATH = {"sub": "sub", "div": "div", "mul": "mul", "add": "add", "neg": "neg", "abs": "abs", "max": "max",
+         "min": "min", "integer_pow": "pow", "pow": "pow", "square": "square", "sqrt": "sqrt", "rsqrt": "rsqrt",
+         "exp": "exp", "log": "log", "log1p": "log1p", "tanh": "tanh", "logistic": "sigmoid", "erf": "erf",
+         "select_n": "where", "sign": "sign", "exp2": "exp2", "sin": "sin", "cos": "cos"}  # fmt: skip
+
+
+def _elementwise(m: dict[str, Any], key: list[str], nodes: dict[str, tuple[str, str, str, int]]) -> None:
+    """Make the hidden operations that join values from different nodes visible, as ``elementwise`` nodes.
+
+    Hidden operations are passed through, which is right for a chain (``gelu(x @ w)``) but loses the
+    dataflow where two values meet: ``(x - mean) / std`` would make ``x``, ``mean`` and ``std`` each
+    feed what follows. A hidden atom whose inputs come from different nodes is a join; a join and
+    the hidden atoms after it (up to the next node) become one node, and joins whose runs meet are
+    one node too. Changes ``key`` and ``nodes`` in place.
+    """
+    atoms = m["atoms"]
+    preds: dict[int, list[int]] = defaultdict(list)
+    for a, b, _ in m["edges"]:
+        preds[b].append(a)
+    hidden = lambda i: key[i][0] == "h"
+    seen: list[frozenset[str]] = []  # the nodes each atom's value comes from (itself if it is one)
+    joins = []
+    for i in range(len(atoms)):
+        sets = [seen[a] for a in preds[i]]
+        seen.append(frozenset({key[i]}) if not hidden(i) else frozenset().union(*sets))
+        if hidden(i) and len(set(sets)) >= 2 and len(seen[i]) >= 2:
+            joins.append(i)
+    if not joins:
+        return
+    succ: dict[int, list[int]] = defaultdict(list)
+    for a, b, _ in m["edges"]:
+        succ[a].append(b)
+    parent = {j: j for j in joins}
+
+    def find(j: int) -> int:
+        while parent[j] != j:
+            parent[j] = parent[parent[j]]
+            j = parent[j]
+        return j
+
+    owner: dict[int, int] = {}  # hidden atom -> a join whose run it is in
+    for j in joins:
+        todo = [j]
+        while todo:
+            a = todo.pop()
+            if a in owner:
+                if find(owner[a]) != find(j):
+                    parent[find(owner[a])] = find(j)
+                continue
+            owner[a] = j
+            todo += [b for b in succ[a] if hidden(b) and atoms[b][0] == atoms[j][0]]
+    runs: dict[int, list[int]] = defaultdict(list)
+    for a, j in owner.items():
+        runs[find(j)].append(a)
+    for root, members in runs.items():
+        members.sort()
+        names = list(dict.fromkeys(_MATH[atoms[a][3]] for a in members if len(atoms[a]) > 3 and atoms[a][3] in _MATH))
+        text = " · ".join(names[:4]) + (" …" if len(names) > 4 else "")
+        nid = f"e{members[0]}"
+        for a in members:
+            key[a] = nid
+        nodes[nid] = (nid, "op", "elementwise" + (f"\n{text}" if text else ""), atoms[members[0]][0])
+    order: dict[str, int] = {}  # nodes in the order their first atom comes
+    for i, k in enumerate(key):
+        order.setdefault(k, i)
+    items = sorted(nodes.items(), key=lambda kv: order.get(kv[0], 0))
+    nodes.clear()
+    nodes.update(items)
 
 
 def _feeds(edges: list[tuple[str, str, str]], node: str | None) -> tuple[set[str], set[int]]:
@@ -936,6 +1041,9 @@ class _Scene:
         if kind == "op":
             if n == self.fail:
                 return [[(label, "te")]]
+            if label.startswith("elementwise"):
+                ops = label.split("\n", 1)[1:] or [shape]
+                return [[("elementwise", "tb")], [(ops[0], "ts")]]
             return [[(label, "tb")]] + ([[(shape, "ts")]] if shape else [])
         i = int(n[1:])
         b, err = self.B[i], self.m.get("error")
@@ -1027,8 +1135,16 @@ class _Scene:
             for c in cv[: cv.index(lca)]:
                 self._add(c, (u, self.item_of(v, c)), info, v)
         self.origin: dict[int, tuple[float, float]] = {}
+        self.hints: dict[int, dict[str, float]] = {}
         self.place(-1)
         self.absolute(-1, 0.0, 0.0)
+        if any(p.startswith("i:") for c in self.conts for p in self.at.get(c, {})):
+            # again, with each container's entry ports in the order their values arrive from outside
+            for c in self.conts:
+                self.hints[c] = {p: self._centre(p[2:]) for p in self.at.get(c, {}) if p.startswith("i:")}
+            self.skipped.clear()
+            self.place(-1)
+            self.absolute(-1, 0.0, 0.0)
 
     def _add(self, c: int, key: tuple[str, str], info: dict[str, Any], v: str) -> None:
         e = self.E[c].setdefault(key, dict(label=None, path=False, side=True, final=False))
@@ -1088,11 +1204,10 @@ class _Scene:
         base = 1 if panel else 0
         for it in self._topo(items, pred):
             L[it] = max([L[p] + 1 for p in pred[it]] + [base])
-        fed = {key[1] for key in edges if src[key].startswith("i:")}
         topo = self._topo(items, pred)
-        for it in reversed(topo):
+        for it in reversed(topo):  # what only needs the inputs is computed as late as it can be
             kind = self.nodes[it][1] if it in self.nodes else ""
-            if not pred[it] and succ[it] and kind != "in" and it not in fed:
+            if not pred[it] and succ[it] and kind != "in":
                 L[it] = max(base, min(L[s] for s in succ[it]) - 1)
         last = max(L.values(), default=base - 1) + 1
         for p in ins:
@@ -1135,7 +1250,10 @@ class _Scene:
             by_value.setdefault(u, [])
         for it in sorted(L, key=lambda x: rank.get(x, 0)):
             layers[L[it]].append(it)
-        self._order(layers, hops)
+        hint = self.hints.get(c)
+        if hint:
+            layers[0].sort(key=lambda p: hint.get(p, 0.0))
+        self._order(layers, hops, fixed=bool(hint))
         xs = self._xs(c, layers, hops)
         ys, H, gaps = self._ys(c, layers, hops, xs, panel)
         self.layer[c] = L
@@ -1186,7 +1304,7 @@ class _Scene:
             n += sum(1 for i in range(len(es)) for j in range(i + 1, len(es)) if es[i][0] < es[j][0] and es[i][1] > es[j][1])
         return n
 
-    def _order(self, layers: list[list[str]], hops: list[tuple[str, str, str]]) -> None:
+    def _order(self, layers: list[list[str]], hops: list[tuple[str, str, str]], fixed: bool = False) -> None:
         """Barycentre sweeps (down, then up), keeping the order with the fewest crossings."""
         up: dict[str, list[str]] = defaultdict(list)
         down: dict[str, list[str]] = defaultdict(list)
@@ -1195,8 +1313,8 @@ class _Scene:
             up[b].append(a)
         best, best_n = [list(x) for x in layers], self._crossings(layers, hops)
         for sweep in range(8):
-            rng = range(1, len(layers)) if sweep % 2 == 0 else range(len(layers) - 2, -1, -1)
-            for k in rng:
+            rng = range(1, len(layers)) if sweep % 2 == 0 else range(len(layers) - 2, 0 if fixed else -1, -1)
+            for k in rng:  # with ``fixed``, the entry ports (layer 0) keep their order
                 ref = layers[k - 1] if sweep % 2 == 0 else layers[k + 1]
                 where = {it: j for j, it in enumerate(ref)}
                 nb = up if sweep % 2 == 0 else down
@@ -1416,6 +1534,12 @@ class _Scene:
             branch = sy + (4 if s.startswith("i:") else 5)
             self.segs[c][(u, t)] = [(sx, sy), (sx, branch), (above, branch), (above, mid), (tx, mid)]
             self.skipped.add((u, t))
+
+    def _centre(self, n: str) -> float:
+        """Where node ``n`` sits across the flow (absolute), from the previous layout."""
+        c = self.ncont[n]
+        o = self.origin[c][0] + self.at[c][n][0]
+        return o + self.size[n][0] / 2
 
     def absolute(self, c: int, x0: float, y0: float) -> None:
         self.origin[c] = (x0, y0)
@@ -2081,7 +2205,7 @@ def _estimated(b: _Builder, why: str) -> dict[str, Any]:
     flops = b.flops or []
     t = [0.0] * len(b.boxes)
     outside = 0.0
-    for (box, _, _), x in zip(b.atoms, flops):
+    for (box, *_), x in zip(b.atoms, flops):
         if box < 0:
             outside += x
         while box >= 0:

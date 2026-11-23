@@ -137,6 +137,14 @@ def test_transformer_depth_2(transformer):
     loops = [el for el in root if el.tag == NS + "path" and el.get("class") == "k-s0"]
     assert len(loops) == 2  # the residuals: thin lines in the stream's colour, looping over the row
     assert drawn(d, "Attention")[1] == "f-s0c k-s0"  # inside a panel, boxes are paler
+    # the final LayerNorm, opened: its elementwise arithmetic is one node, so the dataflow stays whole
+    (ln,) = [int(b[1:]) for b, label in d.boxes.items() if label == "LayerNorm.__call__"]
+    inner = {n[0]: n[2] for n in d.nodes if n[3] == ln}
+    assert sorted(inner.values()) == ["elementwise\nsub · div · mul · add", "elementwise\nsub · square", "mean", "mean", "var"]
+    leaving = {u for u, v, _ in d.edges if u in inner and v not in inner}
+    assert [inner[u] for u in leaving] == ["elementwise\nsub · div · mul · add"]  # one value leaves the panel
+    entering = {u for u, v, _ in d.edges if v in inner and u not in inner}
+    assert len(entering) == 1  # and one enters it
 
 
 def test_attention(transformer):
@@ -181,8 +189,8 @@ def test_mixer_time_loop(mamba):
     d2 = diagram(mamba.Mixer.__call__, depth=2)
     loop = [b for b, label in d2.boxes.items() if label == "× T"]
     assert loop and "selective_scan" in d2.boxes.values()
-    (inside,) = [n for n in d2.nodes if f"b{n[3]}" == loop[0]]
-    assert inside[2] == "matmul"  # h @ C[t]
+    inside = sorted(n[2] for n in d2.nodes if f"b{n[3]}" == loop[0])
+    assert inside == ["elementwise\nmul · add", "matmul"]  # h = exp(dt A) h + dt u B, then h @ C[t]
     assert titles(d2) == ["Mixer.conv", "selective_scan", "loop  × T"]
     check_svg(d2)
     texts = text(ET.fromstring(d.svg))
@@ -205,6 +213,21 @@ def gate[T, D](x: f32[T, D], w: f32[D, D]) -> f32[T, D]:
     while y.max() > 1.0:
         y = y / 2
     return y
+
+
+@expex.fn
+def norm[D](x: f32[D]) -> f32[D]:
+    return (x - x.mean()) / jnp.sqrt(((x - x.mean()) ** 2).sum() / 4.0)
+
+
+def test_elementwise_and_mean():
+    d = diagram(norm)
+    ops = labels(d, "op")
+    assert ops.count("mean") == 2 and "sum" in ops  # a sum divided by its count is a mean; by 4.0 it is not
+    (last,) = [n for n in d.nodes if n[2].startswith("elementwise") and "div" in n[2]]
+    assert edge(d, last[2], "return") == "f32[D]"  # the arithmetic that joins x and the means feeds the result
+    assert {u for u, v, _ in d.edges if v == node(d, "return")[0]} == {last[0]}
+    check_svg(d)
 
 
 def test_branches_and_while():

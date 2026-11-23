@@ -144,13 +144,18 @@ function show(k, anchor) {
     const s = Math.max(base.w / minW, base.h / minH);
     base = {x: base.x - (minW * s - base.w) / 2, y: base.y, w: minW * s, h: minH * s};
   }
-  if (anchor && vb) {  // keep the clicked call where it was on the screen
+  if (anchor && vb) {  // keep the clicked call where it was on the screen, zoomed out if the figure grew
     const g = el.querySelector(`[data-box="${anchor.box}"]`);
+    const grow = Math.max(1, base.w / vb.w, base.h / vb.h);
+    vb = {...vb, w: vb.w * grow, h: vb.h * grow};
     setViewBox();
     if (g) {
       const r = g.getBoundingClientRect(), s = el.getScreenCTM().a;
       vb = {...vb, x: vb.x + (r.left - anchor.left) / s, y: vb.y + (r.top - anchor.top) / s};
     }
+    const clamp = (v, lo, hi) => Math.min(Math.max(v, Math.min(lo, hi)), Math.max(lo, hi));
+    vb.x = clamp(vb.x, base.x + base.w - vb.w, base.x);  // and the whole figure in view, if it fits
+    vb.y = clamp(vb.y, base.y + base.h - vb.h, base.y);
   } else vb = {...base};
   setViewBox();
   wire(el);

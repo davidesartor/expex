@@ -95,7 +95,8 @@ expex.diagram(Stack.__call__, B=64, blocks=24)     # sizes and list lengths, as 
 For the transformer in `examples/`, `expex.diagram(Transformer.__call__, depth=2)`
 draws the flow from left to right: the input `tokens` (`T (i32)`), `index`,
 then a rounded container titled `Block × L` holding `LayerNorm → Attention → ⊕
-→ LayerNorm → MLP → ⊕`, then the final `LayerNorm`, `matmul` and `return`
+→ LayerNorm → MLP → ⊕`, then the final `LayerNorm` opened (`mean`, `var` and
+the `elementwise` arithmetic that normalises), `matmul` and `return`
 (`T × Vocab`). Each box has its name in bold and, in grey, what it produces
 (`per element · T × D` for a call made with `.vectorize`). A header names the
 function and its sizes (`T · D · Vocab · L = len(blocks)`). `print(d)` gives
@@ -122,11 +123,16 @@ Transformer.__call__
   layers. The selective scan in `examples/mamba/` is a container `loop × T`.
   A traced `if` or `while` is a dashed container too.
 - Between calls, only operations that say what the model does are drawn
-  (`matmul`, `index`, `sum`, `conv`, ...). So is a `⊕` where two computed
-  values of one shape are added. When that is a residual, its skip is a thin
-  line in the stream's colour that loops over the row into the `⊕`. Reshapes
-  and other elementwise arithmetic are skipped, with arrows drawn straight
-  across them.
+  (`matmul`, `index`, `sum`, `conv`, ...). A `sum` divided by the number of
+  elements it adds is drawn as `mean`, and one inside `jnp.var` or `jnp.std`
+  as `var`. A `⊕` is drawn where two computed values of one shape are added.
+  When that is a residual, its skip is a thin line in the stream's colour that
+  loops over the row into the `⊕`. Arithmetic that only transforms one value
+  (reshapes, `gelu`, ...) is skipped, with arrows drawn straight across it.
+  Arithmetic where values meet becomes one `elementwise` box that names its
+  operations, so `(x - mean) / std * scale + bias` is `elementwise` with
+  `sub · div · mul · add` and the dataflow stays whole. An opened call has one
+  entry per value that comes in and one exit per value that leaves.
 - Where an array is sliced on its way into a call, the shape it enters with is
   written by the arrow.
 - Each input is a stream with its own colour (blue, violet, green, ...), and
