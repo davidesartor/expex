@@ -7,6 +7,7 @@ for name in ["brax", "brax.envs", "brax.envs.wrappers", "brax.envs.wrappers.trai
     sys.modules[name] = mock.MagicMock()
 sys.path.insert(0, repo + "/purejaxrl")
 import jax, numpy as np
+import jax.random as jr
 if not hasattr(jax, "tree_map"):
     jax.tree_map = jax.tree.map  # removed alias used by old gymnax
 import ppo

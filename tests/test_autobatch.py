@@ -223,11 +223,18 @@ def _load(name, src, tmp_path):
 
 
 def test_diagram_labels_mapped_calls_per_element(tmp_path):
-    src = (ROOT / "examples" / "transformer.py").read_text()
-    plain = src.replace("self.mlp.vectorize(self.norm2.vectorize(x))", "self.mlp(self.norm2(x))")
-    plain = plain.replace("self.attn(self.norm1.vectorize(x))", "self.attn(self.norm1(x))")
-    plain = plain.replace("self.norm.vectorize(x) @ self.unembed", "self.norm(x) @ self.unembed")
-    assert plain.count(".vectorize(") == src.count(".vectorize(") - 4
+    sites = {  # the per-token calls, mapped by themselves or with .vectorize
+        "self.mlp(self.norm2(x))": "self.mlp.vectorize(self.norm2.vectorize(x))",
+        "self.attn(self.norm1(x))": "self.attn(self.norm1.vectorize(x))",
+        "self.norm(x) @ self.unembed": "self.norm.vectorize(x) @ self.unembed",
+    }
+    plain = (ROOT / "examples" / "transformer.py").read_text()
+    for short, explicit in sites.items():
+        plain = plain.replace(explicit, short)
+    src = plain
+    for short, explicit in sites.items():
+        assert plain.count(short) == 1
+        src = src.replace(short, explicit)
     a = _load("autobatch_transformer_a", src, tmp_path)
     b = _load("autobatch_transformer_b", plain, tmp_path)
     for depth in (1, 2):
