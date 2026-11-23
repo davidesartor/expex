@@ -437,11 +437,14 @@ class _Exprs(ast.NodeTransformer):
         first_param: str | None = None,
         builtins_ok: set[str] | frozenset[str] = frozenset(),
         axis_names: set[str] | frozenset[str] = frozenset(),
+        einsums: tuple[dict[str, str], set[str]] = ({}, set()),
     ):
         self.site = site
         self.first_param = first_param
         self.builtins_ok = builtins_ok
         self.axis_names = axis_names
+        #: How `tx.einsum` is spelled here: bare names, and modules it is an attribute of.
+        self.einsums = einsums
         #: Calls rewritten to take axes by name.
         self.named = 0
 
@@ -468,7 +471,33 @@ class _Exprs(ast.NodeTransformer):
             return ast.copy_location(_call("size_", node), node)  # `T` as a value: its size
         return node
 
+    def _by_name(self, f: ast.expr) -> str | None:
+        """``"einsum"`` / ``"rearrange"`` if ``f`` is typax's, however it was imported."""
+        names, modules = self.einsums
+        if isinstance(f, ast.Name):
+            return names.get(f.id)
+        if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id in modules:
+            return f.attr if f.attr in ("einsum", "rearrange") else None
+        return None
+
     def visit_Call(self, node: ast.Call) -> Any:
+        which = self._by_name(node.func)
+        if which and not any(isinstance(a, ast.Starred) for a in node.args):
+            # tx.einsum(q, k, to=(B, T, S)): the operands' variable names find their
+            # annotations, and the names in `to` stay names
+            to = next((k.value for k in node.keywords if k.arg == "to"), None)
+            if to is not None and len(node.keywords) == 1:
+                self.named += 1
+                ops = [self.visit(a) for a in node.args]
+                variables: list[ast.expr] = [ast.Constant(a.id if isinstance(a, ast.Name) else None) for a in node.args]
+                if which == "rearrange" and len(ops) == 1:
+                    call = _call("rearrange_", ops[0], variables[0], to, self.site(node))
+                else:
+                    call = _call(
+                        "einsum_", ast.Tuple(elts=ops, ctx=ast.Load()),
+                        ast.Tuple(elts=variables, ctx=ast.Load()), to, self.site(node),
+                    )  # fmt: skip
+                return ast.copy_location(call, node)
         if self.axis_names and _named_axes_call(node, self.axis_names):
             # axis positions keep the names; everything else is visited as usual
             method = isinstance(node.func, ast.Attribute) and node.func.attr in _axes.AXIS_METHODS
@@ -1028,6 +1057,19 @@ _INTERESTING = (ast.If, ast.While, ast.For, ast.IfExp, ast.BoolOp)
 _MANGLED = re.compile(r"(?<![\w.])__[A-Za-z0-9]\w*(?<!__)\b|\.__[A-Za-z0-9]\w*(?<!__)\b")
 
 
+def _einsum_spellings(raw: Any) -> tuple[dict[str, str], set[str]]:
+    """How ``raw`` reaches ``typax.einsum`` / ``typax.rearrange``: bare names, and modules."""
+    from ._axes import einsum, rearrange
+
+    glb = getattr(raw, "__globals__", {})
+    names = {k: v.__name__ for k, v in glb.items() if v is einsum or v is rearrange}
+    modules = {
+        k for k, v in glb.items()
+        if isinstance(v, types.ModuleType) and getattr(v, "einsum", None) is einsum
+    }  # fmt: skip
+    return names, modules
+
+
 def _axis_names(raw: Any, fdef: ast.FunctionDef) -> set[str]:
     """Names that stand for axes in ``raw``: type parameters and ``Dim`` classes."""
     out = {tp.__name__ for tp in getattr(raw, "__type_params__", ())}
@@ -1266,7 +1308,8 @@ def _rewrite(tree: ast.Module, fdef: ast.FunctionDef, raw: Any) -> tuple[_Conver
     conv.rewrite_raises(fdef.body)
     n_locals = conv.rewrite_annotations(fdef.body)
     exprs = _Exprs(
-        conv.site, conv.first_param, conv.builtins_ok, (_axis_names(raw, fdef) - conv.locals) | set(defs)
+        conv.site, conv.first_param, conv.builtins_ok, (_axis_names(raw, fdef) - conv.locals) | set(defs),
+        _einsum_spellings(raw),
     )
     fdef.body = [exprs.visit(s) for s in fdef.body]
     n_locals += exprs.named  # axes by name need the call's sizes, as checked locals do

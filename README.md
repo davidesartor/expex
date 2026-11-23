@@ -142,6 +142,26 @@ print(tx.prove(running_mean))                    # proved for all sizes
   prover the sizes are symbolic, so code built from them is proved for all sizes.
 - `Dim` classes and variadics (`*B`, a tuple of sizes) work the same way.
 
+Contractions and reshapes need only the names of the result:
+
+```python
+@fn
+def attention[B, T, S, D](q: f32[B, T, D], k: f32[B, S, D]) -> f32[B, T, S]:
+    return tx.einsum(q, k, to=(B, T, S))      # D is not in `to`: summed over
+
+@fn
+def heads[T, D](x: f32[T, D], n: int) -> f32[H, T, K]:
+    H, K = n, D // n
+    assert D % n == 0
+    return tx.rearrange(x, to=(H, T, K))      # D split into H, K; T moved
+```
+
+Each operand's names come from its annotation, or from its sizes when they
+are unambiguous; repeated names are matched, as in `jnp.einsum`. To give an
+axis a second name (self-attention: keys along `S`), annotate a copy:
+`keys: f32[B, S, D] = x`. `tx.rearrange` moves axes, splits one into several
+new ones, or merges several into one new one.
+
 ## Proofs without data
 
 `tx.prove` traces a function with symbolic sizes, so a passing proof holds for

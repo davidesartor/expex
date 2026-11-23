@@ -186,3 +186,62 @@ def test_sizes_defined_in_the_body():
         return x * m
 
     assert ordinary(jnp.ones(3)).tolist() == [6.0, 6.0, 6.0]
+
+
+def test_einsum_by_names():
+    @fn
+    def attention[B, T, S, D](q: f32[B, T, D], k: f32[B, S, D]) -> f32[B, T, S]:
+        return tx.einsum(q, k, to=(B, T, S))
+
+    q, k = jnp.ones((2, 3, 4)), jnp.arange(40.0).reshape(2, 5, 4)
+    assert jnp.allclose(attention(q, k), jnp.einsum("btd,bsd->bts", q, k)) and tx.prove(attention).ok
+
+    @fn
+    def self_attention[B, T, D, S](x: f32[B, T, D]) -> f32[B, T, T]:
+        keys: f32[B, S, D] = x  # a second name for the same axis
+        return tx.einsum(x, keys, to=(B, T, S))
+
+    assert jnp.allclose(self_attention(k), jnp.einsum("btd,bsd->bts", k, k)) and tx.prove(self_attention).ok
+
+    @fn
+    def outer[T, E, N](dt: f32[T, E], b: f32[T, N], u: f32[T, E]) -> f32[T, E, N]:
+        return tx.einsum(dt, b, u, to=(T, E, N))
+
+    dt, b, u = jnp.arange(21.0).reshape(7, 3), jnp.ones((7, 5)), jnp.ones((7, 3))
+    assert jnp.allclose(outer(dt, b, u), jnp.einsum("te,tn,te->ten", dt, b, u)) and tx.prove(outer).ok
+
+    @fn
+    def summed[T, D](x: f32[T, D]) -> f32[D]:
+        h = jnp.tanh(x)  # unannotated: its names come from its sizes
+        return tx.einsum(h, to=(D,))
+
+    assert jnp.allclose(summed(jnp.ones((3, 4))), jnp.tanh(1.0) * 3)
+
+    @fn
+    def gram[T, D](x: f32[T, D]) -> f32[D, D]:
+        return tx.einsum(x, x, to=(D, D))
+
+    with pytest.raises(ShapeError, match="appears more than once in `to`"):
+        gram(jnp.ones((3, 4)))
+
+
+def test_rearrange_by_names():
+    @fn
+    def split[T, D](x: f32[T, D], heads: int) -> f32[H, T, K]:
+        H, K = heads, D // heads
+        assert D % heads == 0
+        return tx.rearrange(x, to=(H, T, K))
+
+    @fn
+    def merge[H, T, K](h: f32[H, T, K]) -> f32[T, D]:
+        D = H * K
+        return tx.rearrange(h, to=(T, D))
+
+    @fn
+    def swap[B, T](x: f32[B, T]) -> f32[T, B]:
+        return tx.rearrange(x, to=(T, B))
+
+    x = jnp.arange(40.0).reshape(5, 8)
+    assert jnp.array_equal(split(x, 2), x.reshape(5, 2, 4).transpose(1, 0, 2)) and tx.prove(split).ok
+    assert jnp.array_equal(merge(split(x, 2)), x) and tx.prove(merge).ok
+    assert jnp.array_equal(swap(x), x.T)

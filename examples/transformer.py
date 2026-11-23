@@ -49,8 +49,7 @@ class Attention[D]:
     def split[T](self, x: f32[T, D]) -> f32[H, T, K]:
         H, K = self.heads, D // self.heads
         assert D % self.heads == 0
-        h: f32[T, H, K] = x.reshape(T, H, K)
-        return h.transpose(H, T, K)
+        return tx.rearrange(x, to=(H, T, K))  # D is split into H, K
 
     @staticmethod
     @tx.fn
@@ -60,10 +59,10 @@ class Attention[D]:
         weights = jax.nn.softmax(jnp.where(mask, scores, -jnp.inf), axis=-1)
         return weights @ v
 
-    def __call__[T](self, x: f32[T, D]) -> f32[T, D]:
+    def __call__[T, H, K](self, x: f32[T, D]) -> f32[T, D]:
         q, k, v = self.split(x @ self.wq), self.split(x @ self.wk), self.split(x @ self.wv)
-        out = Attention.causal.lift(q, k, v)  # over heads
-        return out.transpose(1, 0, 2).reshape(T, D) @ self.wo
+        out: f32[H, T, K] = Attention.causal.lift(q, k, v)  # over heads
+        return tx.rearrange(out, to=(T, D)) @ self.wo  # H, K are merged back into D
 
 
 @tx.struct
