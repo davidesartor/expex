@@ -22,37 +22,26 @@ key = jr.key(0)
 
 ## JAX vs expex
 
-<table>
-<tr><th>JAX</th><th>expex</th></tr>
-
-<tr><td colspan="2"><b>Shapes are checked, not commented</b></td></tr>
-<tr><td>
+### Shapes are checked, not commented
 
 ```python
+# JAX
 def attend(q, k):
-    # q: [B,T,D], k: [B,S,D] -> [B,T,S]
+    # q: [B, T, D], k: [B, S, D] -> [B, T, S]
     assert q.shape[0] == k.shape[0]
     assert q.shape[2] == k.shape[2]
     return jnp.einsum("btd,bsd->bts", q, k)
-```
 
-</td><td>
-
-```python
+# expex
 @expex.fn
-def attend[B, T, S, D](
-    q: f32[B, T, D],
-    k: f32[B, S, D],
-) -> f32[B, T, S]:
+def attend[B, T, S, D](q: f32[B, T, D], k: f32[B, S, D]) -> f32[B, T, S]:
     return expex.einsum(q, k, to=(B, T, S))
 ```
 
-</td></tr>
-
-<tr><td colspan="2"><b>Loops are loops</b></td></tr>
-<tr><td>
+### Loops are loops
 
 ```python
+# JAX
 def rnn(w, xs):  # w: [D, D], xs: [T, D]
     def step(h, x):
         h = jnp.tanh(w @ h + x)
@@ -60,52 +49,39 @@ def rnn(w, xs):  # w: [D, D], xs: [T, D]
     h0 = jnp.zeros(xs.shape[1])
     _, hs = jax.lax.scan(step, h0, xs)
     return hs
-```
 
-</td><td>
-
-```python
+# expex
 @expex.fn
-def rnn[T, D](
-    w: f32[D, D], xs: f32[T, D]
-) -> f32[T, D]:
+def rnn[T, D](w: f32[D, D], xs: f32[T, D]) -> f32[T, D]:
     h, hs = jnp.zeros(D), []
-    for t in range(T):  # a lax.scan
+    for t in range(T):  # a lax.scan carrying h
         h = jnp.tanh(w @ h + xs[t])
         hs.append(h)
     return jnp.asarray(hs)
 ```
 
-</td></tr>
-
-<tr><td colspan="2"><b>Branches are <code>if</code></b></td></tr>
-<tr><td>
+### Branches are `if`
 
 ```python
+# JAX
 @jax.jit
 def safe_log(x):
     ok = x > 0
     safe = jnp.where(ok, x, 1.0)
-    return jnp.where(
-        ok, jnp.log(safe), -jnp.inf)
-```
+    return jnp.where(ok, jnp.log(safe), -jnp.inf)
 
-</td><td>
-
-```python
+# expex
 @expex.fn(jit=True, vectorize=True)
 def safe_log(x: f32) -> f32:
-    if x > 0:  # lax.cond, any shape
+    if x > 0:  # lax.cond, on any batch shape
         return jnp.log(x)
     return -jnp.inf
 ```
 
-</td></tr>
-
-<tr><td colspan="2"><b>Models are classes; identical layers scan themselves</b></td></tr>
-<tr><td>
+### Models are classes; identical layers scan themselves
 
 ```python
+# JAX
 def init(key, D, L):
     # stacked by hand so lax.scan can loop
     w = jr.normal(key, (L, D, D)) * 0.1
@@ -119,11 +95,8 @@ def stack(params, x):
     return x
 
 params = init(key, D=64, L=12)
-```
 
-</td><td>
-
-```python
+# expex
 normal = jax.nn.initializers.normal(0.1)
 
 @expex.struct
@@ -140,15 +113,12 @@ class Stack[D]:
     blocks: list[Block[D]]
 
     def __call__(self, x: f32[D]) -> f32[D]:
-        for block in self.blocks:  # a scan
+        for block in self.blocks:  # identical layers: one lax.scan
             x = block(x)
         return x
 
 model = Stack.init(key, D=64, blocks=12)
 ```
-
-</td></tr>
-</table>
 
 A wrong call says which axis is wrong and where its size came from:
 

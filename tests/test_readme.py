@@ -32,7 +32,8 @@ def test_readme_comparisons_agree(tmp_path):
     """Each JAX / expex pair on the front page computes the same thing."""
     text = (ROOT / "README.md").read_text()
     blocks = re.findall(r"```python\n(.*?)```", text, flags=re.S)
-    jax_side, expex_side = blocks[1:-1:2], blocks[2:-1:2]
+    pairs = [b.split("\n# expex\n") for b in blocks[1:-1]]
+    jax_side, expex_side = [j for j, _ in pairs], [e for _, e in pairs]
     src = blocks[0] + "".join(
         f"\n{j}\njax_{i} = dict(globals())\n{e}\n" for i, (j, e) in enumerate(zip(jax_side, expex_side))
     )
