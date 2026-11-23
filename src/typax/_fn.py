@@ -1,5 +1,6 @@
 """``@fn``: the decorator that reads a signature and puts it to work."""
 
+import contextvars
 import copy
 import dataclasses
 import functools
@@ -50,6 +51,12 @@ try:  # private, but there is no public way to ask "is this value being vmapped?
 except Exception:  # pragma: no cover
     pass
 
+
+#: Set by ``tx.diagram`` while it traces: ``hook(fn, args, kwargs, run)`` wraps every
+#: checked call (``run(args, kwargs)`` runs it), to put it in a ``jax.named_scope``.
+CALL_HOOK: contextvars.ContextVar[Callable[..., Any] | None] = contextvars.ContextVar(
+    "typax_call_hook", default=None
+)
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -490,6 +497,14 @@ class Fn(Generic[P, R]):
         return jax.random.fold_in(jax.random.wrap_key_data(k), 0x7478)
 
     def _run_checked(
+        self, args: tuple[Any, ...], kwargs: dict[str, Any], env: Env | None, force: bool
+    ) -> Any:
+        __tracebackhide__ = True
+        if (hook := CALL_HOOK.get()) is not None:
+            return hook(self, args, kwargs, lambda a, k: self._checked(a, k, env, force))
+        return self._checked(args, kwargs, env, force)
+
+    def _checked(
         self, args: tuple[Any, ...], kwargs: dict[str, Any], env: Env | None, force: bool
     ) -> Any:
         __tracebackhide__ = True

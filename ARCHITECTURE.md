@@ -7,6 +7,7 @@ on the same `Fn` object, so they stack in any order. `@tx.jit` is `jax.jit` with
 | Module | Job |
 |---|---|
 | `_types.py` | The annotation objects users write: `f32[B, T]`, `Static[...]`, `Key`, `Batch[...]`, `Dim`. |
+| `_diagram.py` | `tx.diagram`: the data flow between typed calls, from a symbolic trace (page template: `_diagram.html`). |
 | `_diff.py` | `tx.diff`: two models or checkpoints compared field by field, as text or HTML. |
 | `_dims.py` | Dimensions (`B`, `T + 1`, `*Rest`), binding sizes during a call (`Env`), printing values as `f32[3, 4]`. |
 | `_spec.py` | Turning annotations into specs and matching values against them, structs included. |
@@ -23,6 +24,7 @@ on the same `Fn` object, so they stack in any order. `@tx.jit` is `jax.jit` with
 | `_io.py` | `tx.save` / `tx.load`: one `.npz` per model, checked against the annotations on load. |
 | `_shard.py` | `tx.shard`, `tx.shardings`: shardings from axis names mapped to mesh axes. |
 | `_struct.py` | `@tx.struct`: modules registered as pytrees whose methods are `@fn`s. |
+| `_profile.py` | `tx.debug.profile`: FLOPs and bytes per source line. |
 | `_rng.py` | Implicit random keys (`tx.key()`). |
 | `_convert.py` | Rewrites a function's source so plain Python works on traced values. |
 | `_runtime.py` | The namespace the rewritten code calls into, backed by: |

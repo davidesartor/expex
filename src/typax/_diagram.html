@@ -1,0 +1,293 @@
+<!doctype html>
+<!-- The page tx.diagram(...).save(path) writes: _diagram.py fills in the title, the Mermaid URL and the data. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__ · typax diagram</title>
+<style>
+  :root { --bg: #ffffff; --fg: #0f172a; --muted: #64748b; --panel: #f8fafc; --border: #e2e8f0;
+          --accent: #2563eb; --code: #f1f5f9; color-scheme: light; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0b1020; --fg: #e2e8f0; --muted: #94a3b8; --panel: #111827; --border: #273244;
+            --accent: #60a5fa; --code: #0f172a; color-scheme: dark; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+               font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { display: flex; flex-direction: column; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 16px;
+           border-bottom: 1px solid var(--border); }
+  h1 { font-size: 15px; margin: 0 8px 0 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  button, select { font: inherit; color: var(--fg); background: var(--panel); border: 1px solid var(--border);
+                   border-radius: 6px; padding: 3px 10px; cursor: pointer; }
+  button:hover, select:hover { border-color: var(--accent); }
+  .hint { color: var(--muted); font-size: 12px; }
+  main { flex: 1; display: flex; min-height: 0; }
+  #stage { flex: 1; min-width: 0; position: relative; overflow: hidden; touch-action: none; cursor: grab; }
+  #stage.dragging { cursor: grabbing; }
+  #stage svg { width: 100%; height: 100%; display: block; }
+  #stage .node.expandable, #stage .cluster.collapsible { cursor: pointer; }
+  #stage .node.expandable:hover rect { stroke-width: 2.5px; }
+  aside { width: 340px; max-width: 40%; border-left: 1px solid var(--border); background: var(--panel);
+          padding: 12px 16px; overflow: auto; }
+  aside h2 { font-size: 14px; margin: 0 0 6px; font-family: ui-monospace, Menlo, monospace; word-break: break-all; }
+  aside .muted { color: var(--muted); }
+  pre { background: var(--code); border: 1px solid var(--border); border-radius: 6px; padding: 8px;
+        overflow: auto; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  #tip { position: fixed; z-index: 10; pointer-events: none; max-width: min(460px, 90vw); padding: 8px 10px;
+         background: var(--panel); color: var(--fg); border: 1px solid var(--border); border-radius: 6px;
+         box-shadow: 0 4px 16px rgba(0,0,0,.2); font: 12px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap; }
+  #error { color: #dc2626; padding: 16px; white-space: pre-wrap; }
+  @media (max-width: 720px) {
+    main { flex-direction: column; }
+    aside { width: auto; max-width: none; max-height: 38%; border-left: 0; border-top: 1px solid var(--border); }
+  }
+</style>
+<script src="__MERMAID__"></script>
+</head>
+<body>
+<header>
+  <h1>__TITLE__</h1>
+  <label>depth <select id="depth"></select></label>
+  <button id="open-all">Expand all</button>
+  <button id="close-all">Collapse all</button>
+  <button id="fit">Fit</button>
+  <span class="hint">Click a call to open or fold it · drag to pan · wheel to zoom</span>
+</header>
+<main>
+  <div id="stage"></div>
+  <aside id="panel"><p class="muted">Hover a node for its signature; click a call to open it and see its source here.</p></aside>
+</main>
+<div id="tip" hidden></div>
+<script>
+const M = /*DATA*/null;
+const B = M.boxes, A = M.atoms;
+const stage = document.getElementById("stage"), tip = document.getElementById("tip");
+const panel = document.getElementById("panel"), depthSel = document.getElementById("depth");
+let expanded = new Set(), renders = 0, vb = null, base = null;
+
+const esc = s => [...s].map(c => '"[]<>#&|{}_*`~'.includes(c) ? "#" + c.codePointAt(0) + ";" : c).join("");
+const text = s => s.replace(/[&<>]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;"})[c]);
+const callLabel = b => b.l + (b.lift ? " · lift" : "");
+
+function atDepth(d) {
+  expanded = new Set(B.map((b, i) => b.k === "call" && b.d < d ? i : -1).filter(i => i >= 0));
+}
+
+// The visible graph: the same rules as _view in _diagram.py.
+function view() {
+  const rep = [];
+  B.forEach((b, i) => {
+    const up = b.p >= 0 ? rep[b.p] : null;
+    rep.push(up != null ? up : (b.k === "call" && !(b.o && expanded.has(i)) ? i : null));
+  });
+  const nodes = new Map(), key = [];
+  A.forEach(([box, label, kind], i) => {
+    const r = box >= 0 ? rep[box] : null;
+    if (r != null) {
+      const id = "b" + r; key.push(id);
+      if (!nodes.has(id)) nodes.set(id, {id, kind: "call", box: B[r].p, call: r});
+    } else if (label) {
+      const id = "n" + i; key.push(id); nodes.set(id, {id, kind, label, box});
+    } else key.push("h" + i);
+  });
+  const succ = new Map();
+  for (const [a, b, t] of M.edges) {
+    if (key[a] === key[b]) continue;
+    if (!succ.has(key[a])) succ.set(key[a], []);
+    succ.get(key[a]).push([key[b], t]);
+  }
+  const edges = new Map();
+  for (const u of nodes.keys()) {
+    const seen = new Set([u]), todo = (succ.get(u) || []).slice().reverse().map(([v, t]) => [v, t, t]);
+    while (todo.length) {
+      const [v, t0, t] = todo.pop();
+      if (seen.has(v)) continue;
+      seen.add(v);
+      if (nodes.has(v)) {
+        const k = u + " " + v;
+        if (!edges.has(k)) edges.set(k, [u, v, M.types[nodes.get(v).kind === "call" ? t : t0]]);
+      } else for (const [w, tw] of (succ.get(v) || []).slice().reverse()) todo.push([w, t0, tw]);
+    }
+  }
+  return {nodes, edges: [...edges.values()]};
+}
+
+function mermaidText(dark) {
+  const {nodes, edges} = view();
+  const items = new Map(), add = (box, it) => { if (!items.has(box)) items.set(box, []); items.get(box).push(it); };
+  for (const n of nodes.values()) {
+    add(n.box, n);
+    let box = n.box;
+    while (box >= 0 && !(items.get(B[box].p) || []).includes(box)) { add(B[box].p, box); box = B[box].p; }
+  }
+  const shape = {call: ['["', '"]'], op: ['(["', '"])'], in: ['[/"', '"/]'], out: ['[\\"', '"\\]']};
+  const out = ["flowchart TD"], drawn = [];
+  const emit = (box, ind) => {
+    for (const it of items.get(box) || []) {
+      if (typeof it === "number") {
+        const b = B[it], mark = b.k === "call" ? "▾ " : "";
+        drawn.push(it);
+        out.push(`${ind}subgraph b${it} ["${esc(mark + callLabel(b))}"]`);
+        emit(it, ind + "  ");
+        out.push(ind + "end");
+      } else {
+        let label = esc(it.label || "");
+        if (it.kind === "call") {
+          const b = B[it.call];
+          label = esc((b.o ? "▸ " : "") + callLabel(b)) + "\n" + esc(`${b.ins} → ${b.outs}`);
+        }
+        out.push(ind + it.id + shape[it.kind][0] + label + shape[it.kind][1]);
+      }
+    }
+  };
+  emit(-1, "  ");
+  for (const [u, v, t] of edges) out.push(`  ${u} -->|"${esc(t)}"| ${v}`);
+  const pal = dark
+    ? {calls: "#1e3a8a,stroke:#60a5fa,color:#e2e8f0", ops: "#78350f,stroke:#f59e0b,color:#fef3c7", io: "#14532d,stroke:#22c55e,color:#dcfce7"}
+    : {calls: "#dbeafe,stroke:#2563eb,color:#0f172a", ops: "#fef3c7,stroke:#d97706,color:#0f172a", io: "#dcfce7,stroke:#16a34a,color:#0f172a"};
+  for (const [c, kinds] of [["calls", ["call"]], ["ops", ["op"]], ["io", ["in", "out"]]]) {
+    out.push(`  classDef ${c} fill:${pal[c]}`);
+    const ids = [...nodes.values()].filter(n => kinds.includes(n.kind)).map(n => n.id);
+    if (ids.length) out.push(`  class ${ids.join(",")} ${c}`);
+  }
+  for (const i of drawn) {
+    const color = B[i].k === "call" ? (dark ? "#60a5fa" : "#2563eb") : (dark ? "#c084fc" : "#9333ea");
+    out.push(`  style b${i} fill:transparent,stroke:${color},stroke-dasharray:4 3`);
+  }
+  return {text: out.join("\n"), nodes};
+}
+
+const dark = () => matchMedia("(prefers-color-scheme: dark)").matches;
+
+async function draw(refit) {
+  const d = dark();
+  mermaid.initialize({startOnLoad: false, securityLevel: "strict", theme: d ? "dark" : "default",
+                      maxTextSize: 1e7, maxEdges: 1e5, flowchart: {htmlLabels: true, curve: "basis"}});
+  const {text: src, nodes} = mermaidText(d);
+  let svg;
+  try {
+    ({svg} = await mermaid.render("typax-diagram-" + (++renders), src));
+  } catch (e) {
+    stage.innerHTML = `<div id="error">Mermaid could not draw this diagram:\n${text(String(e && e.message || e))}</div>`;
+    return;
+  }
+  stage.innerHTML = svg;
+  const el = stage.querySelector("svg");
+  el.removeAttribute("style"); el.removeAttribute("width"); el.removeAttribute("height");
+  el.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  const [x, y, w, h] = el.getAttribute("viewBox").split(/[ ,]+/).map(Number);
+  const pad = 16;
+  base = {x: x - pad, y: y - pad, w: w + 2 * pad, h: h + 2 * pad};
+  if (refit || !vb) vb = {...base};
+  setViewBox();
+  wire(el, nodes);
+  stage.dataset.nodes = el.querySelectorAll("g.node").length;
+}
+
+function setViewBox() {
+  const el = stage.querySelector("svg");
+  if (el && vb) el.setAttribute("viewBox", `${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
+}
+
+function idOf(g) {
+  const m = /(?:^|-)([bn]\d+)(?:-\d+)?$/.exec(g.id || "");
+  return m ? m[1] : null;
+}
+
+function describe(id, nodes) {
+  if (id[0] === "b") {
+    const b = B[+id.slice(1)];
+    if (b.k !== "call") return `${b.l}  (${b.k === "loop" ? "loop or branch" : b.k})`;
+    return `${b.sig || b.name}\n\n${b.ins} → ${b.outs}${b.lift ? "   (per element: called with .lift)" : ""}\n${b.loc}`;
+  }
+  const n = nodes.get(id);
+  if (!n) return "";
+  return n.kind === "op" ? `${n.label}  (an operation outside the calls shown)` : n.label;
+}
+
+function showPanel(i) {
+  const b = B[i];
+  const src = M.sources[b.src] || "";
+  panel.innerHTML = `<h2>${text(b.name)}</h2><p>${text(b.sig)}</p><p class="muted">${text(b.ins)} → ${text(b.outs)}`
+    + `${b.lift ? " (per element, via .lift)" : ""}<br>${text(b.loc)}</p>` + (src ? `<pre>${text(src)}</pre>` : "");
+}
+
+function wire(el, nodes) {
+  for (const g of el.querySelectorAll("g.node, g.cluster")) {
+    const id = idOf(g);
+    if (!id) continue;
+    const isBox = id[0] === "b", i = isBox ? +id.slice(1) : -1;
+    if (isBox && B[i].k === "call") {
+      if (g.classList.contains("node") && B[i].o) g.classList.add("expandable");
+      if (g.classList.contains("cluster")) g.classList.add("collapsible");
+      g.addEventListener("click", ev => {
+        if (moved) return;
+        ev.stopPropagation();
+        showPanel(i);
+        if (!B[i].o) return;
+        if (expanded.has(i)) expanded.delete(i); else expanded.add(i);
+        draw(true);
+      });
+    }
+    g.addEventListener("mousemove", ev => {
+      tip.textContent = describe(id, nodes);
+      tip.hidden = !tip.textContent;
+      const x = Math.min(ev.clientX + 14, innerWidth - tip.offsetWidth - 8);
+      const y = Math.min(ev.clientY + 14, innerHeight - tip.offsetHeight - 8);
+      tip.style.left = Math.max(4, x) + "px"; tip.style.top = Math.max(4, y) + "px";
+      ev.stopPropagation();
+    });
+    g.addEventListener("mouseleave", () => { tip.hidden = true; });
+  }
+}
+
+// Pan (drag) and zoom (wheel, around the pointer) by moving the viewBox.
+let drag = null, moved = false;
+function toUser(ev) {
+  const el = stage.querySelector("svg"), p = el.createSVGPoint();
+  p.x = ev.clientX; p.y = ev.clientY;
+  return p.matrixTransform(el.getScreenCTM().inverse());
+}
+stage.addEventListener("wheel", ev => {
+  if (!vb) return;
+  ev.preventDefault();
+  const f = Math.exp(ev.deltaY * 0.0015), p = toUser(ev);
+  vb = {x: p.x - (p.x - vb.x) * f, y: p.y - (p.y - vb.y) * f, w: vb.w * f, h: vb.h * f};
+  setViewBox();
+}, {passive: false});
+stage.addEventListener("pointerdown", ev => {
+  if (!vb || ev.button !== 0) return;
+  drag = {x: ev.clientX, y: ev.clientY, vb: {...vb}}; moved = false;
+});
+addEventListener("pointermove", ev => {
+  if (!drag) return;
+  const dx = ev.clientX - drag.x, dy = ev.clientY - drag.y;
+  if (!moved && Math.hypot(dx, dy) < 4) return;
+  moved = true; stage.classList.add("dragging"); tip.hidden = true;
+  const s = stage.querySelector("svg").getScreenCTM().a;
+  vb = {...drag.vb, x: drag.vb.x - dx / s, y: drag.vb.y - dy / s};
+  setViewBox();
+});
+addEventListener("pointerup", () => {
+  drag = null; stage.classList.remove("dragging");
+  setTimeout(() => { moved = false; }, 0);
+});
+
+const maxDepth = Math.max(1, ...B.filter(b => b.k === "call" && b.o).map(b => b.d + 1));
+for (let d = 1; d <= maxDepth; d++) depthSel.add(new Option(String(d), String(d)));
+depthSel.value = String(Math.min(M.depth, maxDepth));
+depthSel.addEventListener("change", () => { atDepth(+depthSel.value); draw(true); });
+document.getElementById("open-all").addEventListener("click", () => { atDepth(Infinity); draw(true); });
+document.getElementById("close-all").addEventListener("click", () => { atDepth(1); draw(true); });
+document.getElementById("fit").addEventListener("click", () => { vb = base && {...base}; setViewBox(); });
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => draw(false));
+
+atDepth(M.depth);
+if (typeof mermaid === "undefined") {
+  stage.innerHTML = '<div id="error">Mermaid did not load (it comes from a CDN: is the page offline?).</div>';
+} else draw(true);
+</script>
+</body>
+</html>

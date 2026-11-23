@@ -41,6 +41,7 @@ from ._jaxpr import iter_eqns, source_key, source_of, sub_jaxprs
 __all__ = [
     "find_nan", "shapes", "summary", "timing", "memory",
     "NanReport", "ShapeTrace", "Summary", "Timing", "Memory",
+    "profile",
 ]  # fmt: skip
 
 
@@ -739,3 +740,16 @@ def memory(f: Callable[..., Any], *args: Any, **kwargs: Any) -> Memory:
         key=lambda t: -t[0],
     )
     return Memory(arg_b, out_b, tmp_b, peak, largest, peak_after)
+
+
+def profile(f: Callable[..., Any], /, **sizes: Any) -> Any:
+    """The cost of every source line of ``f``, and of the functions it calls.
+
+    Like ``tx.cost`` (same targets and keywords), without data: each line gets
+    the shape it produces and its FLOPs and bytes, as formulas and, given the
+    sizes, as numbers and shares. ``.save("profile.html")`` writes it as a
+    heat map over the source.
+    """
+    from ._profile import profile as run
+
+    return run(f, **sizes)

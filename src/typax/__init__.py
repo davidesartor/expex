@@ -9,6 +9,7 @@ from ._axes import einsum, rearrange
 from ._check import Report, prove
 from ._consts import eps, huge, tiny
 from ._cost import cost
+from ._diagram import Diagram, diagram
 from ._diff import Diff, diff
 from ._summary import Summary, summary
 from ._io import load, save
@@ -50,7 +51,7 @@ from ._types import (
 __all__ = [
     # decorate
     "fn", "jit", "lift", "random", "remat", "struct", "prove",
-    "save", "load", "shard", "shardings", "device_put", "cost", "diff", "summary", "eps", "tiny", "huge",
+    "save", "load", "shard", "shardings", "device_put", "cost", "diff", "summary", "diagram", "eps", "tiny", "huge",
     # annotate
     "f16", "f32", "f64", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "c64", "c128",
     "Arr", "Bool", "Int", "UInt", "Float", "Complex", "Inexact", "Num",
@@ -60,7 +61,7 @@ __all__ = [
     # tools
     "show", "debug", "config", "compile_cache",
     # types and errors
-    "Fn", "Report", "Diff", "Summary", "ShapeError", "StageError",
+    "Fn", "Report", "Diff", "Summary", "Diagram", "ShapeError", "StageError",
 ]  # fmt: skip
 
 __version__ = "0.1.0"

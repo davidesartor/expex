@@ -38,6 +38,7 @@ python -m typax examples/transformer.py        # prove a small transformer's sha
 | [Random keys](#random-keys) | `@tx.random` and `tx.key()`, no key threading |
 | [Compiling and gradients](#compiling-and-gradients) | `@tx.fn(jit=True, lift=True, random=True, remat=True)`, or JAX's own transformations |
 | [Sharding](#sharding) | `tx.shard(f, mesh, B="data", D="model")`: shardings from axis names |
+| [Diagrams](#diagrams) | `tx.diagram(f)`: an interactive architecture diagram, shapes on every edge |
 | [Cost estimates](#cost-estimates) | FLOPs and parameters as formulas in the sizes |
 | [Precision constants](#precision-constants) | `tx.eps`, `tx.tiny`, `tx.huge` in the dtype they meet |
 | [Debugging](#debugging) | where a NaN appeared, shapes line by line, memory, timing |
@@ -531,6 +532,107 @@ Dominant terms come first. For the transformer in `examples/`, the four
 exact (a `for` over `T` multiplies its body by `T`); elementwise operations
 count one flop per element, reshapes and gathers are free, and a `while`
 loop counts one iteration and says so.
+
+### Profiles, line by line
+
+`tx.debug.profile` puts `tx.cost`'s numbers on the source. It traces the function with
+symbolic sizes, so you don't need data. Each line, and each line of the functions it
+calls, shows the shape it produces, its FLOPs as a formula and, once sizes are given,
+as a number and a share of the total:
+
+```python
+report = tx.debug.profile(Stack.__call__, B=64, D=1024, blocks=24)
+report.save("profile.html")           # the source as a heat map, FLOPs or bytes
+```
+
+For the transformer in `examples/` (`T=1024, D=512, F=2048, Vocab=32000, blocks=12`):
+
+```
+Transformer.__call__   (sizes: T=1024, D=512, F=2048, Vocab=32000, L=12)
+  flops  8·T·D²·L + 4·T·D·F·L + 4·T²·D·L + 31·T²·L + 20·T·D·L + 8·T·F·L + 2·T·D·Vocab + 16·T·L + 9·T·D + 9·T + 5·L + 2  = 137 GFLOP
+  bytes  136·T²·L + …  = 3.77 GB
+
+── Transformer.__call__   transformer.py:86   self 24.4%
+   86 | def __call__[T](self, tokens: Int[T]) -> f32[T, Vocab]:
+   87 |     x = self.embed[tokens]                                f32[T,D]       3·T                           3.07 kFLOP   0.0%             2.11 MB
+   88 |     for block in self.blocks:  # identical blocks: one …
+   89 |         x = block(x)                                      f32[T,D]       ×L -                                       0.0%             calls 75.6%  277 MB
+   90 |     return self.norm.lift(x) @ self.unembed               f32[T,Vocab]   2·T·D·Vocab                   33.6 GFLOP  24.4% ██          131 MB
+
+── MLP.__call__   transformer.py:63   self 37.7%
+   64 |     return jax.nn.gelu(x @ self.w1) @ self.w2             f32[T,D]       ×L 4·T·D·F·L + 8·T·F·L        51.7 GFLOP  37.7% ████        931 MB
+
+── Attention.causal   transformer.py:44   self 19.0%
+   47 |     scores = q @ k.T / jnp.sqrt(q.shape[-1])              f32[4,T,T]     ×L 2·T²·D·L + 4·T²·L + L      12.9 GFLOP   9.4% █           428 MB
+   49 |     weights = jax.nn.softmax(jnp.where(mask, scores, -j…  f32[4,T,T]     ×L 24·T²·L + 4·T·L             302 MFLOP   0.2%             1.11 GB
+   50 |     return weights @ v                                    f32[4,T,D//4]  ×L 2·T²·D·L                   12.9 GFLOP   9.4% █           25.2 MB
+...
+```
+
+- Each operation is counted once, on the innermost line that created it. A line that
+  calls into other functions shows their share as `calls`. The per-line counts add up
+  to `tx.cost(f).flops`.
+- Lines inside a staged loop are multiplied by the loop's trip count and marked: `×L`
+  for a loop over a list of modules, `×T` for `range(T)`.
+- The last column is the bytes the line's operations produce (data written, not peak
+  memory; for peak memory, use `tx.debug.memory`).
+- `profile.save("profile.html")`, or a notebook's rich display, gives a self-contained
+  page. Each line has a heat map you can switch between FLOPs and bytes, and hovering
+  over a line shows its formula. Each function is a collapsible section.
+
+## Diagrams
+
+`tx.diagram` draws a function or a module from a trace with symbolic sizes,
+so like `tx.cost` and `tx.prove` it needs no data:
+
+```python
+d = tx.diagram(Stack.__call__)                  # depth=1: the calls it makes
+print(d)                                        # Mermaid text, for Markdown
+d.save("stack.html")                            # an interactive page
+tx.diagram(Stack.__call__, depth=2)             # every call opened one level
+tx.diagram(Stack.__call__, B=64, blocks=24)     # sizes and list lengths, as for tx.cost
+```
+
+For the transformer in `examples/`, `print(tx.diagram(Transformer.__call__))`
+gives this, which GitHub draws in a `mermaid` block:
+
+```mermaid
+flowchart TD
+  n0[/"tokens: i32#91;T#93;"/]
+  n7(["index"])
+  subgraph b0 ["× L"]
+    b1["Block.#95;#95;call#95;#95;
+f32#91;T, D#93; → f32#91;T, D#93;"]
+  end
+  b10["LayerNorm.#95;#95;call#95;#95; · lift
+f32#91;D#93; → f32#91;D#93;"]
+  n170(["matmul"])
+  n171[\"return f32#91;T, Vocab#93;"\]
+  n0 -->|"i32#91;T#93;"| n7
+  n7 -->|"f32#91;T, D#93;"| b1
+  b1 -->|"f32#91;T, D#93;"| b10
+  b10 -->|"f32#91;T, D#93;"| n170
+  n170 -->|"f32#91;T, Vocab#93;"| n171
+  classDef calls fill:#dbeafe,stroke:#2563eb,color:#0f172a
+  classDef ops fill:#fef3c7,stroke:#d97706,color:#0f172a
+  classDef io fill:#dcfce7,stroke:#16a34a,color:#0f172a
+  class b1,b10 calls
+  class n7,n170 ops
+  class n0,n171 io
+  style b0 fill:transparent,stroke:#9333ea,stroke-dasharray:4 3
+```
+
+- Each call to an `@fn` is a node showing its input and output types (per
+  element for `.lift`). `depth=2`, or a click on the page, opens it to show
+  the calls inside. A loop over identical layers is one box, `× L`; the
+  selective scan in `examples/mamba/` is a box `× T`. A traced `if` or
+  `while` is a box too.
+- Between calls, only operations that say what the model does are drawn
+  (`matmul`, `index`, `sum`, `conv`, ...). Reshapes and elementwise
+  arithmetic are skipped, with edges drawn straight across them. Each edge
+  follows the data and shows its type.
+- The page pans and zooms, opens and folds calls, and shows each call's
+  signature, file and line, and source. It loads Mermaid from a CDN.
 
 ## Precision constants
 

@@ -252,17 +252,68 @@ def _arrays(obj: Any) -> list[Any]:
     return [x for x in leaves if hasattr(x, "shape") and not jnp.issubdtype(x.dtype, jax.dtypes.prng_key)]  # fmt: skip
 
 
-def _count(f: Fn[Any, Any], fixed: dict[str, Any], abstract: list[str], n: int, scope: list[str],
-           statics: dict[str, int]) -> tuple[Poly, Poly | None, tuple[str, Poly] | None, list[str], list[str]]:  # fmt: skip
-    """Trace once with lists of length ``n``: (flops, parameters, largest value, notes, lists)."""
+@dataclass
+class _Setup:
+    """What ``_trace`` needs: the function, its fixed arguments and the size context."""
+
+    f: Any  # the Fn (typed Any: Fn is a descriptor, so a dataclass field of type Fn reads as bound)
+    fixed: dict[str, Any]
+    abstract: list[str]  # parameters traced as abstract values
+    scope: list[str]  # size constraints, in jax.export syntax
+    statics: dict[str, int]  # sizes set by static parameters (or given: see ``_trace``)
+    static_kw: dict[str, Any]  # keywords that chose static parameters
+    sizes: dict[str, Any]  # the keywords, plus a bound method's own sizes
+    notes: list[str]
+
+
+def _setup(target: Any, sizes: dict[str, Any], what: str) -> _Setup:
+    """Resolve an ``@fn``, unbound or bound method and keywords into a ``_Setup``."""
+    target = unwrap(target)
+    f: Fn[Any, Any] = target.fn if isinstance(target, BoundFn) else target
+    fixed: dict[str, Any] = {}
+    if f._lazy:
+        f._resolve_owner()
+    first = next(iter(f.params))
+    if isinstance(target, BoundFn):  # the instance's own sizes count as given
+        env, spec = Env(), f.params[first].spec
+        fixed[first] = check._Template(target.obj) if spec.leafy else target.obj
+        spec.match(target.obj, first, env)
+        sizes = {**{k: int(v) for k, v in env.dims.items() if isinstance(v, int)}, **sizes}
+    static_kw = {k: v for k, v in sizes.items() if k in f.params}
+    try:
+        choices = check._choices(f, {**f.examples, **static_kw, **fixed})
+    except check._Unchecked as u:
+        raise TypeError(f"cannot {what} {f.name}: {u}") from None
+    abstract = [a for a, c in choices.items() if c == [check._ABSTRACT]]
+    fixed = {a: c[0] for a, c in choices.items() if a not in abstract}
+    notes = [f"{a}={v!r} (choose with {a}=...)" for a, v in fixed.items()
+             if a not in static_kw and a not in f.examples and a != first]  # fmt: skip
+    statics = check._statics(f, fixed)
+    scope, _ = check._jax_constraints(f, statics)
+    return _Setup(f, fixed, abstract, scope, statics, static_kw, sizes, notes)
+
+
+def _trace(s: _Setup, n: int, preset: dict[str, int] | None = None) -> tuple[Any, dict[str, Any], list[str]]:
+    """Trace once with lists of length ``n``: (jaxpr, arguments, paths of the lists).
+
+    ``preset`` fixes some sizes to numbers; the others are symbolic.
+    """
     lists: list[str] = []
+    f = s.f
     var_rank = {v[1:]: 1 for v in f.input_names if v.startswith("*")}
-    new = lambda: check._Ctx(export.SymbolicScope(scope), None, var_rank, statics)
-    temp = {a: check._Template(_abstract(f.params[a].spec, new(), a, n, lists)) for a in abstract}
-    fixed = {**fixed, **temp}
+    new = lambda: check._Ctx(export.SymbolicScope(s.scope), None, var_rank, {**(preset or {}), **s.statics})
+    temp = {a: check._Template(_abstract(f.params[a].spec, new(), a, n, lists)) for a in s.abstract}
+    fixed = {**s.fixed, **temp}
     jaxpr, _, err = check._attempt(f, fixed, [], new)
     if err is not None:
         raise err
+    return jaxpr, fixed, lists
+
+
+def _count(s: _Setup, n: int) -> tuple[Poly, Poly | None, tuple[str, Poly] | None, list[str], list[str]]:
+    """Trace once with lists of length ``n``: (flops, parameters, largest value, notes, lists)."""
+    f = s.f
+    jaxpr, fixed, lists = _trace(s, n)
     notes: list[str] = []
     total = flops(jaxpr, notes)
     first = next(iter(f.params))
@@ -285,32 +336,14 @@ def cost(target: Any, /, **sizes: Any) -> Cost:
     static parameters (``heads=4``), the length ``L`` of lists of modules (also
     by the list's field name: ``blocks=12``), and sizes (``T=1024``). The counts are estimates: see the module docstring.
     """
-    target = unwrap(target)
-    f, fixed, given = (target.fn if isinstance(target, BoundFn) else target), {}, dict(sizes)
-    if f._lazy:
-        f._resolve_owner()
-    first = next(iter(f.params))
-    if isinstance(target, BoundFn):  # the instance's own sizes count as given
-        env, spec = Env(), f.params[first].spec
-        fixed[first] = check._Template(target.obj) if spec.leafy else target.obj
-        spec.match(target.obj, first, env)
-        sizes = {**{k: int(v) for k, v in env.dims.items() if isinstance(v, int)}, **sizes}
-    static_kw = {k: v for k, v in sizes.items() if k in f.params}
-    try:
-        choices = check._choices(f, {**f.examples, **static_kw, **fixed})
-    except check._Unchecked as u:
-        raise TypeError(f"cannot estimate the cost of {f.name}: {u}") from None
-    abstract = [a for a, c in choices.items() if c == [check._ABSTRACT]]
-    fixed = {a: c[0] for a, c in choices.items() if a not in abstract}
-    notes = [f"{a}={v!r} (choose with {a}=...)" for a, v in fixed.items()
-             if a not in static_kw and a not in f.examples and a != first]  # fmt: skip
-    statics = check._statics(f, fixed)
-    scope, _ = check._jax_constraints(f, statics)
+    given = dict(sizes)
+    s = _setup(target, sizes, "estimate the cost of")
+    f, sizes, static_kw, notes = s.f, s.sizes, s.static_kw, s.notes
 
     aliases: set[str] = set()
-    fl, params, largest, more, lists = _count(f, fixed, abstract, 1, scope, statics)
+    fl, params, largest, more, lists = _count(s, 1)
     if lists:  # the cost is linear in the length of the lists: extrapolate from 1 and 2
-        fl2, params2, _, _, _ = _count(f, fixed, abstract, 2, scope, statics)
+        fl2, params2, _, _, _ = _count(s, 2)
         fl += (Poly.of("L") - 1) * (fl2 - fl)
         params = None if params is None or params2 is None else params + (Poly.of("L") - 1) * (params2 - params)  # fmt: skip
         notes.append(f"L = len({', '.join(dict.fromkeys(lists))})")
