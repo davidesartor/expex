@@ -35,13 +35,14 @@ from .dims import (
     _same,
     describe,
     is_symbolic,
+    param_dim,
     resolve,
     short_dtype,
 )
 from . import jaxtyping as jt
 from .errors import Mismatch, code_of, coded, strip_see
 from .expr import Expr
-from .sym import dropped, evaluate, import_hint, named_sizes, texts
+from .sym import dropped, evaluate, import_hint, texts
 from .types import ArrayAnn, BatchAnn, DType, KeyAnn, StaticAnn
 
 # --------------------------------------------------------------------------
@@ -731,7 +732,6 @@ def _class_annotations(cls: type) -> dict[str, Any]:
         glb = getattr(sys.modules.get(c.__module__), "__dict__", {})
         scope = dict(getattr(c, "__expex_localns__", {}))
         scope.update({p.__name__: p for p in getattr(c, "__type_params__", ())})
-        scope.update(named_sizes(c))  # cells: i32[Rows:6, Cols:7]
         scope[c.__name__] = c
         for k, v in anns.items():
             text = v if isinstance(v, str) else getattr(v, "__forward_arg__", None)
@@ -765,13 +765,29 @@ def _bind_params(cls: type, params: Any, dims: tuple[Any, ...]) -> dict[Any, Any
     var = [i for i, p in enumerate(params) if isinstance(p, typing.TypeVarTuple)]
     if len(var) > 1:
         raise coded("EX401", TypeError(f"{cls.__name__} has more than one variadic type parameter"))
+    if not var:  # class Board[B, Rows = 6]: Board[N] leaves the fixed sizes out
+        given = list(dims)
+        for p in params[len(dims):]:
+            if not (isinstance(p, typing.TypeVar) and isinstance(d := param_dim(p), DConst)):
+                break
+            given.append(d)
+        dims = tuple(given)
     fixed = len(params) - len(var)
     if (not var and len(dims) != fixed) or len(dims) < fixed:
         raise coded("EX401", TypeError(
             f"{cls.__name__} takes {'at least ' if var else ''}{fixed} dimension(s), got {len(dims)}"
         ))
     if not var:
-        return dict(zip(params, dims))
+        out = dict(zip(params, dims))
+        for p, d in out.items():  # Board[N, 6] for class Board[B, Rows = 6]: Rows, fixed at 6
+            fixed_at = param_dim(p) if isinstance(p, typing.TypeVar) else None
+            if isinstance(fixed_at, DConst) and isinstance(d, DConst):
+                if d.value != fixed_at.value:
+                    raise coded("EX401", TypeError(
+                        f"{cls.__name__}'s size {p.__name__} is fixed at {fixed_at.value}, but is given as {d}"
+                    ))
+                out[p] = fixed_at
+        return out
     t = var[0]
     after = len(params) - t - 1
     inner = dict(zip(params[:t], dims[:t]))
@@ -861,7 +877,7 @@ def parse_owner(cls: type) -> Spec:
     if names is None:  # its annotated attributes that are arrays, modules or lists of them
         names = [n for n in anns if not n.startswith("_")]
     params = getattr(cls, "__type_params__", ()) or getattr(cls, "__parameters__", ())
-    inner: dict[Any, Any] = {p: DName(p.__name__) for p in params if isinstance(p, typing.TypeVar)}
+    inner: dict[Any, Any] = {p: param_dim(p) for p in params if isinstance(p, typing.TypeVar)}
     inner.update({p: (DVar(p.__name__),) for p in params if isinstance(p, typing.TypeVarTuple)})
     fields: dict[str, Spec] = {}
     for n in names:
@@ -974,12 +990,19 @@ def parse(ann: Any, subst: dict[Any, Any] | None = None, _stack: tuple[type, ...
             if origin is not None and args:
                 flat, _ = _parse_dims(tuple(args), subst)
                 inner = _bind_params(cls, params, flat)
-                label = f"{cls.__name__}[{', '.join(map(str, flat))}]"
+                shown = list(flat)  # Board[N], not Board[N, 6]: Python fills in the fixed sizes
+                while shown and len(shown) <= len(params) and isinstance(shown[-1], DConst):
+                    p = params[len(shown) - 1]
+                    d = param_dim(p) if isinstance(p, typing.TypeVar) else None
+                    if not (isinstance(d, DConst) and d.value == shown[-1].value):
+                        break
+                    shown.pop()
+                label = f"{cls.__name__}[{', '.join(map(str, shown))}]" if shown else cls.__name__
             else:
                 # Unparametrised generic: its dims are private to this value.
                 for p in params:
-                    if isinstance(p, typing.TypeVar):
-                        inner[p] = DName(f"{cls.__name__}.{p.__name__}")
+                    if isinstance(p, typing.TypeVar):  # a fixed one (R = 6) is R everywhere
+                        inner[p] = param_dim(p, f"{cls.__name__}.{p.__name__}")
                     elif isinstance(p, typing.TypeVarTuple):
                         inner[p] = (DVar(f"{cls.__name__}.{p.__name__}"),)
                 label = cls.__name__
@@ -1043,11 +1066,11 @@ def fields(spec: Spec, value: Any, path: str = "") -> Iterator[tuple[str, Spec, 
 
 
 def fixed_sizes(*specs: Spec) -> dict[str, int]:
-    """The named fixed sizes in ``specs`` (``R:6``, ``class RGB(Dim, size=3)``), for listing as ``R (= 6)``."""
+    """The named fixed sizes in ``specs`` (``def f[R = 6]``, ``class RGB(Dim, size=3)``), for listing as ``R (= 6)``."""
     out: dict[str, int] = {}
 
     def visit(d: Any) -> Any:
-        if isinstance(d, DConst) and d.label:
+        if isinstance(d, DConst) and d.label and d.label.isidentifier():  # R, not R + 1
             out.setdefault(d.label, d.value)
         return d
 

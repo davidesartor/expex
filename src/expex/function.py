@@ -156,15 +156,12 @@ def _scope(raw: Callable[..., Any], localns: dict[str, Any], owner: type | None 
     out = {**localns, **{p.__name__: p for p in getattr(raw, "__type_params__", ())}}
     if owner is not None:
         out.update({p.__name__: p for p in getattr(owner, "__type_params__", ())})
-        out.update(sym.named_sizes(owner))  # cells: i32[Rows:6, Cols:7]
         out[owner.__name__] = owner
     return out
 
 
 def _annotations(raw: Callable[..., Any], localns: dict[str, Any]) -> dict[str, Any]:
     try:
-        if sym.named_sizes(raw):  # f32[R:6]: R is evaluated from the text, below
-            raise NameError
         anns = inspect.get_annotations(raw, eval_str=True)
         if not any(isinstance(v, str) for v in anns.values()):  # e.g. quoted twice
             return anns
@@ -260,7 +257,8 @@ class Fn(Generic[P, R]):
         # sizes defined in the body (H = heads) are names in the annotations
         defined = getattr(self._impl, "__expex_defs__", {})
         self._localns.update({n: typing.TypeVar(n) for n in defined})  # type: ignore[misc]  # pyright: ignore[reportGeneralTypeIssues]
-        self._localns.update(sym.named_sizes(raw))  # f32[R:6, 7]: R is a fixed size (raises for conflicts)
+        sym.reject_slices(raw)  # f32[R:6], an old spelling of def f[R = 6]
+        sym.fixed_params(raw)  # def f[R = 6]: a default or bound that is not a size raises here
         anns = _annotations(raw, self._localns)
         # Annotations that could not be evaluated yet (a forward reference to the
         # class being defined, say) are retried at the first call.
@@ -753,7 +751,7 @@ class Fn(Generic[P, R]):
         tps = getattr(self.raw, "__type_params__", ())
         head = getattr(self.raw, "__name__", self.name)
         if tps:
-            head += "[" + ", ".join(("*" if "Tuple" in type(t).__name__ else "") + t.__name__ for t in tps) + "]"
+            head += "[" + ", ".join(sym.param_head(t) for t in tps) + "]"  # B, *B, R = 6
         parts = []
         for n, p in self.params.items():
             star = {inspect.Parameter.VAR_POSITIONAL: "*", inspect.Parameter.VAR_KEYWORD: "**"}.get(p.kind, "")

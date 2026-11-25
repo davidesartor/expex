@@ -104,6 +104,7 @@ def struct(cls: Any = None, /, *, compute: Any = None, **moved: Any) -> Any:
 
     def build(original: Any) -> Any:
         cls: Any = original
+        sym.fixed_params(cls)  # class Board[Rows = 6]: a default or bound that is not a size raises here
         own = vars(cls).get("__init__")  # dataclass() keeps a hand-written __init__
         custom_init = own is not None and not getattr(own, "__expex_generated__", False)
         if localns:
@@ -709,7 +710,8 @@ def _sizes_and_fields(cls: Any) -> tuple[set[str], set[str], Spec]:
     spec = parse_owner(cls)
     named: set[str] = set()
     spec.names(named)  # sizes in the annotations, Dim classes included
-    sizes = {p.__name__ for p in getattr(cls, "__type_params__", ())}
+    fixed = sym.fixed_params(cls)  # class Board[Rows = 6]: Rows is not given, like a Dim class
+    sizes = {p.__name__ for p in getattr(cls, "__type_params__", ()) if p.__name__ not in fixed}
     sizes |= {n for n in named if not n.startswith("*") and "." not in n}
     fields = _all_fields(spec) | {f.name for f in dataclasses.fields(cls)}
     return sizes - fields, fields, spec  # `heads` in f32[self.heads, D] is a field

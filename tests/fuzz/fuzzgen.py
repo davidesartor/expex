@@ -791,7 +791,7 @@ class Gen:
                 if _always_jumps(Block(body.body[:-1])):
                     body.body.insert(0, body.body.pop())
         b.body.append(Loop(head, es, body, pre, truth))
-        jumped = _has_jump(body)
+        jumped = _has_jump(body) or any("return" in ln for ln in body.lines("expex", 0))  # a return in a nested loop too
         if collect:
             # use the collected values right after the loop
             use = self.pick(

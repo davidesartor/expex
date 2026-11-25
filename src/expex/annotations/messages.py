@@ -113,6 +113,8 @@ def annotate(f: Fn[Any, Any], e: Exception, bound: dict[str, Any], env: Env) -> 
         _stage_hint(e, f)
         if isinstance(e, NameError):
             _size_hint(e, f, env)
+        elif isinstance(e, TypeError) and not f.converted:
+            _type_param_hint(e, f)
         args = ", ".join(
             f"{n}: {describe(v)}" for n, v in bound.items() if f.params[n].spec.leafy
         )
@@ -124,15 +126,48 @@ def annotate(f: Fn[Any, Any], e: Exception, bound: dict[str, Any], env: Env) -> 
         pass
 
 
+def _type_param_hint(e: TypeError, f: Fn[Any, Any]) -> None:
+    """A type parameter used as a size in a body that is not converted: there it is a ``TypeVar``."""
+    import re
+    import typing
+
+    raw = f.raw
+    code = getattr(raw, "__code__", None)
+    if code is None or getattr(e, "_expex_hint", False):
+        return
+    tb, in_body = e.__traceback__, False
+    while tb is not None and not in_body:
+        in_body, tb = tb.tb_frame.f_code is code, tb.tb_next
+    if not in_body:
+        return
+    params = []  # the type parameters the body reads: its own, and its class's
+    for name, cell in zip(code.co_freevars, getattr(raw, "__closure__", None) or ()):
+        try:
+            if isinstance(cell.cell_contents, (typing.TypeVar, typing.TypeVarTuple)):
+                params.append(name)
+        except ValueError:  # an empty cell
+            pass
+    text = str(e)
+    named = [n for n in params if re.search(rf"\b{re.escape(n)}\b", text)]
+    if not (named or (params and "TypeVar" in text)):
+        return
+    name = (named or params)[0]
+    setattr(e, "_expex_hint", True)
+    why = f.convert_note or "it is not converted"
+    coded_note(
+        "EX406", e,
+        f"expex: {name} is a size of {f.name}(), but the body cannot use it by name because "
+        f"{why}: there, {name} is the type parameter itself, not its size.",
+    )  # fmt: skip
+
+
 def _size_hint(e: NameError, f: Fn[Any, Any], env: Env) -> None:
     """A size used by name outside the function it belongs to: in a helper defined elsewhere."""
-    from .sym import named_sizes
-
     name = getattr(e, "name", None)
     if not name or getattr(e, "_expex_hint", False):
         return
     raw = f.raw
-    sizes = {*env.dims, *env.vars, *f.defs, *named_sizes(raw)}
+    sizes = {*env.dims, *env.vars, *f.defs}
     sizes |= {p.__name__ for p in getattr(raw, "__type_params__", ())}
     if name not in sizes:
         return

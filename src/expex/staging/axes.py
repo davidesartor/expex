@@ -19,6 +19,7 @@ import jax.numpy as jnp
 
 from ..annotations.dims import DConst, DName, DVar, _same, describe
 from ..annotations.errors import ShapeError, coded
+from ..annotations.sym import fixed_param
 from ..annotations.types import Dim
 
 #: Keyword arguments that take axes.
@@ -102,6 +103,8 @@ def size_(name: Any, call: Any = None) -> Any:
             return v
         if isinstance(name, type) and issubclass(name, Dim) and name.size is not None:
             return name.size  # a fixed size (class Rows(Dim, size=6)) is known everywhere
+        if isinstance(name, typing.TypeVar) and (size := _fixed_size(name)) is not None:
+            return size  # def f[R = 6]: R is 6 everywhere
     raise coded("EX407", ShapeError(
         f"{getattr(fn, 'name', '?')}(): the size {n.lstrip('*')} is not known in this call: only sizes that appear in "
         f"the arguments, or are computed from them in an annotation, are known inside "
@@ -134,7 +137,15 @@ def _axes(v: Any, arr: Any, site: str, var: str | None, call: Any = None) -> Any
             out.extend(r if isinstance(r, tuple) else (r,))
         return tuple(out)
     name = axis_name(v)
-    return v if name is None else resolve(name, arr, site, var, getattr(v, "size", None), call)
+    return v if name is None else resolve(name, arr, site, var, _fixed_size(v), call)
+
+
+def _fixed_size(v: Any) -> int | None:
+    """The size of a fixed axis name: ``class Rows(Dim, size=6)``, or ``def f[R = 6]``'s R."""
+    if isinstance(v, typing.TypeVar):
+        dim = fixed_param(v)
+        return None if dim is None else getattr(dim, "size")
+    return getattr(v, "size", None)
 
 
 def resolve(name: str, arr: Any, site: str, var: str | None, fixed: int | None = None, call: Any = None) -> Any:

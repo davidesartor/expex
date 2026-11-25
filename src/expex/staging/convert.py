@@ -29,7 +29,6 @@ import textwrap
 import types
 from typing import Any, Callable, Iterable
 
-from ..annotations.sym import named_sizes
 from . import analysis, axes, runtime
 
 FLOW = "__expex_flow__"
@@ -987,8 +986,6 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
     if n_locals:  # local annotations may name the function's type parameters
         for tp in getattr(raw, "__type_params__", ()):
             cells.setdefault(tp.__name__, types.CellType(tp))
-    for n, dim in named_sizes(raw).items():  # f32[R:6]: R is a name in the body
-        cells[n] = types.CellType(dim)
     pre: list[ast.stmt] = [
         ast.Assign(targets=[_name(v, store=True)], value=ast.Constant(None)) for v in cells
     ]

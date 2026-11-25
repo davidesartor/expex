@@ -351,11 +351,8 @@ def einsum_spellings(raw: Any) -> tuple[dict[str, str], set[str]]:
 
 
 def axis_names(raw: Any, fdef: ast.FunctionDef) -> set[str]:
-    """Names that stand for axes in ``raw``: type parameters, ``Dim`` classes, sizes declared as ``R:6``."""
-    from ..annotations.sym import named_sizes
-
+    """Names that stand for axes in ``raw``: type parameters (fixed ones too), ``Dim`` classes."""
     out = {tp.__name__ for tp in getattr(raw, "__type_params__", ())}
-    out |= set(named_sizes(raw))
     code = raw.__code__
     for name, cell in zip(code.co_freevars, raw.__closure__ or ()):
         try:

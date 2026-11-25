@@ -141,15 +141,27 @@ class DimError(TypeError):
     """An annotation's size is malformed (as opposed to: not an array annotation)."""
 
 
+def param_dim(tp: Any, name: str | None = None) -> Any:
+    """A type parameter as a dimension: fixed (``R = 6``, as ``R``), or a size named ``name``."""
+    from .sym import fixed_param
+
+    dim = fixed_param(tp)
+    if dim is not None:
+        return DConst(getattr(dim, "size"), tp.__name__)
+    return DName(name or tp.__name__)
+
+
 def parse_dim(item: Any, subst: dict[Any, Any]) -> Any:
     from .sym import Sym
 
     if isinstance(item, Sym):  # written in the annotation: T, D // heads, self.heads
+        if item.size is not None:  # def f[R = 6]: R, or R + 1, a fixed size
+            return DConst(item.size, item.src)
         return DName(item.src) if item.is_dim else DExpr(Expr(item.src))
     if item in subst if _hashable(item) else False:
         return subst[item]
     if isinstance(item, typing.TypeVar):
-        return DName(item.__name__)
+        return param_dim(item)  # def f[R = 6]: R is fixed at 6
     if isinstance(item, typing.TypeVarTuple):
         return DVar(item.__name__)
     origin = typing.get_origin(item)
@@ -180,16 +192,11 @@ def parse_dim(item: Any, subst: dict[Any, Any]) -> Any:
         if item.size is not None:
             return DConst(item.size, item.__name__)
         return DName(item.__name__)
-    if type(item) is slice:  # R:6, a size declared in the annotation
-        start = item.start
-        if (
-            isinstance(start, type) and issubclass(start, Dim) and start.size is not None
-            and item.stop == start.size and item.step is None
-        ):  # fmt: skip
-            return DConst(start.size, start.__name__)
-        raise coded("EX401", DimError(
-            f"{_slice_src(item)} is not a valid dimension. To declare a fixed size by name, "
-            f"write Name:size, e.g. f32[R:6, 7]."
+    if type(item) is slice:  # f32[R:6], the old spelling of def f[R = 6]
+        raise coded("EX404", DimError(
+            f"{_slice_src(item)} is not a valid dimension. A fixed size is declared with the "
+            f"type parameters, def f[R = 6](...) (or R = Literal[6] for type checkers), "
+            f"and written as plain R in the annotations."
         ))
     if isinstance(item, str):
         raise coded("EX401", DimError(

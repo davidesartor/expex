@@ -10,6 +10,7 @@ expression.
 import ast
 import functools
 import inspect
+import operator
 import re
 import types
 import typing
@@ -19,31 +20,41 @@ from typing import Any
 from .errors import coded
 
 _PRECEDENCE = {"+": 1, "-": 1, "*": 2, "//": 2, "%": 2}
+_OPS: dict[str, Any] = {
+    "+": operator.add, "-": operator.sub, "*": operator.mul, "//": operator.floordiv, "%": operator.mod,
+}  # fmt: skip
 
 
 class Sym:
     """A size, a parameter or a field, as it appears in an annotation."""
 
-    __slots__ = ("src", "prec", "is_dim")
+    __slots__ = ("src", "prec", "is_dim", "size")
 
-    def __init__(self, src: str, prec: int = 9, is_dim: bool = False):
+    def __init__(self, src: str, prec: int = 9, is_dim: bool = False, size: int | None = None):
         self.src = src
         self.prec = prec
         #: A plain size name (a type parameter), as opposed to a parameter or an expression.
         self.is_dim = is_dim
+        #: The value of an expression of fixed sizes only (``R + 1`` with ``def f[R = 6]``): 7.
+        self.size = size
 
     def _op(self, op: str, other: Any, swap: bool = False) -> Sym:
         p = _PRECEDENCE[op]
         a, b = (other, self) if swap else (self, other)
+        if not isinstance(other, (Sym, int)) or isinstance(other, bool):
+            return NotImplemented
+        va, vb = (x if isinstance(x, int) else x.size for x in (a, b))
+        known = va is not None and vb is not None  # fixed sizes only: written with their names
 
         def side(x: Any, right: bool) -> str:
+            if not known and isinstance(x, Sym) and x.size is not None:  # R in `R + T`: its value
+                x = x.size
             text = x.src if isinstance(x, Sym) else repr(x)
             prec = x.prec if isinstance(x, Sym) else 9
             return f"({text})" if prec < p or (right and prec == p) else text
 
-        if not isinstance(other, (Sym, int)) or isinstance(other, bool):
-            return NotImplemented
-        return Sym(f"{side(a, False)} {op} {side(b, True)}", p)
+        value = _OPS[op](va, vb) if known else None
+        return Sym(f"{side(a, False)} {op} {side(b, True)}", p, size=value)
 
     def __add__(self, o: Any) -> Sym:
         return self._op("+", o)
@@ -146,11 +157,12 @@ def signature(f: Any) -> inspect.Signature:
 def texts(obj: Any) -> dict[str, Any]:
     """An object's annotations, as values where Python can evaluate them, else as text.
 
-    Always as text where they declare sizes (``f32[R:6]``): a global ``R`` must not be used.
+    Raises EX404 for a size declared in an annotation (``f32[R:6]``), which is now a
+    type parameter (``def f[R = 6]``).
     """
+    reject_slices(obj)
     try:
-        if not _declares(obj):
-            return dict(inspect.get_annotations(obj))
+        return dict(inspect.get_annotations(obj))
     except Exception:
         pass
     try:  # Python 3.14: an annotation could not be evaluated; ask for the source text
@@ -159,6 +171,17 @@ def texts(obj: Any) -> dict[str, Any]:
         return dict(annotationlib.get_annotations(obj, format=annotationlib.Format.STRING))
     except Exception:
         return {}
+
+
+def _sym_of(name: str, v: Any) -> Any:
+    """A type parameter as a :class:`Sym` (with its size if it is fixed); anything else as is."""
+    if not isinstance(v, typing.TypeVar):
+        return v
+    try:
+        dim = fixed_param(v)
+    except TypeError:
+        dim = None
+    return Sym(name, is_dim=True, size=None if dim is None else getattr(dim, "size"))
 
 
 def evaluate(text: str, glb: dict[str, Any], scope: dict[str, Any], params: Any = ()) -> Any:
@@ -176,12 +199,7 @@ def evaluate(text: str, glb: dict[str, Any], scope: dict[str, Any], params: Any 
         pass  # perhaps a parameter, or self: try symbolically
     except TypeError:
         pass  # arithmetic on a type parameter
-    sym: dict[str, Any] = {}
-    for k, v in scope.items():
-        if isinstance(v, typing.TypeVar):
-            sym[k] = Sym(k, is_dim=True)
-        else:
-            sym[k] = v
+    sym: dict[str, Any] = {k: _sym_of(k, v) for k, v in scope.items()}
     for p in params:
         sym.setdefault(p, Sym(p))
     sym["self"] = _Self()
@@ -267,7 +285,7 @@ def unknown_names(text: str, glb: dict[str, Any], scope: dict[str, Any], params:
             missing.add(name)
             return Sym(name)
 
-    ns = Loose({k: (Sym(k, is_dim=True) if isinstance(v, typing.TypeVar) else v) for k, v in scope.items()})
+    ns = Loose({k: _sym_of(k, v) for k, v in scope.items()})
     for p in params:
         ns.setdefault(p, Sym(p))
     ns["self"] = _Self()
@@ -442,7 +460,8 @@ def reject_slices(obj: Any) -> None:
     if not _declares(obj):
         return
     owner = str(getattr(obj, "__qualname__", None) or getattr(obj, "__name__", "?"))
-    head = "class " + owner.rsplit(".", 1)[-1] if isinstance(obj, type) else "def " + owner.rsplit(".", 1)[-1]
+    short = owner.rsplit(".", 1)[-1]
+    head, tail = ("class " + short, "") if isinstance(obj, type) else ("def " + short, "(...)")
     for key, text in strings(obj).items():
         if not (":" in text and _SLICE.search(text)):
             continue
@@ -463,6 +482,6 @@ def reject_slices(obj: Any) -> None:
                     raise coded("EX404", TypeError(
                         f"{owner}: `{ast.unparse(it)}` in {where} declares a size in the annotation, "
                         f"which expex no longer reads. Declare the fixed size with the type parameters, "
-                        f"{head}[{name} = {size}] (or {name} = Literal[{size}] for type checkers), "
+                        f"{head}[{name} = {size}]{tail} (or {name} = Literal[{size}] for type checkers), "
                         f"and write plain {name} in the annotations."
                     ))
