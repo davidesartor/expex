@@ -374,25 +374,23 @@ True
 ```
 
 What remains per call is Python dispatch. `benchmarks/` measures it against
-the same thing written in plain JAX. In the most recent committed run
-([`results/cpu-2026-11-23-quick.md`](../benchmarks/results/cpu-2026-11-23-quick.md),
-load average 10.5 on 4 cores):
+the same thing written in plain JAX, on a quiet 4-core CPU (best of 40 rounds
+of 100 calls each;
+[`results/overhead-cpu-2026-11-25-v0.1.md`](../benchmarks/results/overhead-cpu-2026-11-25-v0.1.md)):
 
 | Case | Plain JAX | expex | Difference |
 |---|---|---|---|
-| jitted call (`x @ w`, 4 × 8) | 5.4 µs | 5.4 µs | none measured |
-| jitted method on a struct | 6.3 µs | 6.3 µs | none measured |
-| `donate="auto"` step, against `donate_argnums=0` | 4.2 µs | 5.5 µs | +1.3 µs |
-| eager typed call (checks, no compilation) | — | 5.0 µs | +5.0 µs |
+| jitted call (`x @ w`, 4 × 8) | 4.8 µs | 4.9 µs | +0.1 µs |
+| jitted method on a struct | 5.1 µs | 5.3 µs | +0.2 µs |
+| `donate="auto"` step, against `donate_argnums=0` | 4.4 µs | 5.5 µs | +1.1 µs |
+| eager typed call (checks, no compilation) | — | 4.6 µs | +4.6 µs |
 
-The default run in [`results/cpu-2026-11-23.md`](../benchmarks/results/cpu-2026-11-23.md),
-taken under heavier load (9 to 17 on 4 cores), measured +3.0 µs for the jitted
-call, +6.6 µs for the method and +17.6 µs for the eager check, with
-interquartile spreads of 10–61%: at this scale the machine's noise is as
-large as the difference. An eager *mapped* call is compiled from its second
-call on, so it ran in 31.5 µs where an uncompiled `jax.vmap` took 313 µs; that
-compares compiled with uncompiled code, and says only that eager batching is
-not a trap.
+The jitted calls are within the noise of each other (interquartile spreads of
+1–10%). The `donate="auto"` step pays about a microsecond per call for
+working out which buffers the call site overwrites. An eager *mapped* call is
+compiled from its second call on, so it ran in 16.2 µs (37.0 µs median) where
+an uncompiled `jax.vmap` took 248 µs; that compares compiled with uncompiled
+code, and says only that eager batching is not a trap.
 
 ## 3. Evidence: seven ports
 
@@ -402,7 +400,7 @@ loaded into the port ([Reference: Ported projects](reference.md#ported-projects)
 
 | Project | Lines of code, port vs original | Matches the original | Functions proved |
 |---|---|---|---|
-| PureJaxRL PPO | not counted | first 64 of 976 updates identical, then float32 drift | all |
+| PureJaxRL PPO | not counted | first 55–64 of 976 updates identical (depends on the CPU), then float32 drift | all |
 | mamba-jax | not counted | logits to 6e-7, sampled tokens exact | 12 |
 | llama-2-jax | 101 in 1 file vs 478 in 15 | logits to 8e-7, greedy tokens exact | 11 |
 | Pgx Connect Four, Othello | 81 vs 161; 107 vs 204 | every field of every state, 1,024 games | 15 |
@@ -461,35 +459,53 @@ bit-identical.
 **Speed.** `benchmarks/` runs each original and its port on the same inputs,
 jit-compiled, in interleaved rounds, and reports the best round, the median,
 and an interquartile range that pairs the original's quartiles with the
-port's opposite ones. All numbers are on a shared 4-core CPU VM while other
-jobs ran, with a load average of 9 to 17; no GPU results exist yet. Above 1x
-the port is faster:
+port's opposite ones. The numbers below are from one run of every port at its
+default CPU config, 25 rounds per measure, on a quiet 4-core VM (load average
+0.8 at the start, 1–3.4 during the run from the benchmark itself;
+[`results/cpu-2026-11-25-v0.1.md`](../benchmarks/results/cpu-2026-11-25-v0.1.md)).
+No GPU results exist yet. Above 1x the port is faster:
 
-| Measure | Best (median; IQR range) | File |
-|---|---|---|
-| PPO, full training run | 1.41x (1.05x; 0.87–1.39) | `cpu-2026-11-23.md` |
-| Mamba forward, T = 2,048 | 14.1x (9.7x; 6.8–14.2) | `cpu-2026-11-23.md` |
-| Mamba gradient | 5.97x (5.17x; 4.57–6.14) | `cpu-2026-11-23.md` |
-| Llama forward / gradient | 0.97x (1.30x; 0.52–1.96) / 1.04x (1.13x; 0.80–1.29) | `cpu-2026-11-23.md` |
-| Connect Four, 1,024 games | 1.65x (1.40x; 0.95–2.17) | `cpu-2026-11-23.md` |
-| mctx MuZero / Gumbel | 1.04x (0.72x; 0.40–1.77) / 0.83x (1.28x; 0.75–1.50) | `cpu-2026-11-23-vit-mctx-nerf.md` |
-| NeRF render | 0.76x (0.99x; 0.87–1.17) | `cpu-2026-11-23-vit-mctx-nerf.md` |
+| Measure | Best (median; IQR range) |
+|---|---|
+| PPO, full training run | 1.01x (1.02x; 0.97–1.09) |
+| Mamba forward, T = 2,048 | 5.18x (5.80x; 5.09–6.72) |
+| Mamba gradient | 5.37x (6.04x; 5.21–8.58) |
+| Mamba generation | 1.03x (1.00x; 0.94–1.10) |
+| Llama forward | 1.08x (1.14x; 1.00–1.40) |
+| Llama gradient | 1.61x (1.71x; 1.53–1.95) |
+| Llama generation | 1.48x (1.58x; 1.35–1.78) |
+| Connect Four, 1,024 games | 1.50x (1.61x; 1.38–1.78) |
+| Othello, 1,024 games | 1.07x (1.10x; 1.00–1.18) |
+| ViT-Ti/16 forward | 0.92x (0.96x; 0.78–1.16) |
+| ViT-Ti/16 gradient | 0.93x (1.01x; 0.90–1.17) |
+| mctx MuZero | 1.02x (0.98x; 0.93–1.19) |
+| mctx Gumbel MuZero | 1.08x (1.11x; 1.03–1.20) |
+| NeRF render | 0.96x (0.93x; 0.79–1.03) |
+| NeRF gradient | 1.08x (1.02x; 0.79–1.19) |
 
-Most ranges straddle 1: on this machine the ports and the originals run at
-the same speed within the noise. Connect Four is probably faster (its range
-dips just below 1). Only Mamba is clearly different, and that is not the
-library's doing: the original materialises the full `T × E × N` decay tensor
-before scanning and recomputes it under `jax.checkpoint`, while the port's
-plain `for` loop over time computes one step's decay at a time. Writing the
-loop plainly made the cheap version the obvious one, but the same loop can be
-written in plain JAX with `lax.scan`.
+Mamba is clearly faster, and that is not the library's doing: the original
+materialises the full `T × E × N` decay tensor before scanning and
+recomputes it under `jax.checkpoint`, while the port's plain `for` loop over
+time computes one step's decay at a time. Writing the loop plainly made the
+cheap version the obvious one, but the same loop can be written in plain JAX
+with `lax.scan`. Connect Four, the Llama gradient and Llama generation are
+faster too, with ranges above 1; the Llama forward pass, Othello and Gumbel
+MuZero are slightly faster, with ranges starting at or just above 1. PPO,
+Mamba generation, MuZero, the ViT gradient and the NeRF gradient straddle 1:
+they run at their originals' speed. Two are slightly slower at their
+best round: the ViT forward pass (0.92x, 0.96x median) and the NeRF render
+(0.96x, 0.93x median, with a range of 0.79–1.03). Earlier runs on a heavily
+loaded machine gave much wider ranges, and a larger Mamba speedup (14x
+forward) that this quiet run does not reproduce; those results are kept in
+`benchmarks/results/` as history.
 
-**The gaps, and how they were fixed.** The same committed runs also showed
-four gaps whose ranges stay below 1, or nearly: ViT gradients at 0.78x
-(0.73x median; 0.58–0.94), NeRF gradients at 0.62x (0.93x median;
-0.73–1.06), Mamba generation at 0.47x (0.64x median; 0.38–0.92), and Othello
-at 0.71x (0.75x median; 0.57–1.08). Reading the compiled HLO explained three
-of them:
+**The gaps, and how they were fixed.** Earlier runs showed four gaps whose
+ranges stayed below 1, or nearly: ViT gradients at 0.78x (0.73x median;
+0.58–0.94), NeRF gradients at 0.62x (0.93x median; 0.73–1.06), Mamba
+generation at 0.47x (0.64x median; 0.38–0.92), and Othello at 0.71x (0.75x
+median; 0.57–1.08), all from
+[`results/cpu-2026-11-23.md`](../benchmarks/results/cpu-2026-11-23.md), under
+a load average of 9 to 17. Reading the compiled HLO explained three of them:
 
 - *Dot batching.* ViT and NeRF write layers for one token or one point and
   call them on batches, so their matmuls were nested `vmap`s. XLA:CPU got dots
@@ -503,10 +519,8 @@ of them:
   barrier between layers that keeps compile time linear in the depth. This
   closed Mamba's generation gap, whose original unrolls its layers.
 
-After these changes, [docs/reference.md](reference.md#ported-projects)
-reports ViT gradients at 0.92x best and 0.99x median, NeRF gradients at 1.02x
-best and 0.95x median, and Mamba generation at 1.05x. These later runs are
-not yet in `benchmarks/results/`, which still holds the runs before the fixes.
+In the v0.1 run above, those three measures are at 0.93x (ViT gradient),
+1.08x (NeRF gradient) and 1.03x (Mamba generation).
 
 **Othello, a lesson about XLA:CPU.** The fourth gap was in the port's code,
 not the library. Pgx's Othello shifts the board with precomputed mask tables.
@@ -514,9 +528,9 @@ The port instead computed each direction's edge mask from the row and column
 of each square, in the shift itself, which reads better and needs no table.
 It was correct, but XLA:CPU recomputed those masks for every game in the
 batch, which made the run about 10% slower. With the masks computed once,
-outside the shifts, Othello runs at Pgx's speed (0.96x best, 1.02x median,
-0.81–1.19, in a 30-round rerun that is not in `benchmarks/results/`), with
-every state still identical. A related fact decided the board's layout:
+outside the shifts, Othello runs at Pgx's speed or slightly faster (1.07x
+best, 1.10x median, 1.00–1.18 in the v0.1 run), with every state still
+identical. A related fact decided the board's layout:
 XLA:CPU runs the shifts of a `[games, 64]` board about three times faster
 than those of a `[games, 8, 8]` one, so the port keeps it flat, as Pgx does.
 Neither fact is about expex, and both are the kind of thing a port only finds
@@ -587,10 +601,13 @@ was dropped and a wrong shape passed. They are now an error when the function is
   rejected. In the dynamax run with batching on, the 26 `ShapeError`s from
   `make_lgssm_params` did not occur: the time-varying weights were silently
   mapped over. Run such code with `expex.config.vectorize = False` first.
-- **Compile time.** The ports usually compile slower than the originals in the
-  committed runs: Llama's forward pass 0.93 s → 1.86 s, Mamba's gradient
-  4.44 s → 6.89 s, NeRF's gradient 8.73 s → 12.48 s; PPO compiles faster
-  (19.2 s → 10.1 s). Unrolling short layer stacks trades compile time for run
+- **Compile time.** Some ports compile slower than their originals (best of
+  5 cold compiles,
+  [`results/compile-cpu-2026-11-25-v0.1.md`](../benchmarks/results/compile-cpu-2026-11-25-v0.1.md)):
+  Connect Four 0.77 s → 1.35 s, Llama's forward pass 0.32 s → 0.46 s, MuZero
+  2.14 s → 2.84 s, NeRF's render 1.12 s → 1.25 s. Others compile faster: PPO
+  2.79 s → 1.56 s, Llama's gradient 1.14 s → 0.85 s, ViT's forward pass
+  0.46 s → 0.36 s; the rest are within 6%. Unrolling short layer stacks trades compile time for run
   time again. Scanning long Python loops instead of unrolling them is the
   other side: a 1,000-step loop compiles in 0.06 s rather than 8 s
   ([Functions](functions.md#plain-python-on-traced-values)). Compile time is
@@ -659,8 +676,9 @@ name, loops proved for symbolic lengths, and the choice between `vmap` and
 The library rests on one decision: shapes are written once, in the signature,
 in a form that can be read as symbols. Everything else follows from reading
 them. The ports give evidence that this produces shorter code (in the five
-that were counted) that computes the same numbers at about the same speed on CPU, within the noise of a
-loaded machine; the gaps they found were fixed in the library or, in
+that were counted) that computes the same numbers at about the same speed on
+CPU: from 0.92x to 1.61x at the best round, except Mamba's 5x, which comes
+from writing its scan differently; the gaps they found were fixed in the library or, in
 Othello's case, in the port. The dynamax experiment shows the checks find
 real annotation errors in code that already had annotations. The costs are
 Python 3.14, source-based conversion with its refusals, some friction with

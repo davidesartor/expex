@@ -13,7 +13,7 @@ from harness import EXAMPLES, Fn, Measure, load_module, use_example, use_origina
 
 NAME = "vit"
 ORIGINALS = ["vision_transformer"]
-CLAIM: dict[str, str] = {}
+CLAIM = {"forward": "slightly slower, 0.92x (0.96x)", "gradient": "0.93x (1.01x)"}  # README, from results/cpu-2026-11-25-v0.1.md: best (median)
 
 CONFIGS = {
     "quick": dict(hidden=64, heads=4, mlp=128, layers=2, image=32, patch=4, batch=8, classes=10),

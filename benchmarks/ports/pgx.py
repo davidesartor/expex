@@ -16,7 +16,7 @@ from harness import EXAMPLES, Fn, Measure, load_module, use_example, use_origina
 NAME = "pgx"
 ORIGINALS = ["pgx"]
 # README: 1,024 parallel games, CPU
-CLAIM = {"connect_four": "1.3x (2.7 M vs 2.0 M steps/s); compiles ~0.6 s slower", "othello": "0.9–1.0x; same compile time"}
+CLAIM = {"connect_four": "1.50x (1.61x)", "othello": "1.07x (1.10x)"}  # README, from results/cpu-2026-11-25-v0.1.md: best (median)
 
 CONFIGS = {
     "quick": dict(games=128, steps=20),

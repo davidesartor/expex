@@ -142,8 +142,8 @@ for game, mismatches in compare.compare(reference).items():
 #
 # Random games stepped per second, 1024 games x 100 moves, jitted. Timings depend on the
 # machine. With Pgx installed, `python examples/pgx/compare.py --pgx <pgx checkout>` times both;
-# the repository's [benchmarks/](../../benchmarks/) report Connect Four 1.4x faster than Pgx on
-# CPU, Othello about the same.
+# the repository's [benchmarks/](../../benchmarks/) report, on CPU (best of 25 rounds, median in
+# brackets), Connect Four 1.50x (1.61x) faster than Pgx and Othello 1.07x (1.10x).
 
 # %% [bench]
 for game, module in ((ConnectFour, connect_four), (Othello, othello)):

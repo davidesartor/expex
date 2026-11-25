@@ -14,7 +14,7 @@ from harness import EXAMPLES, Fn, Measure, load_module, use_example, use_origina
 
 NAME = "mctx"
 ORIGINALS = ["mctx"]
-CLAIM: dict[str, str] = {}
+CLAIM = {"muzero": "same, 1.02x (0.98x)", "gumbel": "same, 1.08x (1.11x)"}  # README, from results/cpu-2026-11-25-v0.1.md: best (median)
 
 CONFIGS = {
     "quick": dict(batch=8, simulations=16),

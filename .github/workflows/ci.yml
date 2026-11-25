@@ -3,16 +3,84 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.14"
+  # tests/test_notebooks.py runs in its own job below
+  EXPEX_SKIP_NOTEBOOKS: "1"
+
 jobs:
   test:
+    name: tests (with Equinox, Flax, Optax, Orbax, jaxtyping, beartype)
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python: ["3.14"]
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python }}
-      - run: pip install -e ".[dev]"
-      - run: pytest -q
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: pip install -e ".[dev,interop]"
+      - run: pytest -q -n auto -p no:cacheprovider
+
+  minimal:
+    name: tests (no optional libraries)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: pip install -e ".[test]"
+      # the tests and doc blocks that need equinox, flax, optax, orbax, jaxtyping, beartype,
+      # pyright or mypy skip themselves here
+      - run: pytest -q -n auto -p no:cacheprovider -rs
+
+  checks:
+    name: pyright, mypy, fuzz smoke test, notebooks up to date
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: pip install -e ".[dev]" nbformat
+      - name: pyright
+        run: pyright src
+      - name: mypy
+        run: mypy src/expex
+      - name: fuzz smoke test
+        run: pytest -q -p no:cacheprovider tests/fuzz/test_fuzz_smoke.py
+      - name: notebooks match their .py sources
+        run: python examples/notebooks/build.py --check
+
+  notebooks:
+    name: notebooks run as scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      EXPEX_SKIP_NOTEBOOKS: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: pip install -e ".[test]" optax matplotlib
+      - run: pytest -q -n auto -p no:cacheprovider tests/test_notebooks.py

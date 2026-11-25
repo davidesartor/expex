@@ -1,0 +1,8 @@
+/* Figures as wide as the text, and the interactive diagram's frame. */
+.md-typeset picture img { max-width: 100%; height: auto; }
+.md-typeset iframe.diagram {
+  width: 100%;
+  height: 640px;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 4px;
+}

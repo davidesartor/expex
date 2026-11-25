@@ -1,0 +1,88 @@
+# The docs site: `pip install -e ".[docs]" && mkdocs serve` (or `mkdocs build --strict`).
+# Pages come from docs/; the front page is the top-level README.md and the guide's index is
+# docs/README.md (mkdocs_hooks.py adds both, with CHANGELOG.md, and points links that leave
+# docs/ at the repository on GitHub).
+site_name: expex
+site_description: Shape-typed functions for JAX, checked, proved and used.
+site_url: https://davidesartor.github.io/expex/
+repo_url: https://github.com/davidesartor/expex
+repo_name: davidesartor/expex
+edit_uri: edit/main/docs/
+copyright: MIT License
+
+docs_dir: docs
+use_directory_urls: false  # pages sit next to images/, so the <picture> paths in the pages work as on GitHub
+
+hooks:
+  - mkdocs_hooks.py
+
+nav:
+  - Home: index.md
+  - Guide: guide.md
+  - Functions: functions.md
+  - Modules: modules.md
+  - Keys, compiling and sharding: compiling.md
+  - Cost and diagrams: cost-and-diagrams.md
+  - Precision and debugging: debugging.md
+  - Reference: reference.md
+  - Command line and editors: tools.md
+  - Porting JAX code: porting.md
+  - Errors: errors.md
+  - Equinox, Flax, Optax and Orbax: interop.md
+  - The design of expex: design.md
+  - Changelog: changelog.md
+
+theme:
+  name: material
+  features:
+    - content.code.copy
+    - navigation.footer
+    - navigation.top
+    - search.highlight
+    - search.suggest
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Follow the system
+
+plugins:
+  - search
+
+extra_javascript:
+  - assets/scheme.js
+extra_css:
+  - assets/extra.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn

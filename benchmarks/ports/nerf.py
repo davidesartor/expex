@@ -17,7 +17,7 @@ from harness import EXAMPLES, Fn, Measure, load_module, use_example, use_origina
 
 NAME = "nerf"
 ORIGINALS = ["google-research"]
-CLAIM: dict[str, str] = {}
+CLAIM = {"render": "slightly slower, 0.96x (0.93x)", "gradient": "1.08x (1.02x)"}  # README, from results/cpu-2026-11-25-v0.1.md: best (median)
 
 CONFIGS = {
     "quick": dict(side=8, net_depth=4, net_width=32, net_width_condition=16, skip_layer=2),

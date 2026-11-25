@@ -6,3 +6,7 @@ dist/
 *.egg-info/
 .venv/
 benchmarks/.originals/
+build/
+site/
+.ipynb_checkpoints/
+node_modules/

@@ -1,0 +1,1088 @@
+{
+ "format": 1,
+ "command": "python benchmarks/run.py --device cpu --compile-only --repeats 5 --out benchmarks/results/compile-cpu-2026-11-25-v0.1.json",
+ "kind": "cpu",
+ "wall_s": 73.05170155699943,
+ "environment": {
+  "date": "2026-11-25 11:36:41 UTC",
+  "python": "3.14.6",
+  "platform": "Linux-6.18.44-fc-v880-x86_64-with-glibc2.39",
+  "jax": "0.12.1",
+  "jaxlib": "0.12.1",
+  "numpy": "2.5.5",
+  "backend": "cpu",
+  "devices": [
+   "cpu:cpu"
+  ],
+  "device_kind": "cpu",
+  "nvidia_smi": null,
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.30GHz",
+  "cpu_count": 4,
+  "cpu_affinity": 4,
+  "load_average": [
+   2.265625,
+   2.40673828125,
+   3.08984375
+  ],
+  "xla_flags": null,
+  "expex_commit": "c9fe6a12ad19bb3a50f7e6c595fad31499945abb",
+  "expex_src_dirty": false,
+  "originals": {
+   "purejaxrl": {
+    "url": "https://github.com/luchris429/purejaxrl",
+    "commit": "31756b197773a52db763fdbe6d635e4b46522a73",
+    "fetched": true
+   },
+   "gymnax": {
+    "url": "https://github.com/RobertTLange/gymnax",
+    "commit": "88fef6978d3d9966828256bfc27f5489b57f7757",
+    "fetched": true
+   },
+   "mamba-jax": {
+    "url": "https://github.com/vvvm23/mamba-jax",
+    "commit": "3c50f6e807dc77b1ae697b3f9f0ef757a781687a",
+    "fetched": true
+   },
+   "llama-2-jax": {
+    "url": "https://github.com/ayaka14732/llama-2-jax",
+    "commit": "6bb19056f2e10b052321c9c510df8d9474aca333",
+    "fetched": true
+   },
+   "pgx": {
+    "url": "https://github.com/sotetsuk/pgx",
+    "commit": "87278d2d6e677fd87248c457207b59cfa42e578d",
+    "fetched": true
+   },
+   "vision_transformer": {
+    "url": "https://github.com/google-research/vision_transformer",
+    "commit": "64801f1b3b367b3611cc27a3d45cc22870a36fb3",
+    "fetched": true
+   },
+   "mctx": {
+    "url": "https://github.com/google-deepmind/mctx",
+    "commit": "428bfb7e1c931715cd3d74f9c65e9991afd86df8",
+    "fetched": true
+   },
+   "google-research": {
+    "url": "https://github.com/google-research/google-research",
+    "commit": "87e25a5ba04d2c4cf0108f0cec96d648fe2b945a",
+    "fetched": true
+   }
+  }
+ },
+ "runs": [
+  {
+   "port": "llama",
+   "config": "readme",
+   "params": {
+    "V": 32000,
+    "D": 256,
+    "F": 688,
+    "G": 2,
+    "R": 4,
+    "K": 32,
+    "L": 4,
+    "B": 4,
+    "T": 256,
+    "prompt": 64,
+    "max_len": 128
+   },
+   "claim": {
+    "forward": "1.1\u20131.4x",
+    "generate": "same (1,000\u20131,400 tokens/s)"
+   },
+   "settings": {
+    "rounds": 0,
+    "min_sample_s": 0.05,
+    "compile_repeats": 5,
+    "budget_s": 240.0,
+    "compile_only": true
+   },
+   "setup_s": 5.2868733830000565,
+   "wall_s": 9.06873561500015,
+   "load_average_before": [
+    2.265625,
+    2.40673828125,
+    3.08984375
+   ],
+   "load_average_after": [
+    2.07080078125,
+    2.35986328125,
+    3.0673828125
+   ],
+   "unroll_layers": null,
+   "measures": [
+    {
+     "name": "forward",
+     "items": 1024,
+     "unit": "tokens",
+     "note": "batch 4 x 256",
+     "labels": [
+      "original",
+      "port"
+     ],
+     "impls": {
+      "original": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 0.32486785299988696,
+        "best_s": 0.32486785299988696,
+        "trace_s": 0.05811166600051365,
+        "xla_s": 0.2667561869993733,
+        "all_s": [
+         0.32486785299988696
+        ],
+        "all_trace_s": [
+         0.05811166600051365
+        ],
+        "all_xla_s": [
+         0.2667561869993733
+        ],
+        "trace_cpu_s": 0.058447908999999854,
+        "xla_cpu_s": 0.6142148990000003
+       }
+      },
+      "port": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 0.4595924860004743,
+        "best_s": 0.4595924860004743,
+        "trace_s": 0.11241920100019342,
+        "xla_s": 0.3471732850002809,
+        "all_s": [
+         0.4595924860004743
+        ],
+        "all_trace_s": [
+         0.11241920100019342
+        ],
+        "all_xla_s": [
+         0.3471732850002809
+        ],
+        "trace_cpu_s": 0.10568332199999997,
+        "xla_cpu_s": 0.8530433410000002
+       }
+      }
+     }
+    },
+    {
+     "name": "gradient",
+     "items": 1020,
+     "unit": "tokens",
+     "note": "",
+     "labels": [
+      "original",
+      "port"
+     ],
+     "impls": {
+      "original": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 1.1413880139998582,
+        "best_s": 1.1413880139998582,
+        "trace_s": 0.22092716099996323,
+        "xla_s": 0.920460852999895,
+        "all_s": [
+         1.1413880139998582
+        ],
+        "all_trace_s": [
+         0.22092716099996323
+        ],
+        "all_xla_s": [
+         0.920460852999895
+        ],
+        "trace_cpu_s": 0.22191419099999976,
+        "xla_cpu_s": 2.689294888000001
+       }
+      },
+      "port": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 0.8531167560004178,
+        "best_s": 0.8531167560004178,
+        "trace_s": 0.24402529500002856,
+        "xla_s": 0.6090914610003892,
+        "all_s": [
+         0.8531167560004178
+        ],
+        "all_trace_s": [
+         0.24402529500002856
+        ],
+        "all_xla_s": [
+         0.6090914610003892
+        ],
+        "trace_cpu_s": 0.23802018800000013,
+        "xla_cpu_s": 1.6961132820000007
+       }
+      }
+     }
+    },
+    {
+     "name": "generate",
+     "items": 260,
+     "unit": "new tokens",
+     "note": "batch 4, prompt 64, 65 greedy tokens",
+     "labels": [
+      "original",
+      "port"
+     ],
+     "impls": {
+      "port": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 0.9379735939992315,
+        "best_s": 0.9379735939992315,
+        "trace_s": 0.20067573999949673,
+        "xla_s": 0.7372978539997348,
+        "all_s": [
+         0.9379735939992315
+        ],
+        "all_trace_s": [
+         0.20067573999949673
+        ],
+        "all_xla_s": [
+         0.7372978539997348
+        ],
+        "trace_cpu_s": 0.20007172400000073,
+        "xla_cpu_s": 1.9625983199999997
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "port": "mamba",
+   "config": "readme",
+   "params": {
+    "dim": 128,
+    "layers": 4,
+    "vocab": 1000,
+    "T": 2048,
+    "prompt": 16,
+    "new": 64
+   },
+   "claim": {
+    "forward": "4.5x",
+    "gradient": "3x"
+   },
+   "settings": {
+    "rounds": 0,
+    "min_sample_s": 0.05,
+    "compile_repeats": 5,
+    "budget_s": 240.0,
+    "compile_only": true
+   },
+   "setup_s": 3.919219068999155,
+   "wall_s": 8.03125788699981,
+   "load_average_before": [
+    2.07080078125,
+    2.35986328125,
+    3.0673828125
+   ],
+   "load_average_after": [
+    1.986328125,
+    2.3310546875,
+    3.05029296875
+   ],
+   "unroll_layers": null,
+   "measures": [
+    {
+     "name": "forward",
+     "items": 2048,
+     "unit": "tokens",
+     "note": "",
+     "labels": [
+      "original",
+      "port"
+     ],
+     "impls": {
+      "original": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 0.2557809130003079,
+        "best_s": 0.2557809130003079,
+        "trace_s": 0.06850183700043999,
+        "xla_s": 0.18727907599986793,
+        "all_s": [
+         0.2557809130003079
+        ],
+        "all_trace_s": [
+         0.06850183700043999
+        ],
+        "all_xla_s": [
+         0.18727907599986793
+        ],
+        "trace_cpu_s": 0.06892936200000044,
+        "xla_cpu_s": 0.46769130000000025
+       }
+      },
+      "port": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 0.255681951999577,
+        "best_s": 0.255681951999577,
+        "trace_s": 0.06566992699936236,
+        "xla_s": 0.19001202500021463,
+        "all_s": [
+         0.255681951999577
+        ],
+        "all_trace_s": [
+         0.06566992699936236
+        ],
+        "all_xla_s": [
+         0.19001202500021463
+        ],
+        "trace_cpu_s": 0.06588204600000047,
+        "xla_cpu_s": 0.42594779299999974
+       }
+      }
+     }
+    },
+    {
+     "name": "gradient",
+     "items": 2047,
+     "unit": "tokens",
+     "note": "",
+     "labels": [
+      "original",
+      "port"
+     ],
+     "impls": {
+      "original": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 0.8802546400002029,
+        "best_s": 0.8802546400002029,
+        "trace_s": 0.2719092550005371,
+        "xla_s": 0.6083453849996658,
+        "all_s": [
+         0.8802546400002029
+        ],
+        "all_trace_s": [
+         0.2719092550005371
+        ],
+        "all_xla_s": [
+         0.6083453849996658
+        ],
+        "trace_cpu_s": 0.2623535910000001,
+        "xla_cpu_s": 1.6567382499999992
+       }
+      },
+      "port": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 0.8814356820003013,
+        "best_s": 0.8814356820003013,
+        "trace_s": 0.2274954530003015,
+        "xla_s": 0.6539402289999998,
+        "all_s": [
+         0.8814356820003013
+        ],
+        "all_trace_s": [
+         0.2274954530003015
+        ],
+        "all_xla_s": [
+         0.6539402289999998
+        ],
+        "trace_cpu_s": 0.2274131939999986,
+        "xla_cpu_s": 1.5204451410000015
+       }
+      }
+     }
+    },
+    {
+     "name": "generate",
+     "items": 64,
+     "unit": "new tokens",
+     "note": "prompt 16, 64 sampled tokens, batch 1",
+     "labels": [
+      "original",
+      "port"
+     ],
+     "impls": {
+      "original": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 0.8666785039995375,
+        "best_s": 0.8666785039995375,
+        "trace_s": 0.09731534099955752,
+        "xla_s": 0.76936316299998,
+        "all_s": [
+         0.8666785039995375
+        ],
+        "all_trace_s": [
+         0.09731534099955752
+        ],
+        "all_xla_s": [
+         0.76936316299998
+        ],
+        "trace_cpu_s": 0.0978278330000002,
+        "xla_cpu_s": 1.3141485179999997
+       }
+      },
+      "port": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 0.8973909710002772,
+        "best_s": 0.8973909710002772,
+        "trace_s": 0.1073580709999078,
+        "xla_s": 0.7900329000003694,
+        "all_s": [
+         0.8973909710002772
+        ],
+        "all_trace_s": [
+         0.1073580709999078
+        ],
+        "all_xla_s": [
+         0.7900329000003694
+        ],
+        "trace_cpu_s": 0.10624097999999904,
+        "xla_cpu_s": 1.272235223000001
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "port": "mctx",
+   "config": "default",
+   "params": {
+    "batch": 64,
+    "simulations": 64
+   },
+   "claim": {},
+   "settings": {
+    "rounds": 0,
+    "min_sample_s": 0.05,
+    "compile_repeats": 5,
+    "budget_s": 240.0,
+    "compile_only": true
+   },
+   "setup_s": 0.8261025729998437,
+   "wall_s": 8.100645419999637,
+   "load_average_before": [
+    1.986328125,
+    2.3310546875,
+    3.05029296875
+   ],
+   "load_average_after": [
+    1.9072265625,
+    2.30859375,
+    3.0390625
+   ],
+   "unroll_layers": null,
+   "measures": [
+    {
+     "name": "muzero",
+     "items": 64,
+     "unit": "searches",
+     "note": "batch 64 x 64 simulations",
+     "labels": [
+      "mctx",
+      "port"
+     ],
+     "impls": {
+      "mctx": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 2.143292463999387,
+        "best_s": 2.143292463999387,
+        "trace_s": 0.42088606499964953,
+        "xla_s": 1.7224063989997376,
+        "all_s": [
+         2.143292463999387
+        ],
+        "all_trace_s": [
+         0.42088606499964953
+        ],
+        "all_xla_s": [
+         1.7224063989997376
+        ],
+        "trace_cpu_s": 0.41546135900000003,
+        "xla_cpu_s": 4.070069119999999
+       }
+      },
+      "port": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 2.8391120500000397,
+        "best_s": 2.8391120500000397,
+        "trace_s": 0.361426207000477,
+        "xla_s": 2.4776858429995627,
+        "all_s": [
+         2.8391120500000397
+        ],
+        "all_trace_s": [
+         0.361426207000477
+        ],
+        "all_xla_s": [
+         2.4776858429995627
+        ],
+        "trace_cpu_s": 0.3503200409999998,
+        "xla_cpu_s": 5.646903709999999
+       }
+      }
+     }
+    },
+    {
+     "name": "gumbel",
+     "items": 64,
+     "unit": "searches",
+     "note": "batch 64 x 64 simulations",
+     "labels": [
+      "mctx",
+      "port"
+     ],
+     "impls": {
+      "mctx": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 1.1500207609997233,
+        "best_s": 1.1500207609997233,
+        "trace_s": 0.32379711699923064,
+        "xla_s": 0.8262236440004926,
+        "all_s": [
+         1.1500207609997233
+        ],
+        "all_trace_s": [
+         0.32379711699923064
+        ],
+        "all_xla_s": [
+         0.8262236440004926
+        ],
+        "trace_cpu_s": 0.29203270600000053,
+        "xla_cpu_s": 1.8064611799999994
+       }
+      },
+      "port": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 1.077569406999828,
+        "best_s": 1.077569406999828,
+        "trace_s": 0.26288481800020236,
+        "xla_s": 0.8146845889996257,
+        "all_s": [
+         1.077569406999828
+        ],
+        "all_trace_s": [
+         0.26288481800020236
+        ],
+        "all_xla_s": [
+         0.8146845889996257
+        ],
+        "trace_cpu_s": 0.25617121299999823,
+        "xla_cpu_s": 1.7032019340000009
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "port": "nerf",
+   "config": "default",
+   "params": {
+    "side": 32,
+    "net_depth": 8,
+    "net_width": 256,
+    "net_width_condition": 128,
+    "skip_layer": 4
+   },
+   "claim": {},
+   "settings": {
+    "rounds": 0,
+    "min_sample_s": 0.05,
+    "compile_repeats": 5,
+    "budget_s": 240.0,
+    "compile_only": true
+   },
+   "setup_s": 10.245517086999826,
+   "wall_s": 17.673965857999974,
+   "load_average_before": [
+    1.9072265625,
+    2.30859375,
+    3.0390625
+   ],
+   "load_average_after": [
+    1.6494140625,
+    2.22265625,
+    2.994140625
+   ],
+   "unroll_layers": null,
+   "measures": [
+    {
+     "name": "render",
+     "items": 1024,
+     "unit": "rays",
+     "note": "1024 rays, randomized, 64 + 128 samples",
+     "labels": [
+      "original",
+      "port"
+     ],
+     "impls": {
+      "original": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 1.1182466129994282,
+        "best_s": 1.1182466129994282,
+        "trace_s": 0.17736773399974481,
+        "xla_s": 0.9408788789996834,
+        "all_s": [
+         1.1182466129994282
+        ],
+        "all_trace_s": [
+         0.17736773399974481
+        ],
+        "all_xla_s": [
+         0.9408788789996834
+        ],
+        "trace_cpu_s": 0.17824081699999894,
+        "xla_cpu_s": 2.0869863660000014
+       }
+      },
+      "port": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 1.2520071129993084,
+        "best_s": 1.2520071129993084,
+        "trace_s": 0.2366864549994716,
+        "xla_s": 1.0153206579998368,
+        "all_s": [
+         1.2520071129993084
+        ],
+        "all_trace_s": [
+         0.2366864549994716
+        ],
+        "all_xla_s": [
+         1.0153206579998368
+        ],
+        "trace_cpu_s": 0.23602935600000308,
+        "xla_cpu_s": 2.1803307779999983
+       }
+      }
+     }
+    },
+    {
+     "name": "gradient",
+     "items": 1024,
+     "unit": "rays",
+     "note": "",
+     "labels": [
+      "original",
+      "port"
+     ],
+     "impls": {
+      "original": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 2.463774840000042,
+        "best_s": 2.463774840000042,
+        "trace_s": 0.4344253380004375,
+        "xla_s": 2.0293495019996044,
+        "all_s": [
+         2.463774840000042
+        ],
+        "all_trace_s": [
+         0.4344253380004375
+        ],
+        "all_xla_s": [
+         2.0293495019996044
+        ],
+        "trace_cpu_s": 0.411582549000002,
+        "xla_cpu_s": 4.979948225999998
+       }
+      },
+      "port": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 2.4407432850002806,
+        "best_s": 2.4407432850002806,
+        "trace_s": 0.6395978300006391,
+        "xla_s": 1.8011454549996415,
+        "all_s": [
+         2.4407432850002806
+        ],
+        "all_trace_s": [
+         0.6395978300006391
+        ],
+        "all_xla_s": [
+         1.8011454549996415
+        ],
+        "trace_cpu_s": 0.5692314180000011,
+        "xla_cpu_s": 5.633230665999996
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "port": "pgx",
+   "config": "readme",
+   "params": {
+    "games": 1024,
+    "steps": 100
+   },
+   "claim": {
+    "connect_four": "1.3x (2.7 M vs 2.0 M steps/s); compiles ~0.6 s slower",
+    "othello": "0.9\u20131.0x; same compile time"
+   },
+   "settings": {
+    "rounds": 0,
+    "min_sample_s": 0.05,
+    "compile_repeats": 5,
+    "budget_s": 240.0,
+    "compile_only": true
+   },
+   "setup_s": 0.6752158190001865,
+   "wall_s": 5.230930488999547,
+   "load_average_before": [
+    1.6494140625,
+    2.22265625,
+    2.994140625
+   ],
+   "load_average_after": [
+    1.59716796875,
+    2.2021484375,
+    2.9833984375
+   ],
+   "unroll_layers": null,
+   "measures": [
+    {
+     "name": "connect_four",
+     "items": 102400,
+     "unit": "steps",
+     "note": "1024 games x 100 moves",
+     "labels": [
+      "pgx",
+      "port"
+     ],
+     "impls": {
+      "pgx": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 0.7683441580002182,
+        "best_s": 0.7683441580002182,
+        "trace_s": 0.11889546700058418,
+        "xla_s": 0.649448690999634,
+        "all_s": [
+         0.7683441580002182
+        ],
+        "all_trace_s": [
+         0.11889546700058418
+        ],
+        "all_xla_s": [
+         0.649448690999634
+        ],
+        "trace_cpu_s": 0.11231755299999979,
+        "xla_cpu_s": 1.0016391300000003
+       }
+      },
+      "port": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 1.352405978999741,
+        "best_s": 1.352405978999741,
+        "trace_s": 0.3206741169997258,
+        "xla_s": 1.031731862000015,
+        "all_s": [
+         1.352405978999741
+        ],
+        "all_trace_s": [
+         0.3206741169997258
+        ],
+        "all_xla_s": [
+         1.031731862000015
+        ],
+        "trace_cpu_s": 0.303887923,
+        "xla_cpu_s": 1.4131847789999998
+       }
+      }
+     }
+    },
+    {
+     "name": "othello",
+     "items": 102400,
+     "unit": "steps",
+     "note": "1024 games x 100 moves",
+     "labels": [
+      "pgx",
+      "port"
+     ],
+     "impls": {
+      "pgx": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 1.233649271000104,
+        "best_s": 1.233649271000104,
+        "trace_s": 0.15638791099991067,
+        "xla_s": 1.0772613600001932,
+        "all_s": [
+         1.233649271000104
+        ],
+        "all_trace_s": [
+         0.15638791099991067
+        ],
+        "all_xla_s": [
+         1.0772613600001932
+        ],
+        "trace_cpu_s": 0.15414627400000036,
+        "xla_cpu_s": 1.6074247889999995
+       }
+      },
+      "port": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 1.1736566910003603,
+        "best_s": 1.1736566910003603,
+        "trace_s": 0.17104869699960545,
+        "xla_s": 1.0026079940007548,
+        "all_s": [
+         1.1736566910003603
+        ],
+        "all_trace_s": [
+         0.17104869699960545
+        ],
+        "all_xla_s": [
+         1.0026079940007548
+        ],
+        "trace_cpu_s": 0.1700017960000002,
+        "xla_cpu_s": 1.525135434
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "port": "ppo",
+   "config": "readme",
+   "params": {
+    "num_envs": 4,
+    "num_steps": 128,
+    "num_updates": 976,
+    "num_minibatches": 4,
+    "update_epochs": 4
+   },
+   "claim": {
+    "train": "same"
+   },
+   "settings": {
+    "rounds": 0,
+    "min_sample_s": 0.05,
+    "compile_repeats": 5,
+    "budget_s": 240.0,
+    "compile_only": true
+   },
+   "setup_s": 3.6386641010003586,
+   "wall_s": 8.049523853999744,
+   "load_average_before": [
+    1.59716796875,
+    2.2021484375,
+    2.9833984375
+   ],
+   "load_average_after": [
+    2.20751953125,
+    2.31201171875,
+    3.01123046875
+   ],
+   "unroll_layers": null,
+   "measures": [
+    {
+     "name": "train",
+     "items": 499712,
+     "unit": "env steps",
+     "note": "976 updates x 4 envs x 128 steps",
+     "labels": [
+      "original",
+      "port"
+     ],
+     "impls": {
+      "original": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 2.7912243499995384,
+        "best_s": 2.7912243499995384,
+        "trace_s": 0.607738347999657,
+        "xla_s": 2.1834860019998814,
+        "all_s": [
+         2.7912243499995384
+        ],
+        "all_trace_s": [
+         0.607738347999657
+        ],
+        "all_xla_s": [
+         2.1834860019998814
+        ],
+        "trace_cpu_s": 0.6068106279999999,
+        "xla_cpu_s": 5.9946976030000005
+       }
+      },
+      "port": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 1.5590313360007713,
+        "best_s": 1.5590313360007713,
+        "trace_s": 0.3427324310005133,
+        "xla_s": 1.216298905000258,
+        "all_s": [
+         1.5590313360007713
+        ],
+        "all_trace_s": [
+         0.3427324310005133
+        ],
+        "all_xla_s": [
+         1.216298905000258
+        ],
+        "trace_cpu_s": 0.3446404669999996,
+        "xla_cpu_s": 3.1201796560000012
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "port": "vit",
+   "config": "tiny",
+   "params": {
+    "hidden": 192,
+    "heads": 3,
+    "mlp": 768,
+    "layers": 12,
+    "image": 224,
+    "patch": 16,
+    "batch": 8,
+    "classes": 1000
+   },
+   "claim": {},
+   "settings": {
+    "rounds": 0,
+    "min_sample_s": 0.05,
+    "compile_repeats": 5,
+    "budget_s": 240.0,
+    "compile_only": true
+   },
+   "setup_s": 7.00106182699983,
+   "wall_s": 10.715100927000094,
+   "load_average_before": [
+    2.20751953125,
+    2.31201171875,
+    3.01123046875
+   ],
+   "load_average_after": [
+    2.10107421875,
+    2.28515625,
+    2.99462890625
+   ],
+   "unroll_layers": null,
+   "measures": [
+    {
+     "name": "forward",
+     "items": 8,
+     "unit": "images",
+     "note": "batch 8 of 224 x 224",
+     "labels": [
+      "original",
+      "port"
+     ],
+     "impls": {
+      "original": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 0.4622717090005608,
+        "best_s": 0.4622717090005608,
+        "trace_s": 0.25340718400002515,
+        "xla_s": 0.20886452500053565,
+        "all_s": [
+         0.4622717090005608
+        ],
+        "all_trace_s": [
+         0.25340718400002515
+        ],
+        "all_xla_s": [
+         0.20886452500053565
+        ],
+        "trace_cpu_s": 0.2521899120000004,
+        "xla_cpu_s": 0.36964874399999914
+       }
+      },
+      "port": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 0.3604710339996018,
+        "best_s": 0.3604710339996018,
+        "trace_s": 0.1206108239994137,
+        "xla_s": 0.2398602100001881,
+        "all_s": [
+         0.3604710339996018
+        ],
+        "all_trace_s": [
+         0.1206108239994137
+        ],
+        "all_xla_s": [
+         0.2398602100001881
+        ],
+        "trace_cpu_s": 0.10609045400000028,
+        "xla_cpu_s": 0.3669597469999992
+       }
+      }
+     }
+    },
+    {
+     "name": "gradient",
+     "items": 8,
+     "unit": "images",
+     "note": "",
+     "labels": [
+      "original",
+      "port"
+     ],
+     "impls": {
+      "original": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 1.4367460499997833,
+        "best_s": 1.4367460499997833,
+        "trace_s": 0.6295553239997389,
+        "xla_s": 0.8071907260000444,
+        "all_s": [
+         1.4367460499997833
+        ],
+        "all_trace_s": [
+         0.6295553239997389
+        ],
+        "all_xla_s": [
+         0.8071907260000444
+        ],
+        "trace_cpu_s": 0.6074156890000015,
+        "xla_cpu_s": 1.5034965370000002
+       }
+      },
+      "port": {
+       "compile": {
+        "method": "aot",
+        "cold_s": 1.3448195800001486,
+        "best_s": 1.3448195800001486,
+        "trace_s": 0.31081196400009503,
+        "xla_s": 1.0340076160000535,
+        "all_s": [
+         1.3448195800001486
+        ],
+        "all_trace_s": [
+         0.31081196400009503
+        ],
+        "all_xla_s": [
+         1.0340076160000535
+        ],
+        "trace_cpu_s": 0.3032334240000001,
+        "xla_cpu_s": 1.8401555189999996
+       }
+      }
+     }
+    }
+   ]
+  }
+ ]
+}

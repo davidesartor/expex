@@ -38,7 +38,7 @@ import time
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
-BRANCH = "ccr-9d70e555-krj2ct"  # the branch the Colab links and the install cells point to
+BRANCH = "main"  # the branch the Colab links and the install cells point to
 GITHUB = "davidesartor/expex"
 NOTEBOOKS = ("quickstart", "llama", "mamba", "vit", "nerf", "ppo", "pgx", "mctx", "multidevice")
 

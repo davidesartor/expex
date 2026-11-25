@@ -166,7 +166,7 @@ for field, key in [("returned_episode", "episode"), ("returned_length", "lengths
 #
 # Environment steps per second of the jitted training run (after compiling), at 4 environments.
 # Timings depend on the machine. The repository's [benchmarks/](../../benchmarks/) compare the
-# port with the original: about the same speed on CPU.
+# port with the original: the same speed on CPU (1.01x best of 25 rounds, 1.02x median).
 
 # %% [bench]
 cfg = Config(num_updates=20)

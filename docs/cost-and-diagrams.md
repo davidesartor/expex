@@ -151,6 +151,14 @@ Transformer.__call__
   and file and line, and a click also shows the source. It follows the
   system's light or dark mode, or a toggle.
 
+Here is that page for the transformer of `examples/`, saved with
+`expex.diagram(Transformer.__call__, depth=2).save("transformer.html")`. On the
+[docs site](https://davidesartor.github.io/expex/cost-and-diagrams.html) it is live: click a
+call to open it, drag to pan, scroll to zoom. GitHub does not show embedded pages, so here the
+frame below stays empty ([the file](assets/transformer.html)).
+
+<iframe class="diagram" src="assets/transformer.html" title="The transformer's interactive diagram" loading="lazy"></iframe>
+
 
 ### Where the time goes, and where shapes fail
 

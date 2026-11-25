@@ -13,7 +13,7 @@ from harness import EXAMPLES, Fn, Measure, load_module, use_example, use_origina
 
 NAME = "mamba"
 ORIGINALS = ["mamba-jax"]
-CLAIM = {"forward": "4.5x", "gradient": "3x"}  # README: 2048 tokens, CPU (width 128, 4 layers, vocab 1000)
+CLAIM = {"forward": "5.2x (5.8x)", "gradient": "5.4x (6.0x)", "generate": "same, 1.03x (1.00x)"}  # README, from results/cpu-2026-11-25-v0.1.md: best (median)
 
 CONFIGS = {
     "quick": dict(dim=64, layers=2, vocab=256, T=256, prompt=8, new=16),

@@ -142,7 +142,8 @@ for case, diffs in compare.compare(reference).items():
 #
 # Searches per second, a batch of 64 roots with 32 simulations, jitted. Timings depend on the
 # machine. With mctx checked out, `python examples/mctx/compare.py` times both; the repository's
-# [benchmarks/](../../benchmarks/) report the same speed on CPU (0.8-1.3x across runs).
+# [benchmarks/](../../benchmarks/) report the same speed on CPU (best of 25 rounds, median in
+# brackets): MuZero 1.02x (0.98x), Gumbel MuZero 1.08x (1.11x).
 
 # %% [bench]
 roots64 = mdp.root(jnp.arange(64) % 12)

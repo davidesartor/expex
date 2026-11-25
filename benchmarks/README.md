@@ -21,10 +21,31 @@ from one round to the next. Read the best-of-N speedup with the median next to
 it, and trust a difference only when the IQR range (the original's quartiles
 against the port's opposite ones) stays on one side of 1.
 
+## Results
+
+The current numbers, which the README and the docs quote (CPU only; no GPU run yet):
+
+| File | What |
+|---|---|
+| [`cpu-2026-11-25-v0.1.md`](results/cpu-2026-11-25-v0.1.md) / [`.json`](results/cpu-2026-11-25-v0.1.json) | every port at its default CPU config, 25 rounds, on a quiet 4-core VM (load average 0.8 at the start) |
+| [`compile-cpu-2026-11-25-v0.1.md`](results/compile-cpu-2026-11-25-v0.1.md) / [`.json`](results/compile-cpu-2026-11-25-v0.1.json) | compile times, best of 5 cold compiles |
+| [`overhead-cpu-2026-11-25-v0.1.md`](results/overhead-cpu-2026-11-25-v0.1.md) / [`.json`](results/overhead-cpu-2026-11-25-v0.1.json) | per-call overhead against plain JAX, 40 rounds |
+
+History, kept for comparison and no longer quoted. These were taken on a shared VM under heavy
+load (load average 9 to 20), before the lowering fixes of later commits, so their spreads are
+wide and some speedups differ a lot from the v0.1 run (Mamba's forward pass measured 14x there,
+5.2x on the quiet machine):
+
+| File | What |
+|---|---|
+| [`cpu-2026-11-23.md`](results/cpu-2026-11-23.md) / [`.json`](results/cpu-2026-11-23.json), [`cpu-2026-11-23-vit-mctx-nerf.json`](results/cpu-2026-11-23-vit-mctx-nerf.json) | the first full runs (ViT, mctx and NeRF in a separate run, appended to the same `.md`) |
+| [`cpu-2026-11-23-quick.md`](results/cpu-2026-11-23-quick.md) / [`.json`](results/cpu-2026-11-23-quick.json) | a `--quick` smoke run |
+| [`compile-cpu-2026-11-23.md`](results/compile-cpu-2026-11-23.md) / [`.json`](results/compile-cpu-2026-11-23.json), [`unroll-cpu-2026-11-23.json`](results/unroll-cpu-2026-11-23.json) | the compile-time investigation (before and after the layer barrier) and `unroll_layers` settings |
+
 ## Running it on a GPU box, from scratch
 
 ```bash
-git clone https://github.com/davidesartor/vigilant-barnacle expex && cd expex
+git clone https://github.com/davidesartor/expex && cd expex
 python3.14 -m venv .venv && source .venv/bin/activate       # expex needs Python 3.14
 pip install -e . "jax[cuda12]==0.12.1"                     # or jax[cuda13]: match the box's CUDA
 pip install -r benchmarks/requirements.txt
@@ -79,9 +100,9 @@ on; `tiny` / `default` for ports without a claim); on GPU, `readme` and `realist
 | `mamba` | mamba-jax (Equinox) | width 128, 4 layers, vocab 1,000, T 2,048 | Mamba-130m's shape: width 768, 24 layers, vocab 50,280, T 2,048 |
 | `llama` | llama-2-jax | width 256, 4 layers, 8 query / 2 kv heads, batch 4 x 256, vocab 32,000 | width 1,024, 8 layers, 16 / 4 heads, batch 4 x 2,048 |
 | `pgx` | Pgx v2.6.0 Connect Four, Othello | 1,024 games x 100 random moves | 8,192 games x 100 moves |
-| `vit` | vision_transformer (Flax) | `tiny`: ViT-Ti/16, batch 8 of 224 x 224 (no README claim yet) | ViT-B/16, batch 64 |
-| `mctx` | mctx | `default`: batch 64 x 64 simulations, MuZero and Gumbel MuZero (no claim yet) | batch 1,024 x 128 simulations |
-| `nerf` | JaxNeRF | `default`: JaxNeRF's 8 x 256 MLPs, 1,024 rays, 64 + 128 samples (no claim yet) | 4,096 rays |
+| `vit` | vision_transformer (Flax) | `tiny`: ViT-Ti/16, batch 8 of 224 x 224 | ViT-B/16, batch 64 |
+| `mctx` | mctx | `default`: batch 64 x 64 simulations, MuZero and Gumbel MuZero | batch 1,024 x 128 simulations |
+| `nerf` | JaxNeRF | `default`: JaxNeRF's 8 x 256 MLPs, 1,024 rays, 64 + 128 samples | 4,096 rays |
 | `overhead` | plain JAX | per-call cost of a typed call, a jitted call, a jitted method, a `donate="auto"` step, an eager `.vectorize` | |
 
 ## Layout
@@ -96,7 +117,7 @@ benchmarks/
   originals.toml    repository URL and commit of every original
   requirements.txt  what the originals need on top of expex and JAX
   ports/<name>.py   one file per port: CONFIGS, DEFAULTS, CLAIM and setup(cfg) -> [Measure]
-  results/          cpu-<date>.json / .md, ...
+  results/          cpu-<date>.json / .md, compile-..., overhead-... (see Results above)
 ```
 
 ## Adding a port

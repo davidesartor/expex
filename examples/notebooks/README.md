@@ -8,15 +8,15 @@ shape error, `debug.watch`), checks it against the original's saved outputs in
 
 | Notebook | What it shows | |
 |---|---|---|
-| [quickstart](quickstart.ipynb) | The README's examples: checked shapes, loops and branches, modules, proofs, cost, `.at` edits, summary, diagrams (plain, timed, and the one a `ShapeError` carries), `inspect`, `find_nan`, `watch`, `annotate`; compiled-call speed against `jax.jit` and plain JAX | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidesartor/expex/blob/ccr-9d70e555-krj2ct/examples/notebooks/quickstart.ipynb) |
-| [llama](llama.ipynb) | Llama 2 (llama-2-jax): training steps, KV-cache generation, a 7B-sized cost, a violated `T <= S` constraint, a planted exploding layer found by `watch`; logits to 7e-7, tokens exact | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidesartor/expex/blob/ccr-9d70e555-krj2ct/examples/notebooks/llama.ipynb) |
-| [mamba](mamba.ipynb) | Mamba (mamba-jax): the selective scan as a `for` loop staged as `lax.scan`, the mixer's diagram, a checked `.at` edit; logits to 6e-7, sampled tokens exact | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidesartor/expex/blob/ccr-9d70e555-krj2ct/examples/notebooks/mamba.ipynb) |
-| [vit](vit.ipynb) | The Vision Transformer: patches by axis names, the image size in the signature (a wrong image size refused), ViT-B/16's cost; logits to 5e-7 | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidesartor/expex/blob/ccr-9d70e555-krj2ct/examples/notebooks/vit.ipynb) |
-| [nerf](nerf.ipynb) | NeRF (JaxNeRF): rendering written for one ray and mapped over a camera, hierarchical sampling, the MLP's diagram; pixels to 2e-7, loss exact | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidesartor/expex/blob/ccr-9d70e555-krj2ct/examples/notebooks/nerf.ipynb) |
-| [ppo](ppo.ipynb) | PPO on CartPole (PureJaxRL): 100 updates in one jitted call, every loop staged as `lax.scan`; the original's 3-update run reproduced exactly | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidesartor/expex/blob/ccr-9d70e555-krj2ct/examples/notebooks/ppo.ipynb) |
-| [pgx](pgx.ipynb) | Connect Four and Othello (Pgx): game rules in plain Python (`while`, `if`, `board[r, c] = ...`), 1000 random games; every state identical to Pgx's | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidesartor/expex/blob/ccr-9d70e555-krj2ct/examples/notebooks/pgx.ipynb) |
-| [mctx](mctx.ipynb) | MuZero and Gumbel MuZero search (mctx), written for one tree and mapped over a batch; every tree bit-identical to mctx's | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidesartor/expex/blob/ccr-9d70e555-krj2ct/examples/notebooks/mctx.ipynb) |
-| [multidevice](multidevice.ipynb) | The transformer trained on a 4 x 2 mesh of 8 simulated CPU devices, shardings read off the annotations; losses match a 1-device run | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidesartor/expex/blob/ccr-9d70e555-krj2ct/examples/notebooks/multidevice.ipynb) |
+| [quickstart](quickstart.ipynb) | The README's examples: checked shapes, loops and branches, modules, proofs, cost, `.at` edits, summary, diagrams (plain, timed, and the one a `ShapeError` carries), `inspect`, `find_nan`, `watch`, `annotate`; compiled-call speed against `jax.jit` and plain JAX | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidesartor/expex/blob/main/examples/notebooks/quickstart.ipynb) |
+| [llama](llama.ipynb) | Llama 2 (llama-2-jax): training steps, KV-cache generation, a 7B-sized cost, a violated `T <= S` constraint, a planted exploding layer found by `watch`; logits to 7e-7, tokens exact | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidesartor/expex/blob/main/examples/notebooks/llama.ipynb) |
+| [mamba](mamba.ipynb) | Mamba (mamba-jax): the selective scan as a `for` loop staged as `lax.scan`, the mixer's diagram, a checked `.at` edit; logits to 6e-7, sampled tokens exact | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidesartor/expex/blob/main/examples/notebooks/mamba.ipynb) |
+| [vit](vit.ipynb) | The Vision Transformer: patches by axis names, the image size in the signature (a wrong image size refused), ViT-B/16's cost; logits to 5e-7 | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidesartor/expex/blob/main/examples/notebooks/vit.ipynb) |
+| [nerf](nerf.ipynb) | NeRF (JaxNeRF): rendering written for one ray and mapped over a camera, hierarchical sampling, the MLP's diagram; pixels to 2e-7, loss exact | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidesartor/expex/blob/main/examples/notebooks/nerf.ipynb) |
+| [ppo](ppo.ipynb) | PPO on CartPole (PureJaxRL): 100 updates in one jitted call, every loop staged as `lax.scan`; the original's 3-update run reproduced exactly | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidesartor/expex/blob/main/examples/notebooks/ppo.ipynb) |
+| [pgx](pgx.ipynb) | Connect Four and Othello (Pgx): game rules in plain Python (`while`, `if`, `board[r, c] = ...`), 1000 random games; every state identical to Pgx's | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidesartor/expex/blob/main/examples/notebooks/pgx.ipynb) |
+| [mctx](mctx.ipynb) | MuZero and Gumbel MuZero search (mctx), written for one tree and mapped over a batch; every tree bit-identical to mctx's | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidesartor/expex/blob/main/examples/notebooks/mctx.ipynb) |
+| [multidevice](multidevice.ipynb) | The transformer trained on a 4 x 2 mesh of 8 simulated CPU devices, shardings read off the annotations; losses match a 1-device run | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidesartor/expex/blob/main/examples/notebooks/multidevice.ipynb) |
 
 ## Python 3.14
 
@@ -32,7 +32,7 @@ Colab can run a notebook on a Jupyter server on your own machine, keeping its in
 ```
 # on your machine, with Python 3.14
 python3.14 -m venv ~/expex-env && source ~/expex-env/bin/activate
-pip install jupyter "git+https://github.com/davidesartor/expex@ccr-9d70e555-krj2ct"
+pip install jupyter "git+https://github.com/davidesartor/expex@main"
 jupyter notebook --ServerApp.allow_origin='https://colab.research.google.com' --port=8888 --ServerApp.port_retries=0
 ```
 
@@ -42,7 +42,7 @@ pasting the URL (with its token) that Jupyter printed.
 ### Running locally
 
 ```
-git clone -b ccr-9d70e555-krj2ct https://github.com/davidesartor/expex && cd expex
+git clone -b main https://github.com/davidesartor/expex && cd expex
 python3.14 -m venv .venv && source .venv/bin/activate
 pip install -e . jupyter optax
 jupyter notebook examples/notebooks/
@@ -68,5 +68,5 @@ scripts, so in those outputs the interactive diagram and `expex.inspect` pages a
 the interactive versions. `tests/test_notebooks.py` runs every notebook's code as a script and
 checks that each `.ipynb` matches its source.
 
-The install cells and the badges point to the branch `ccr-9d70e555-krj2ct`: change `BRANCH` in
+The install cells and the badges point to the branch `main`: change `BRANCH` in
 `build.py` (and the links above) when it moves.

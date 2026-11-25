@@ -16,7 +16,7 @@ from harness import EXAMPLES, Fn, Measure, load_module, use_example, use_origina
 NAME = "llama"
 ORIGINALS = ["llama-2-jax"]
 # README: 4 layers, width 256, 8 query and 2 key/value heads, batch 4, 256 tokens, CPU
-CLAIM = {"forward": "1.1–1.4x", "generate": "same (1,000–1,400 tokens/s)"}
+CLAIM = {"forward": "1.08x (1.14x)", "gradient": "1.61x (1.71x)", "generate": "1.48x (1.58x)"}  # README, from results/cpu-2026-11-25-v0.1.md: best (median)
 
 _SMALL = dict(V=256, D=64, F=172, G=2, R=2, K=16, L=2, B=2, T=64, prompt=8, max_len=24)
 CONFIGS = {

@@ -154,7 +154,8 @@ for name, diff in compare.compare(reference).items():
 #
 # Compiled forward pass and gradients at the size above. Timings depend on the machine, so
 # compare them only with each other. The repository's [benchmarks/](../../benchmarks/) compare
-# the port with the original: about the same on CPU.
+# the port with the original on CPU (best of 25 rounds, median in brackets): slightly slower,
+# forward 0.92x (0.96x), gradients 0.93x (1.01x).
 
 # %% [bench]
 def bench(f, *args, n=20):

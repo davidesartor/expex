@@ -167,8 +167,9 @@ for name, diff in compare.compare(reference).items():
 #
 # Compiled forward pass, gradients and generation at the small size above. Timings depend on the
 # machine (a Colab CPU is slower than a laptop), so compare them only with each other. The
-# repository's [benchmarks/](../../benchmarks/) compare the port with the original: 1.3x forward
-# and gradients on CPU.
+# repository's [benchmarks/](../../benchmarks/) compare the port with the original on CPU
+# (best of 25 rounds, median in brackets): forward 1.08x (1.14x), gradients 1.61x (1.71x),
+# generation 1.48x (1.58x).
 
 # %% [bench]
 def bench(f, *args, n=20):

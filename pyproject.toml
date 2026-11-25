@@ -1,12 +1,11 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-fancy-pypi-readme>=24"]
 build-backend = "hatchling.build"
 
 [project]
 name = "expex"
-version = "0.1.0"
+dynamic = ["version", "readme"]  # __version__ in src/expex/__init__.py; README.md, see below
 description = "Shape-typed functions for JAX: annotations that are proved, checked and used."
-readme = "README.md"
 requires-python = ">=3.14"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -14,17 +13,42 @@ keywords = ["jax", "shapes", "typing", "machine-learning"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Typing :: Typed",
 ]
-dependencies = ["jax>=0.12", "numpy"]
+# Tested with JAX 0.12.1 and NumPy 2.5 (see benchmarks/results/); debug.find_nan and parts
+# of the prover read JAX internals, so later JAX versions may need work.
+dependencies = ["jax>=0.12", "numpy>=2.0"]
 
 [project.optional-dependencies]
-dev = ["pytest", "pyright", "mypy", "optax"]
+# the libraries expex works with (docs/interop.md), tested with these versions
+interop = [
+    "equinox>=0.13",
+    "flax>=0.12",
+    "optax>=0.2.9",
+    "orbax-checkpoint>=0.12",
+    "jaxtyping>=0.3",
+    "beartype>=0.20",
+]
+# PNG export of diagrams without a browser (with Playwright or Chromium installed, it uses those)
+png = ["matplotlib>=3.8"]
+# the notebooks in examples/notebooks/ (build.py --execute also needs Playwright for the images)
+notebooks = ["jupyter", "nbformat", "nbclient", "ipykernel", "optax>=0.2.9", "matplotlib>=3.8"]
+test = ["pytest>=8", "pytest-xdist>=3"]
+dev = ["expex[test]", "pyright", "mypy", "optax>=0.2.9"]
+docs = ["mkdocs>=1.6", "mkdocs-material>=9.5"]
 
 [project.urls]
+Homepage = "https://github.com/davidesartor/expex"
+Documentation = "https://davidesartor.github.io/expex/"
 Repository = "https://github.com/davidesartor/expex"
+Issues = "https://github.com/davidesartor/expex/issues"
+Changelog = "https://github.com/davidesartor/expex/blob/main/CHANGELOG.md"
 
 [project.scripts]
 expex = "expex.__main__:main"
@@ -32,8 +56,40 @@ expex = "expex.__main__:main"
 [project.entry-points.pytest11]
 expex = "expex.pytest_plugin"
 
+# PyPI's page is README.md with its relative links and images pointed at GitHub.
+[tool.hatch.metadata.hooks.fancy-pypi-readme]
+content-type = "text/markdown"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+path = "README.md"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '(src|srcset)="(?!https?:)([^"]+)"'
+replacement = '\1="https://raw.githubusercontent.com/davidesartor/expex/main/\2"'
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '\]\((?!https?:|#)([^)\s:]+)\)'
+replacement = '](https://github.com/davidesartor/expex/blob/main/\1)'
+
+[tool.hatch.version]
+path = "src/expex/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/expex"]
+exclude = ["__pycache__", "*.pyc"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src/expex",
+    "/tests",
+    "/examples",
+    "/docs",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/LICENSE",
+    "/pyproject.toml",
+]
+exclude = ["__pycache__", "*.pyc", "*.ipynb"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

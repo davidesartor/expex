@@ -156,7 +156,8 @@ for name, diff in compare.compare(reference).items():
 #
 # Compiled rendering and gradients of the 64 rays. Timings depend on the machine, so compare
 # them only with each other. The repository's [benchmarks/](../../benchmarks/) compare the port
-# with the original: about the same on CPU.
+# with the original on CPU (best of 25 rounds, median in brackets): rendering slightly slower,
+# 0.96x (0.93x); gradients 1.08x (1.02x).
 
 # %% [bench]
 def bench(f, *args, n=10):

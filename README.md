@@ -1,5 +1,10 @@
 # expex
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.14+](https://img.shields.io/badge/python-3.14%2B-blue.svg)](https://www.python.org/downloads/)
+· Docs: [docs/](docs/README.md) (site: https://davidesartor.github.io/expex/, pending its first deploy)
+· [Changelog](CHANGELOG.md)
+
 **Write the shapes in the signature; get checks, proofs, loops and model tools for free.**
 
 expex is a thin layer over JAX. Annotate arrays with their sizes and the
@@ -120,7 +125,9 @@ ys = model(jnp.ones((8, 64)))  # extra leading axes are mapped over
 
 Any typed call given extra leading axes maps over them, so a layer written for
 one token takes a sequence (`self.norm(h)`), and a model written for one
-example takes a batch. `@expex.fn(vectorize=False)` opts out.
+example takes a batch. `@expex.fn(vectorize=False)` opts out. Sizes can also
+come from a config (`Stack(key, cfg)`, a dict or dataclass with `D` and
+`blocks`), and `model.sizes` reads them back.
 
 A wrong call says which axis is wrong and where its size came from:
 
@@ -138,7 +145,14 @@ attend(): argument `k` does not match its annotation.
     received     f32[5, 3, 4]
 
     B is 2 (from `q: f32[2, 3, 4]`), but axis 0 of `k` is 5.
+
+    attend[B, T, S, D](q: f32[B, T, D], k: f32[B, S, D]) -> f32[B, T, S]
+    defined at example.py:2
+  see https://github.com/davidesartor/expex/blob/main/docs/errors.md#ex101
 ```
+
+Every error has a code (here `e.code == "EX101"`), and its message ends with a
+link to its explanation in [docs/errors.md](docs/errors.md).
 
 Sizes can be computed (`f32[T + 1]`, `f32[heads, D // heads]`) or fixed with
 the others (`def drop[B, Rows = 6, Cols = 7]`), and helpers and lambdas defined
@@ -221,6 +235,9 @@ the path into it are in red. All of them follow your light or dark theme:
   <img src="docs/images/transformer_error.png" alt="The diagram of the failing transformer: Block and Attention opened, the queries and values split into heads but the keys not, and the call to Attention.causal that received keys of 24 × 32 where it declared k: f32[T, K], with the path into it, in red">
 </picture>
 
+`expex.inspect(model, x)` puts the summary, the diagram, the cost, the
+activations and the line profile on one page, with a tab each.
+
 **Debugging:** shapes line by line, and where a NaN first appeared:
 
 ```python
@@ -260,7 +277,14 @@ plain function on examples and proposes
 `def attend[B, T, S, D](q: f32[B, T, D], k: f32[B, S, D]) -> f32[B, T, S]:`,
 with sizes grouped by the dataflow (`T + 1`, `D // heads`, structs for param
 dicts). `.diff()` shows the edit, `.apply()` writes it. See
-[docs/porting.md](docs/porting.md).
+[docs/porting.md](docs/porting.md). Code annotated with jaxtyping
+(`Float[Array, "batch seq"]`) needs no rewrite: `@expex.fn` reads it as it is,
+and `python -m expex migrate jaxtyping file.py` rewrites it in expex's style.
+
+**Equinox, Flax, Optax and Orbax:** `@expex.fn` works on Equinox and Flax NNX
+methods, Optax optimizes structs as they are (`expex.mask(model, ...)` builds
+weight-decay and freezing masks from the annotations), and Orbax checkpoints
+them ([docs/interop.md](docs/interop.md)).
 
 **While you edit:** `python -m expex prove pkg/ --watch` re-proves the modules
 you save in under a second; `python -m expex shapes file.py --json` gives the
@@ -275,7 +299,8 @@ shape of every line and the failures to an editor, and
 | `@expex.fn(jit=, vectorize=, random=, remat=, donate="auto")` | compile, map over extra leading axes (on by default), split keys, rematerialise, donate the buffers a call site overwrites |
 | `expex.save` / `expex.load` | checkpoints checked against the annotations |
 | `expex.diff(a, b)` | two models or checkpoints compared field by field |
-| `expex.shard(f, mesh, B="data", D="model")` | shardings from axis names |
+| `expex.shard(f, mesh, B="data", D="model")` | shardings from axis names ([a data × model mesh](examples/multidevice/train.py)) |
+| `@expex.fn(compute=jnp.bfloat16)`, `@expex.struct(compute=...)` | mixed precision: compute in bfloat16, store and return the annotated dtype |
 | `expex.eps`, `expex.tiny`, `expex.huge` | constants in the dtype of the array they meet |
 | `expex.debug.watch(loss, model)` | activations and gradients of every layer, flagging exploding or dead ones |
 | `expex.debug.profile(f, ...)` | FLOPs and bytes per source line |
@@ -284,23 +309,32 @@ shape of every line and the failures to an editor, and
 
 Popular JAX projects rewritten in this style, each checked against the original
 and with every shape proved ([details](docs/reference.md#ported-projects)).
-Speed is the port's against the original's on CPU (see [benchmarks/](benchmarks/)):
-above 1x the port is faster, below 1x slower.
+Speed is the port's against the original's, jit-compiled on a quiet 4-core CPU:
+best of 25 interleaved rounds, median in brackets; above 1x the port is faster,
+below 1x slower (source:
+[`benchmarks/results/cpu-2026-11-25-v0.1.md`](benchmarks/results/cpu-2026-11-25-v0.1.md);
+no GPU numbers yet).
 
-| Project | Port | Matches the original | Speed (CPU, see benchmarks/) |
+| Project | Port | Matches the original | Speed (CPU) |
 |---|---|---|---|
-| [PureJaxRL](https://github.com/luchris429/purejaxrl) PPO | [`examples/ppo/`](examples/ppo/) | first 64 of 976 updates identical | about the same (1.05x median, 1.4x best) |
-| [mamba-jax](https://github.com/vvvm23/mamba-jax) | [`examples/mamba/`](examples/mamba/) | logits to 6e-7, tokens exact | 10–14x forward, 5–6x gradients; generation the same (1.05x) |
-| [llama-2-jax](https://github.com/ayaka14732/llama-2-jax) | [`examples/llama/`](examples/llama/) | logits to 8e-7, tokens exact | 1.3x forward, 1.3x gradients (best; noisy) |
-| [Pgx](https://github.com/sotetsuk/pgx) Connect Four, Othello | [`examples/pgx/`](examples/pgx/) | every state identical | Connect Four 1.4x; Othello the same (0.96x best, 1.02x median) |
-| [Vision Transformer](https://github.com/google-research/vision_transformer) | [`examples/vit/`](examples/vit/) | logits to 5e-7, gradients to 9e-7 | forward and gradients about the same (gradients 0.92x best, 0.99x median) |
-| [mctx](https://github.com/google-deepmind/mctx) MuZero, Gumbel MuZero | [`examples/mctx/`](examples/mctx/) | every tree bit-identical | the same (0.8–1.3x across runs) |
-| [JaxNeRF](https://github.com/google-research/google-research/tree/master/jaxnerf) | [`examples/nerf/`](examples/nerf/) | pixels to 2.4e-7, loss exact | render and gradients about the same (gradients 1.02x best, 0.95x median) |
+| [PureJaxRL](https://github.com/luchris429/purejaxrl) PPO | [`examples/ppo/`](examples/ppo/) | first 55–64 of 976 updates identical (depends on the CPU), then float32 drift | the same: 1.01x (1.02x) |
+| [mamba-jax](https://github.com/vvvm23/mamba-jax) | [`examples/mamba/`](examples/mamba/) | logits to 6e-7, tokens exact | forward 5.2x (5.8x), gradients 5.4x (6.0x); generation the same, 1.03x (1.00x) |
+| [llama-2-jax](https://github.com/ayaka14732/llama-2-jax) | [`examples/llama/`](examples/llama/) | logits to 8e-7, tokens exact | forward 1.08x (1.14x), gradients 1.61x (1.71x), generation 1.48x (1.58x) |
+| [Pgx](https://github.com/sotetsuk/pgx) Connect Four, Othello | [`examples/pgx/`](examples/pgx/) | every state identical | Connect Four 1.50x (1.61x); Othello 1.07x (1.10x) |
+| [Vision Transformer](https://github.com/google-research/vision_transformer) | [`examples/vit/`](examples/vit/) | logits to 5e-7, gradients to 9e-7 | slightly slower: forward 0.92x (0.96x), gradients 0.93x (1.01x) |
+| [mctx](https://github.com/google-deepmind/mctx) MuZero, Gumbel MuZero | [`examples/mctx/`](examples/mctx/) | every tree bit-identical | the same: MuZero 1.02x (0.98x), Gumbel 1.08x (1.11x) |
+| [JaxNeRF](https://github.com/google-research/google-research/tree/master/jaxnerf) | [`examples/nerf/`](examples/nerf/) | pixels to 2.4e-7, loss exact | render slightly slower, 0.96x (0.93x); gradients 1.08x (1.02x) |
 
 The ports are also shorter: Llama 2 is 101 lines of code in one file, against
 478 across 15; mctx 340 against 691 across 7; NeRF 138 against 334; ViT 85
 against 183; and the two pgx games take half the lines of the originals.
 
+**Notebooks:** [`examples/notebooks/`](examples/notebooks/) has one per port and a
+quickstart, with outputs. They need Python 3.14, which Colab's hosted runtimes do not
+offer yet: run them in Jupyter, or connect Colab to a local runtime
+([how](examples/notebooks/README.md#running-in-colab)).
+
 ## More
 
 The full guide, with every feature and its examples: [docs/](docs/README.md).
+What is in each release: [CHANGELOG.md](CHANGELOG.md).

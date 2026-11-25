@@ -18,7 +18,7 @@ from harness import EXAMPLES, Fn, Measure, load_module, use_original
 
 NAME = "ppo"
 ORIGINALS = ["purejaxrl", "gymnax"]
-CLAIM = {"train": "same"}  # README: 976 updates of 4 envs x 128 steps, CPU
+CLAIM = {"train": "same, 1.01x (1.02x)"}  # README, from results/cpu-2026-11-25-v0.1.md: best (median)
 
 CONFIGS = {
     "quick": dict(num_envs=4, num_steps=32, num_updates=8, num_minibatches=4, update_epochs=2),
