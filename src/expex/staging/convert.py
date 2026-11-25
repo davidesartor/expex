@@ -601,7 +601,7 @@ class _Converter:
                 for i, s in enumerate(seq):
                     if analysis.is_local_annotation(s) and s.target.id in self.locals:
                         self.local_names |= analysis.reads([s.annotation])
-                        if isinstance(s.annotation, ast.Constant):  # in quotes
+                        if isinstance(s.annotation, ast.Constant) and isinstance(s.annotation.value, str):  # in quotes
                             try:
                                 self.local_names |= analysis.reads([ast.parse(s.annotation.value, mode="eval")])
                             except SyntaxError:
