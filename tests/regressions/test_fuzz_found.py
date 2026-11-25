@@ -298,3 +298,20 @@ def test_an_annotated_local_variable_that_matches_passes():
     f = expex.fn(define(src, f32=f32))
     assert f(jnp.ones((2, 3)), 2).shape == (2, 5)
     assert jax.jit(f, static_argnames="n")(jnp.ones((2, 3)), 2).shape == (2, 5)
+
+
+def test_an_annotated_local_in_a_method_sees_the_class_sizes():
+    # the check of annotated locals added above first missed a class's sizes (`H` of
+    # `class Net[H]`) and refused `h: f32[H]` with EX402 (found by proving examples/ppo)
+    @expex.struct
+    class Lin[H]:
+        w: f32[H, H]
+
+        def __call__(self, x: f32[H]) -> f32[H]:
+            h: f32[H] = self.w @ x
+            g: f32[H + 1] = jnp.pad(h, (0, 1))
+            return g[:-1]
+
+    m = Lin(jnp.eye(3))
+    assert m(jnp.ones(3)).shape == (3,)
+    assert expex.prove(Lin.__call__).status == "proved"
