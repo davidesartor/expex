@@ -63,7 +63,7 @@ class Summary:
     sizes: dict[str, int]
     order: list[str]
     notes: list[str] = field(default_factory=list)
-    fixed: dict[str, int] = field(default_factory=dict)  # named fixed sizes: Rows in i32[Rows:6, Cols:7]
+    fixed: dict[str, int] = field(default_factory=dict)  # named fixed sizes: Rows in class Board[Rows = 6]
 
     def _cells(self, r: Row) -> list[str]:
         fmt = lambda p: "" if p is None else p.format(self.order)

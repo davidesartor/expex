@@ -83,9 +83,9 @@ def test_its_own_variables_hide_the_enclosing_ones():
     assert g(xs).tolist() == [8.0] * 3
 
 
-def test_declared_sizes_too():
+def test_fixed_sizes_too():
     @fn
-    def f(x: f32[R:6, C:7]) -> f32[R]:
+    def f[R = 6, C = 7](x: f32[R, C]) -> f32[R]:
         def row_total(r):
             return r.sum(C) + jnp.zeros(()) * R
 
@@ -137,9 +137,19 @@ def test_a_module_level_helper_gets_a_hint():
 
 def test_a_body_left_unconverted_says_why():
     @fn(convert=False)
-    def f(x: f32[R:6]) -> f32[R]:
+    def f[R = 6](x: f32[R]) -> f32[R]:
         return x + jnp.zeros(R)
 
-    with pytest.raises(NameError) as e:
+    with pytest.raises(TypeError) as e:
         f(jnp.ones(6))
-    assert "the body cannot use it by name because convert=False" in "\n".join(e.value.__notes__)
+    notes = "\n".join(e.value.__notes__)
+    assert "R is a size of" in notes and "the body cannot use it by name because convert=False" in notes
+    assert e.value.code == "EX406"  # type: ignore[attr-defined]
+
+    @fn(convert=False)
+    def g[T](x: f32[T]) -> f32[T]:
+        return x + jnp.zeros(T)
+
+    with pytest.raises(TypeError) as e:
+        g(jnp.ones(6))
+    assert "T is the type parameter itself, not its size" in "\n".join(e.value.__notes__)

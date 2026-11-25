@@ -140,9 +140,9 @@ attend(): argument `k` does not match its annotation.
     B is 2 (from `q: f32[2, 3, 4]`), but axis 0 of `k` is 5.
 ```
 
-Sizes can be computed (`f32[T + 1]`, `f32[heads, D // heads]`) or fixed and
-named where they are first used (`i32[B, Rows:6, Cols:7]`), and helpers and
-lambdas defined inside a call see its sizes.
+Sizes can be computed (`f32[T + 1]`, `f32[heads, D // heads]`) or fixed with
+the others (`def drop[B, Rows = 6, Cols = 7]`), and helpers and lambdas defined
+inside a call see its sizes.
 
 ## What else the annotations give you
 

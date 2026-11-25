@@ -247,6 +247,11 @@ def test_a_struct_built_from_a_key_with_fixed_and_free_sizes():
     assert first(layer).shape == (3,)
     with pytest.raises(ShapeError, match="axis 1 should be R, which is fixed at 6, but is 5"):
         first(Layer(jnp.ones((3, 5)), jnp.ones(5)))
+    with pytest.raises(TypeError, match="Layer's size R is fixed at 6, but is given as 5"):
+
+        @fn
+        def other[M](layer: Layer[M, 5]) -> f32[M]:  # type: ignore[type-arg]
+            return layer.w[:, 0]
 
 
 def test_a_struct_with_a_bad_default():

@@ -15,12 +15,12 @@ class Params[D](NamedTuple):         # dataclasses work too
     b: f32[D]
 
 @expex.fn
-def example[*Batch, H, W](
+def example[*Batch, H, W, Rows = 6, Cols = 7](   # Rows, Cols: sizes fixed at 6 and 7
     img: f32[*Batch, H, W, RGB],     # *Batch: any number of axes
     idx: Int[*Batch],                # any integer dtype
     p: Params[W],                    # fields are checked, D is bound to W
     pair: f32[Literal[2], ...],      # a literal size, then any axes
-    grid: f32[Rows:6, Cols:7],       # sizes named in place: Rows, Cols are 6 and 7
+    grid: f32[Rows, Cols],           # fixed sizes: 6 x 7, checked as Rows, Cols
     scale: f32,                      # a scalar array or a Python number
     steps: int = 1,                  # a plain Python value
     key: Key | None = None,
@@ -31,7 +31,7 @@ def example[*Batch, H, W](
 | Kind | Annotations |
 |---|---|
 | Arrays | `f16 f32 f64 i8 … i64 u8 … u64 c64 c128`, any of a kind: `Float Int UInt Bool Complex Num Arr` |
-| Sizes | type parameters (`def f[B, T]`), `Literal[3]`, `class RGB(Dim, size=3)`, `RGB:3` (a fixed size named in place, then `RGB`), `*Rest` (any number of axes, the same everywhere), `...` (any number, unchecked), `Any` (one, unchecked) |
+| Sizes | type parameters (`def f[B, T]`), `Literal[3]`, `class RGB(Dim, size=3)`, a type parameter fixed at a size (`def f[R = 3]`, `R = Literal[3]` or `R: Literal[3]`, then plain `R`), `*Rest` (any number of axes, the same everywhere), `...` (any number, unchecked), `Any` (one, unchecked) |
 | Derived sizes | `f32[T + 1]`, `f32[heads, D // heads]`, `f32[self.heads]`; constraints: a leading `assert T >= 2` |
 | Containers | `tuple[...]`, `list[X]`, `dict[str, X]`, `X \| None`, NamedTuples and dataclasses, generic ones too |
 | Stacked | `Batch[Transition, T, N]`: a `Transition` whose arrays all have leading axes `T, N` |

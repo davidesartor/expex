@@ -3,7 +3,7 @@
 ``case(seed)`` draws an annotation (a dtype, some axes, maybe a wrapper: ``| None``,
 ``tuple[...]``, ``list[...]``, ``dict[str, ...]``, quotes), defines
 
-    def f[T, D](a: <annotation>, t: f32[T], d: f32[D], n: int): ...
+    def f[T, D, R = 4](a: <annotation>, t: f32[T], d: f32[D], n: int): ...
 
 and calls it with a value that matches and with values that are wrong in one way
 (an axis one longer, a missing axis, another dtype). The matching call must pass
@@ -34,7 +34,7 @@ T, D, N_ARG, R = 3, 2, 2, 4
 #: (text, its size at T=3, D=2, n=2), or None for a variadic of two axes (5, 6)
 ITEMS: list[tuple[str, int | None]] = [
     ("T", T), ("D", D), ("T + 1", T + 1), ("T - 1", T - 1), ("2 * T", 2 * T), ("T * D", T * D),
-    ("D + T", D + T), ("3", 3), ("1", 1), ("R:4", R), ("n", N_ARG), ("n + T", N_ARG + T),
+    ("D + T", D + T), ("3", 3), ("1", 1), ("R", R), ("n", N_ARG), ("n + T", N_ARG + T),
     ("T // 2", T // 2), ("(T + 1) // 2", (T + 1) // 2), ("T ** 2", T**2), ("T % 2", T % 2),
     ("D * D - 1", D * D - 1), ("*B", None),
 ]  # fmt: skip
@@ -133,11 +133,11 @@ def case(seed: int) -> Case:
     drop = None
     if rng.random() < 0.15:
         drop = text.split("[")[0]
-    src = f"def f[T, D](a: {ann}, t: f32[T], d: f32[D], n: int):\n    return a\n"
+    src = f"def f[T, D, R = 4](a: {ann}, t: f32[T], d: f32[D], n: int):\n    return a\n"  # R: a fixed size
     if wrap == "local":  # an annotated local variable, checked when the line runs
         quoted = rng.random() < 0.3
         local = f'"{text}"' if quoted else text
-        src = f"def f[T, D](a, t: f32[T], d: f32[D], n: int):\n    h: {local} = a\n    return h\n"
+        src = f"def f[T, D, R = 4](a, t: f32[T], d: f32[D], n: int):\n    h: {local} = a\n    return h\n"
     if drop == "f32":
         src = src.replace("t: f32[T], d: f32[D]", "t: i32[T], d: i32[D]")
     return Case(src, ann, gv, wv, drop)

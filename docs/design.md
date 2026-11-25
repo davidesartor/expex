@@ -188,7 +188,7 @@ TypeError: unsupported operand type(s) for +: 'typing.TypeVar' and 'int'
 
 Each signature is parsed into specs once. Sizes can be computed
 (`f32[heads, D // heads]`), constrained by a leading `assert D % heads == 0`,
-fixed and named in place (`i32[B, Rows:6, Cols:7]`), or variadic
+fixed by a type parameter's default (`def f[B, Rows = 6]`), or variadic
 (`f32[*Batch, D]`). Annotations can be nested in containers, NamedTuples,
 dataclasses and structs, so *collections* of arrays have shapes too:
 `params: Params[D, A]` binds `D` from whichever field shows it first.
@@ -577,9 +577,10 @@ was dropped and a wrong shape passed. They are now an error when the function is
   but they are constraints on how you write.
 - **Type checkers do not understand it all.** Under mypy, `f32[T + 1]` needs
   `# type: ignore[valid-type]` and a leading `assert T >= 2` needs
-  `# type: ignore[misc]`; `f32[Rows:6]` needs a `# type: ignore` under both
-  mypy and pyright. Where code must type-check unchanged, `class Rows(Dim,
-  size=6)` works.
+  `# type: ignore[misc]`; a fixed size written `def f[Rows = 6]` needs a
+  `# type: ignore[misc]` on the `def` line under both mypy and pyright. Where
+  code must type-check unchanged, `def f[Rows = Literal[6]]`, the bound
+  `Rows: Literal[6]` and `class Rows(Dim, size=6)` work.
 - **Automatic batching can hide mismatches.** In code whose annotations were
   never enforced, an array with an extra axis is mapped over instead of
   rejected. In the dynamax run with batching on, the 26 `ShapeError`s from

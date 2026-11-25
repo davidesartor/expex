@@ -116,14 +116,13 @@ print(expex.prove(running_mean))                    # proved for all sizes
   prover the sizes are symbolic, so code built from them is proved for all sizes.
 - `Dim` classes and variadics (`*B`, a tuple of sizes) work the same way.
 
-A fixed size can be named where it is first used: `Rows:6` in a subscript
-reads "Rows, which is 6". (`f32[Rows=6]` is not valid Python: subscripts take
-no keywords.) The name is then a size of the function, like a type parameter
-but fixed, and other annotations use it plainly:
+A size can also be fixed, in the same place: a type parameter with a default
+is that size. `R = 6` reads "R, which is 6", and other annotations use it
+plainly:
 
 ```python
 @expex.fn
-def drop[B](board: i32[B, Rows:6, Cols:7], col: i32[B]) -> i32[B, Rows, Cols]:
+def drop[B, Rows = 6, Cols = 7](board: i32[B, Rows, Cols], col: i32[B]) -> i32[B, Rows, Cols]:
     def one(b, c):
         row = Rows - 1 - (b != 0).sum(Rows)[c]       # a size, and an axis
         return b.at[row, c].set(1)
@@ -140,12 +139,17 @@ ShapeError: drop(): argument `board` does not match its annotation.
 ```
 
 The prover treats `Rows` as the constant 6, and `expex.cost` and the diagrams
-list it as `Rows (= 6)`. In a struct's fields (`cells: i32[Rows:6, Cols:7]`)
-the names are sizes of the class, for its methods too. A name declared twice
-with different sizes, or one that is also a type parameter, is an error when
-the function is defined. Type checkers accept neither the slice nor the new
-name, so the line needs a `# type: ignore`; where code must type-check as
-is, use `class Rows(Dim, size=6)`.
+list it as `Rows (= 6)`. A class's fixed sizes (`class Board[Rows = 6, Cols = 7]`)
+are fixed in its fields and its methods; building one from a key takes only its
+other sizes. Python wants parameters with defaults last; a fixed size written as
+a bound, `Rows: Literal[6]`, can go anywhere.
+
+Type checkers want a default to be a type, so they flag the `def` line of
+`Rows = 6` (only that line; calls are still checked). Two spellings pass
+pyright and mypy as they are, for code type-checked in CI: `Rows = Literal[6]`,
+and the bound `Rows: Literal[6]`. Any other default or bound is an error when
+the function is defined ([EX404](errors.md#ex404)). A `Dim` class,
+`class Rows(Dim, size=6)`, fixes a size shared by many functions.
 
 Functions defined in the body see the sizes of the call they are made in, as
 values and as axes, like `one` above. So do lambdas and comprehensions,

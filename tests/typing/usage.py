@@ -57,14 +57,36 @@ def misc[*Batch, H, W](
     return img.mean(-1), jnp.int32(0)
 
 
+# Fixed sizes, in the three spellings expex reads. `R = 6` is flagged on its line
+# only ("default must be a type"); the `Literal` forms pass both checkers as is.
 @fn
-def rows[B](x: f32[B, R:6, C:7]) -> f32[B, R]:  # type: ignore  # sizes declared by name (R:6)
+def rows[B, R = 6, C = 7](x: f32[B, R, C]) -> f32[B, R]:  # type: ignore[misc]  # R = 6: a fixed size
+    return x.sum(-1)
+
+
+@fn
+def rows_literal[B, R = Literal[6], C = Literal[7]](x: f32[B, R, C]) -> f32[B, R]:
+    return x.sum(-1)
+
+
+@fn
+def rows_bound[B, R: Literal[6], C: Literal[7]](x: f32[B, R, C]) -> f32[B, R]:
     return x.sum(-1)
 
 
 @dataclass
-class Board:
-    cells: i32[Rows:6, Cols:7]  # type: ignore  # sizes declared by name
+class Board[Rows = 6, Cols = 7]:  # type: ignore[misc]  # Rows = 6: a fixed size
+    cells: i32[Rows, Cols]
+
+
+@dataclass
+class BoardLiteral[Rows = Literal[6], Cols = Literal[7]]:
+    cells: i32[Rows, Cols]
+
+
+@dataclass
+class BoardBound[Rows: Literal[6], Cols: Literal[7]]:
+    cells: i32[Rows, Cols]
 
 
 class Model:
@@ -81,7 +103,11 @@ assert_type(step(x[0, 0], jnp.float32(0.1), 2, jr.key(0)), jax.Array)
 assert_type(Model().call(x[0, 0]), jax.Array)
 assert_type(Model().call.vectorize(x[0], scale=2.0), jax.Array)
 assert_type(rows(x[:, :2]), jax.Array)
+assert_type(rows_literal(x[:, :2]), jax.Array)
+assert_type(rows_bound(x[:, :2]), jax.Array)
 assert_type(Board(jnp.zeros((6, 7), jnp.int32)).cells, jax.Array)
+assert_type(BoardLiteral(jnp.zeros((6, 7), jnp.int32)).cells, jax.Array)
+assert_type(BoardBound(jnp.zeros((6, 7), jnp.int32)).cells, jax.Array)
 
 report = expex.prove(attend)
 assert_type(report.ok, bool)
@@ -97,4 +123,6 @@ with expex.rng(0):
 attend(x)  # E: missing argument
 step(x[0, 0], jnp.float32(0.1), "two", jr.key(0))  # E: n must be an int
 Model().call(x[0, 0], scale="big")  # E: scale must be a float
-rows("x")  # E: still checked where sizes are declared by name
+rows("x")  # E: still checked where sizes are fixed
+rows_literal("x")  # E: still checked where sizes are fixed
+rows_bound("x")  # E: still checked where sizes are fixed

@@ -77,7 +77,7 @@ from expex import f32, i32, Static
 | [EX401](#ex401) | A malformed annotation |
 | [EX402](#ex402) | An annotation uses an undefined name |
 | [EX403](#ex403) | A size expression cannot be parsed |
-| [EX404](#ex404) | A size declared with `Name:size` conflicts |
+| [EX404](#ex404) | A fixed size is declared wrongly |
 | [EX405](#ex405) | A size used in a helper defined outside the function |
 | [EX406](#ex406) | A size used by name in a body that is not converted |
 | [EX407](#ex407) | A size is not known in this call |
@@ -1054,8 +1054,8 @@ a size of the model, build a new one.
 
 ### EX401 · A malformed annotation
 
-An annotation cannot be read: a dimension that is not a size (a string, a float,
-`R:` without a size), two variadics in one shape, the wrong number of sizes for
+An annotation cannot be read: a dimension that is not a size (a string, a float),
+two variadics in one shape, the wrong number of sizes for
 a module.
 
 ```python
@@ -1073,7 +1073,7 @@ EX401 first: bad annotation for `x`: 'T': sizes are type parameters, not strings
 ```
 
 **Fix.** Sizes are type parameters: `def first[T](x: f32[T])`. Compute with them directly
-(`f32[T + 1]`); a fixed size is `Literal[3]`, `3`, or a named one `R:3`.
+(`f32[T + 1]`); a fixed size is `Literal[3]`, `3`, or a named one `def f[R = 3]`.
 
 <a id="ex402"></a>
 
@@ -1134,28 +1134,37 @@ literals.
 
 <a id="ex404"></a>
 
-### EX404 · A size declared with `Name:size` conflicts
+### EX404 · A fixed size is declared wrongly
 
-A size declared in an annotation with `Name:size` (`f32[R:6]`) conflicts with
-another declaration: two different values, the same name as a type parameter or
-a parameter, or no size after the colon.
+A type parameter with a default or a bound is a fixed size: `R = 6`,
+`R = Literal[6]` or `R: Literal[6]` fix `R` at 6. Any other default or bound
+(`R = "x"`, `R = 6.0`, `R: int`, `R = Literal[6, 7]`, a bound and a default that
+disagree) is an error when the function or struct is defined. So is
+`f32[R:6]`, the way fixed sizes used to be declared.
 
 ```python
 try:
     @expex.fn
-    def board[R](x: f32[R:6, 7]) -> f32[R:6]:
+    def board[R = 6.0](x: f32[R, 7]) -> f32[R]:
         return x[:, 0]
 except TypeError as e:
     print(e.code, e)
 ```
 
 ```
-EX404 board: R:6 in `x: f32[R:6, 7]` declares R as a size fixed at 6, but R is also a type parameter, a size bound by the arguments. Use one or the other: drop R from the type parameters, or write R without `:6`.
+EX404 board: the type parameter R has the default 6.0, but a default fixes a size, so it must be an int (a literal, not negative): write R = 6, or R = Literal[6] for type checkers. A size taken from the arguments has no default.
   see https://github.com/davidesartor/expex/blob/main/docs/errors.md#ex404
 ```
 
-**Fix.** Use one declaration per size: drop `R` from the type parameters to fix it at 6,
-or write `R` without `:6` to bind it from the arguments.
+Written the old way, `def board(x: f32[R:6, 7])` says:
+
+```text
+EX404 board: `R:6` in `x: f32[R:6, 7]` declares a size in the annotation, which expex no longer reads. Declare the fixed size with the type parameters, def board[R = 6](...) (or R = Literal[6] for type checkers), and write plain R in the annotations.
+```
+
+**Fix.** Fix the size with an int, `def board[R = 6]`, or with `R = Literal[6]` or
+`R: Literal[6]`, which type checkers accept. Drop the default and the bound for a
+size taken from the arguments.
 
 <a id="ex405"></a>
 
@@ -1195,26 +1204,27 @@ the size in its own annotations.
 ### EX406 · A size used by name in a body that is not converted
 
 The body of an `@expex.fn` uses a size by name, but the body is not converted
-(`convert=False`, or its source is not available), so the names are not bound.
+(`convert=False`, or its source is not available), so the name is not its
+size: a type parameter is the `TypeVar` itself, and a size with no Python name
+(one from a jaxtyping string) is a `NameError`.
 
 ```python
 @expex.fn(convert=False)
-def board(x: f32[R:6, 7]) -> f32[R]:
+def board[R = 6](x: f32[R, 7]) -> f32[R]:
     return jnp.zeros(R)
 
 try:
     board(jnp.ones((6, 7)))
-except NameError as e:
+except TypeError as e:
     print(e.code, e.__notes__[0])
 ```
 
 ```
-EX406 expex: R is a size of board(), declared in its annotations, but the body cannot use it by name because convert=False.
+EX406 expex: R is a size of board(), but the body cannot use it by name because convert=False: there, R is the type parameter itself, not its size.
   see https://github.com/davidesartor/expex/blob/main/docs/errors.md#ex406
 ```
 
-**Fix.** Let the body be converted (drop `convert=False`), declare the size as a type
-parameter (`def board[R](...)`: type parameters are always in scope), or read it
+**Fix.** Let the body be converted (drop `convert=False`), or read the size
 from a shape: `x.shape[0]`.
 
 <a id="ex407"></a>

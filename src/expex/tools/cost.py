@@ -209,7 +209,7 @@ class Cost:
     largest: tuple[str, Poly] | None = None  # (type of the largest value, its elements)
     notes: list[str] = field(default_factory=list)
     given: dict[str, int] = field(default_factory=dict)  # sizes given as keywords
-    fixed: dict[str, int] = field(default_factory=dict)  # named fixed sizes: R in f32[R:6]
+    fixed: dict[str, int] = field(default_factory=dict)  # named fixed sizes: R in def f[R = 6]
 
     def __str__(self) -> str:
         sizes = ", ".join(

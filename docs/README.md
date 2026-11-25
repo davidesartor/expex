@@ -5,7 +5,7 @@ The full reference, one page per topic. Every example on these pages runs
 
 | Page | Covers |
 |---|---|
-| [Functions](functions.md) | checked calls, sizes and axes by name (`f32[R:6, 7]` too), proofs, plain Python control flow, automatic batching |
+| [Functions](functions.md) | checked calls, sizes and axes by name (fixed ones too: `def f[R = 6]`), proofs, plain Python control flow, automatic batching |
 | [Modules](modules.md) | `@expex.struct`, building from the annotations, `model.at` updates, summaries, checkpoints, comparing models |
 | [Keys, compiling and sharding](compiling.md) | random keys, `jit` / `remat` / `donate`, gradients, sharding |
 | [Cost and diagrams](cost-and-diagrams.md) | FLOPs and parameters as formulas, line profiles, architecture diagrams |

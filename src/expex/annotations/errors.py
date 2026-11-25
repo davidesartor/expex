@@ -48,7 +48,7 @@ CODES = {
     "EX401": "A malformed annotation",
     "EX402": "An annotation uses an undefined name",
     "EX403": "A size expression cannot be parsed",
-    "EX404": "A size declared with `Name:size` conflicts",
+    "EX404": "A fixed size is declared wrongly",
     "EX405": "A size used in a helper defined outside the function",
     "EX406": "A size used by name in a body that is not converted",
     "EX407": "A size is not known in this call",
