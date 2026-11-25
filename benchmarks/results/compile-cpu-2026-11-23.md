@@ -155,7 +155,7 @@ Keep unrolling on by default, now with the barrier between layers, which is what
   * generation: Mamba 9.3 ms against 17.4 ms rolled, Llama 274 ms against 410 ms.
 * A forward pass alone is the only case where unrolling compiles slower: +0.25 s at 32 layers. At 12 layers or fewer it is a wash.
 
-The data does not support a rule by layer size: narrow (48) and wide (192) layers behave the same way. Depth only starts to favour the rolled loop's compile time beyond 64 layers. The default stays at **16**. Raising it to **32** is safe on this data, and 64 is about break-even on compile while still running faster. `unroll_layers=4` is never better than 16 here, except that it rolls ViT's 12 layers, and with the barrier that is now the slower choice for both compile and run.
+The data does not support a rule by layer size: narrow (48) and wide (192) layers behave the same way. Depth only starts to favour the rolled loop's compile time beyond 64 layers. The default stays at **16**. Raising it to **32** is safe on this data, and 64 is about break-even on compile while still running faster. `unroll_layers=4` is the same program as 16 for Llama, Mamba and NeRF (their loops have at most 4 layers), so the differences between those rows are noise. For ViT it means rolling the 12 layers, which with the barrier is now the slower choice for both compile and run.
 
 ## Per-call overhead (hot path), before and after
 

@@ -278,29 +278,144 @@ def unknown_names(text: str, glb: dict[str, Any], scope: dict[str, Any], params:
 
 
 # --------------------------------------------------------------------------
-# Sizes declared in annotations: f32[R:6, 7]
+# --------------------------------------------------------------------------
+# Fixed sizes: def f[R = 6], class Board[Rows = 6, Cols = 7]
 # --------------------------------------------------------------------------
 #
-# ``R:6`` in a subscript is a slice, ``slice(R, 6)``: it reads "R, which is 6".
-# Anywhere in a function's annotations (or a class's field annotations) it
-# declares R as a fixed size of the function (or class). R is then a ``Dim``
-# class with ``size=6``, so everything that works for ``class R(Dim, size=6)``
-# works for it: plain ``R`` in the other annotations, R in the body as a size
-# or an axis, the prover treating it as the constant 6.
+# A type parameter with a default (PEP 696), or with a ``Literal`` bound, is a
+# size fixed at that value: ``R = 6``, ``R = Literal[6]`` or ``R: Literal[6]``.
+# R then reads as a ``Dim`` class with ``size=6``, so everything that works for
+# ``class R(Dim, size=6)`` works for it: plain ``R`` in the annotations, R in
+# the body as a size or an axis, the prover treating it as the constant 6.
 
-_NAMED: "weakref.WeakKeyDictionary[Any, dict[str, type]]" = weakref.WeakKeyDictionary()
+_FIXED: "weakref.WeakKeyDictionary[Any, type | None]" = weakref.WeakKeyDictionary()
 
 
 @functools.cache
 def fixed(name: str, size: int) -> type:
-    """The ``Dim`` class of a size declared as ``name:size``."""
+    """The ``Dim`` class of the type parameter ``name`` fixed at ``size`` (``def f[name = size]``)."""
     from .types import Dim
 
     def body(ns: dict[str, Any]) -> None:
         ns["__module__"] = "expex"
-        ns["__doc__"] = f"The size {name}, fixed at {size} (declared as `{name}:{size}` in an annotation)."
+        ns["__doc__"] = f"The size {name}, fixed at {size} (declared as the type parameter `{name} = {size}`)."
 
     return types.new_class(name, (Dim,), {"size": size}, body)
+
+
+def _shown(v: Any) -> str:
+    if isinstance(v, type):
+        return v.__name__
+    return repr(v).replace("typing.", "")
+
+
+def _literal(v: Any) -> int | None:
+    """``6`` for ``Literal[6]``; None for anything else."""
+    if typing.get_origin(v) is typing.Literal:
+        args = typing.get_args(v)
+        if len(args) == 1 and type(args[0]) is int and args[0] >= 0:
+            return args[0]
+    return None
+
+
+def fixed_param(tp: Any, owner: str = "") -> type | None:
+    """The ``Dim`` class of a type parameter fixed at a size, None for a free size.
+
+    ``R = 6``, ``R = Literal[6]`` and ``R: Literal[6]`` fix R at 6; a type
+    parameter with no default and no bound is a free size. Any other default or
+    bound is an EX404 ``TypeError``. ``owner`` names the function or class in it.
+    """
+    try:
+        return _FIXED[tp]
+    except (KeyError, TypeError):
+        pass
+    if not isinstance(tp, (typing.TypeVar, typing.TypeVarTuple)):
+        return None
+    name = tp.__name__
+    where = f"{owner}: " if owner else ""
+    has_default = getattr(tp, "has_default", lambda: False)()
+    if isinstance(tp, typing.TypeVarTuple):
+        if has_default:
+            raise coded("EX404", TypeError(
+                f"{where}the variadic type parameter *{name} has a default, but only a single size "
+                f"can be fixed. Drop the default: *{name} takes its sizes from the arguments."
+            ))
+        return None
+    size: int | None = None
+    how = ""
+    if has_default:
+        try:
+            default = tp.__default__
+        except Exception as e:
+            raise coded("EX404", TypeError(
+                f"{where}the default of the type parameter {name} cannot be evaluated "
+                f"({type(e).__name__}: {e}). Fix it with an int: {name} = 6."
+            )) from None
+        size = default if type(default) is int and default >= 0 else _literal(default)
+        if size is None:
+            raise coded("EX404", TypeError(
+                f"{where}the type parameter {name} has the default {_shown(default)}, but a default "
+                f"fixes a size, so it must be an int (a literal, not negative): write {name} = 6, "
+                f"or {name} = Literal[6] for type checkers. A size taken from the arguments has no default."
+            ))
+        how = "default"
+    if tp.__constraints__:
+        shown = ", ".join(_shown(c) for c in tp.__constraints__)
+        raise coded("EX404", TypeError(
+            f"{where}the type parameter {name} is constrained to ({shown}), but a size takes no "
+            f"constraints. Write {name} for a size taken from the arguments, or {name} = 6 to fix it."
+        ))
+    bound = tp.__bound__
+    if bound is not None:
+        fixed_at = _literal(bound)
+        if fixed_at is None:
+            raise coded("EX404", TypeError(
+                f"{where}the type parameter {name} has the bound {_shown(bound)}, but the only bound "
+                f"a size takes is Literal[<int>], which fixes it: {name}: Literal[6]. Write {name} "
+                f"for a size taken from the arguments, or {name} = 6 to fix it."
+            ))
+        if size is not None and size != fixed_at:
+            raise coded("EX404", TypeError(
+                f"{where}the type parameter {name} is fixed twice, with different values: at "
+                f"{fixed_at} by its bound, and at {size} by its {how}. Keep one."
+            ))
+        size = fixed_at
+    out = None if size is None else fixed(name, size)
+    try:
+        _FIXED[tp] = out
+    except TypeError:
+        pass
+    return out
+
+
+def fixed_params(obj: Any) -> dict[str, type]:
+    """``{"R": <Dim R, size 6>}`` for the type parameters of ``obj`` fixed at a size.
+
+    For ``def f[B, R = 6]`` or ``class Board[Rows = 6]``. Raises EX404 for a
+    default or bound that is not a size, naming ``obj``.
+    """
+    owner = str(getattr(obj, "__qualname__", None) or getattr(obj, "__name__", "?"))
+    out: dict[str, type] = {}
+    for tp in getattr(obj, "__type_params__", ()):
+        dim = fixed_param(tp, owner)
+        if dim is not None:
+            out[tp.__name__] = dim
+    return out
+
+
+def param_head(tp: Any) -> str:
+    """A type parameter as written in a signature: ``B``, ``*B``, ``R = 6``."""
+    if isinstance(tp, typing.TypeVarTuple):
+        return "*" + tp.__name__
+    try:
+        dim = fixed_param(tp)
+    except TypeError:
+        dim = None
+    return f"{tp.__name__} = {getattr(dim, 'size')}" if dim is not None else tp.__name__
+
+
+# ``f32[R:6, 7]`` declared a fixed size in the annotation, before fixed sizes
+# were type parameters. It is refused with a message that says what to write.
 
 
 def strings(obj: Any) -> dict[str, str]:
@@ -314,24 +429,21 @@ def strings(obj: Any) -> dict[str, str]:
     return {k: v for k, v in out.items() if isinstance(v, str)}
 
 
-def _declares(obj: Any) -> bool:
-    """Do ``obj``'s own annotations declare a size (``R:6``)? Cheap: no evaluation."""
-    return any(":" in t and _SLICE.search(t) for t in strings(obj).values())
-
-
 _SLICE = re.compile(r"[\[,]\s*[A-Za-z_]\w*\s*:")
 
 
-def _where(key: str, text: str) -> str:
-    return f"`-> {text}`" if key == "return" else f"`{key}: {text}`"
+def _declares(obj: Any) -> bool:
+    """Might ``obj``'s own annotations use the old ``f32[R:6]``? Cheap: no evaluation."""
+    return any(":" in t and _SLICE.search(t) for t in strings(obj).values())
 
 
-def _scan(owner: str, anns: dict[str, str], glb: dict[str, Any]) -> dict[str, tuple[int, str]]:
-    """``{name: (size, where)}`` for each ``name:size`` in the annotation texts ``anns``."""
-    import builtins
-
-    out: dict[str, tuple[int, str]] = {}
-    for key, text in anns.items():
+def reject_slices(obj: Any) -> None:
+    """Raise EX404 for ``f32[R:6]`` in the annotations of ``obj`` (a function or a class)."""
+    if not _declares(obj):
+        return
+    owner = str(getattr(obj, "__qualname__", None) or getattr(obj, "__name__", "?"))
+    head = "class " + owner.rsplit(".", 1)[-1] if isinstance(obj, type) else "def " + owner.rsplit(".", 1)[-1]
+    for key, text in strings(obj).items():
         if not (":" in text and _SLICE.search(text)):
             continue
         try:
@@ -343,168 +455,14 @@ def _scan(owner: str, anns: dict[str, str], glb: dict[str, Any]) -> dict[str, tu
         for node in ast.walk(tree):
             if not isinstance(node, ast.Subscript):
                 continue
-            items = node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
-            for it in items:
-                if not (isinstance(it, ast.Slice) and isinstance(it.lower, ast.Name)):
-                    continue
-                name, where = it.lower.id, _where(key, text)
-                size: Any = None
-                if it.upper is not None and it.step is None:
-                    try:
-                        size = eval(  # noqa: S307 - an annotation, as typing.get_type_hints
-                            compile(ast.Expression(it.upper), "<annotation>", "eval"),
-                            {"__builtins__": builtins, **glb},
-                        )
-                    except Exception:
-                        size = None
-                if type(size) is not int or size < 0:
-                    shown = ast.unparse(it)
+            for it in node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]:
+                if isinstance(it, ast.Slice) and isinstance(it.lower, ast.Name):
+                    name = it.lower.id
+                    size = ast.unparse(it.upper) if it.upper is not None else "6"
+                    where = f"`-> {text}`" if key == "return" else f"`{key}: {text}`"
                     raise coded("EX404", TypeError(
-                        f"{owner}: `{shown}` in {where} declares the size {name}, but "
-                        + ("its size is missing" if it.upper is None else "a size takes no step" if it.step is not None
-                           else "its size is not an int known where it is declared")
-                        + f". Write it as {name}:6 (a literal, or a global int)."
+                        f"{owner}: `{ast.unparse(it)}` in {where} declares a size in the annotation, "
+                        f"which expex no longer reads. Declare the fixed size with the type parameters, "
+                        f"{head}[{name} = {size}] (or {name} = Literal[{size}] for type checkers), "
+                        f"and write plain {name} in the annotations."
                     ))
-                if name in out and out[name][0] != size:
-                    raise coded("EX404", TypeError(
-                        f"{owner}: the size {name} is declared twice, with different values: "
-                        f"{name}:{out[name][0]} in {out[name][1]}, and {name}:{size} in {where}."
-                    ))
-                out.setdefault(name, (size, where))
-    return out
-
-
-def _merge(owner: str, into: dict[str, tuple[int, str]], more: dict[str, tuple[int, str]], whose: str) -> None:
-    for name, (size, where) in more.items():
-        if name in into and into[name][0] != size:
-            raise coded("EX404", TypeError(
-                f"{owner}: the size {name} is declared twice, with different values: "
-                f"{name}:{into[name][0]} in {into[name][1]}, and {name}:{size} in {where} ({whose})."
-            ))
-        into.setdefault(name, (size, where))
-
-
-def named_sizes(obj: Any) -> dict[str, type]:
-    """The sizes declared as ``R:6`` in the annotations of ``obj``: ``{"R": <Dim R, size 6>}``.
-
-    For a function, its own annotations and those of the class it is defined
-    in (a method sees its class's sizes); for a class, its field annotations
-    and its bases'. Raises ``TypeError`` for a name declared with two values,
-    or one that is also a type parameter or a parameter.
-    """
-    try:
-        return _NAMED[obj]
-    except (KeyError, TypeError):
-        pass
-    found = _declared(obj)
-    out = {name: fixed(name, size) for name, (size, _) in found.items()}
-    try:
-        _NAMED[obj] = out
-    except TypeError:
-        pass
-    return out
-
-
-def _declared(obj: Any) -> dict[str, tuple[int, str]]:
-    import sys
-
-    owner = str(getattr(obj, "__qualname__", None) or getattr(obj, "__name__", "?"))
-    if isinstance(obj, type):
-        glb = getattr(sys.modules.get(obj.__module__), "__dict__", {})
-        found = _scan(owner, strings(obj), glb) if _declares(obj) else {}
-        for base in obj.__bases__:
-            if base is not object:
-                more = {n: (_size(c), f"the class {base.__name__}") for n, c in named_sizes(base).items()}
-                _merge(owner, found, more, f"inherited from {base.__name__}")
-        params = {p.__name__ for p in getattr(obj, "__type_params__", ())}
-        _not_params(owner, found, params, set())
-        return found
-    if not hasattr(obj, "__code__"):
-        return {}
-    glb = getattr(obj, "__globals__", {})
-    found = _scan(owner, strings(obj), glb) if _declares(obj) else {}
-    params = {p.__name__ for p in getattr(obj, "__type_params__", ())}
-    code = obj.__code__
-    n = code.co_argcount + code.co_kwonlyargcount
-    n += bool(code.co_flags & inspect.CO_VARARGS) + bool(code.co_flags & inspect.CO_VARKEYWORDS)
-    _not_params(owner, found, params, set(code.co_varnames[:n]))
-    cls_sizes, cls_params = _class_of(obj)
-    if cls_sizes:
-        _merge(owner, found, cls_sizes, "the class's")
-    _not_params(owner, found, cls_params, set())
-    return found
-
-
-def _size(dim: type) -> int:
-    return int(getattr(dim, "size"))
-
-
-def _not_params(owner: str, found: dict[str, tuple[int, str]], type_params: set[str], params: set[str]) -> None:
-    for name, (size, where) in found.items():
-        if name in type_params:
-            raise coded("EX404", TypeError(
-                f"{owner}: {name}:{size} in {where} declares {name} as a size fixed at {size}, "
-                f"but {name} is also a type parameter, a size bound by the arguments. "
-                f"Use one or the other: drop {name} from the type parameters, or write {name} "
-                f"without `:{size}`."
-            ))
-        if name in params:
-            raise coded("EX404", TypeError(
-                f"{owner}: {name}:{size} in {where} declares the size {name}, but {name} is "
-                f"also a parameter. Rename one of them."
-            ))
-
-
-# A method's body may use its class's sizes, but the class does not exist yet
-# when the method is decorated: they are read from the class's source.
-_TREES: dict[str, tuple[int, ast.Module | None]] = {}
-
-
-def _class_of(fn: Any) -> tuple[dict[str, tuple[int, str]], set[str]]:
-    """The sizes declared in the fields of the class ``fn`` is defined in, and its type parameters."""
-    qual = getattr(fn, "__qualname__", "").split(".")
-    if len(qual) < 2 or qual[-2] == "<locals>":
-        return {}, set()
-    import linecache
-
-    code = fn.__code__
-    lines = linecache.getlines(code.co_filename)
-    if not lines:
-        return {}, set()
-    key = hash(tuple(lines))
-    have = _TREES.get(code.co_filename)
-    if have is None or have[0] != key:
-        try:
-            have = (key, ast.parse("".join(lines)))
-        except SyntaxError:
-            have = (key, None)
-        _TREES[code.co_filename] = have
-    tree = have[1]
-    if tree is None:
-        return {}, set()
-    best: ast.ClassDef | None = None
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.ClassDef) and node.name == qual[-2]
-            and node.lineno <= code.co_firstlineno <= (node.end_lineno or 0)
-            and (best is None or node.lineno > best.lineno)
-        ):  # fmt: skip
-            best = node
-    if best is None:
-        return {}, set()
-    anns = {
-        s.target.id: ast.unparse(s.annotation)
-        for s in best.body
-        if isinstance(s, ast.AnnAssign) and isinstance(s.target, ast.Name)
-    }
-    glb = getattr(fn, "__globals__", {})
-    try:
-        found = _scan(best.name, anns, glb)
-    except TypeError:
-        found = {}  # reported where the class is used
-    for b in best.bases:
-        base = glb.get(b.id) if isinstance(b, ast.Name) else None
-        if isinstance(base, type):
-            for n, c in named_sizes(base).items():
-                found.setdefault(n, (_size(c), f"the class {base.__name__}"))
-    return found, {getattr(t, "name", "") for t in getattr(best, "type_params", ())}
