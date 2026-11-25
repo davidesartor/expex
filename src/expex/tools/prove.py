@@ -13,6 +13,7 @@ sizes and says so: that is a spot check, not a proof.
 
 import ast
 import importlib
+import importlib.util
 import itertools
 import math
 import pkgutil
@@ -550,6 +551,55 @@ def import_target(t: str) -> types.ModuleType:
     return importlib.import_module(t)
 
 
+def import_folder(folder: str) -> list[tuple[str, types.ModuleType | BaseException]]:
+    """Each ``.py`` file under a folder that is not a package, imported: ``(path, module or the error)``.
+
+    Packages inside it are imported as packages; plain subfolders are walked the
+    same way. A file's folder goes on ``sys.path`` (its own helper modules), and
+    it is imported under its file name, or under ``<folder>_<name>`` when another
+    file took that name (``llama/compare.py``, ``mamba/compare.py``).
+    """
+    import os
+
+    out: list[tuple[str, types.ModuleType | BaseException]] = []
+    for entry in sorted(os.scandir(folder), key=lambda e: e.name):
+        if entry.name.startswith((".", "_")) and entry.name != "__init__.py" or entry.name == "__pycache__":
+            continue
+        path = entry.path
+        try:
+            if entry.is_dir():
+                if os.path.exists(os.path.join(path, "__init__.py")):
+                    out.append((path, import_target(path)))
+                else:
+                    out += import_folder(path)
+                continue
+            if not entry.name.endswith(".py"):
+                continue
+            here = os.path.dirname(os.path.abspath(path))
+            if here not in sys.path:
+                sys.path.insert(0, here)
+            name = entry.name[:-3]
+            have = sys.modules.get(name)
+            if have is not None and os.path.abspath(getattr(have, "__file__", "") or "") != os.path.abspath(path):
+                name = f"{os.path.basename(here)}_{name}"
+            if name in sys.modules:
+                out.append((path, sys.modules[name]))
+                continue
+            spec = importlib.util.spec_from_file_location(name, path)
+            assert spec is not None and spec.loader is not None
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[name] = module
+            try:
+                spec.loader.exec_module(module)
+            except BaseException:
+                del sys.modules[name]
+                raise
+            out.append((path, module))
+        except (Exception, SystemExit) as e:
+            out.append((path, e))
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     import os
@@ -567,7 +617,17 @@ def main(argv: list[str] | None = None) -> int:
         jax.config.update("jax_enable_x64", True)
     reports: list[Report] = []
     sys.path.insert(0, os.getcwd())
+    failed: list[str] = []
     for t in args.targets:
+        if os.path.isdir(t) and not os.path.exists(os.path.join(t, "__init__.py")):
+            for path, m in import_folder(t):  # not a package: each file in it
+                if isinstance(m, BaseException):
+                    failed.append(f"{path}: could not import it: {type(m).__name__}: {m}")
+                else:
+                    reports += prove(m)
+            continue
         reports += prove(import_target(t))
     print(format_reports(reports, args.verbose))
-    return 1 if any(r.status in (FAILED, ERROR) for r in reports) else 0
+    for line in failed:
+        print(f"error: {line}")
+    return 1 if failed or any(r.status in (FAILED, ERROR) for r in reports) else 0

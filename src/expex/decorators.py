@@ -75,7 +75,9 @@ def fn(
     ``vectorize``
         Whether a call whose arguments have extra leading axes (beyond their
         annotations) maps over them, as ``f.vectorize(...)`` does. On by default
-        (``expex.config.vectorize``); ``False`` makes such a call a ``ShapeError``.
+        (``expex.config.vectorize``), except for jaxtyping-annotated functions,
+        which map only with ``True`` or an explicitly set ``expex.config.vectorize``;
+        ``False`` makes such a call a ``ShapeError``.
     ``random``
         An implicit PRNG key, ``expex.key()``, as :func:`expex.random`.
     ``remat``

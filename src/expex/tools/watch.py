@@ -322,15 +322,19 @@ class Watch:
                 "<tr " + " ".join(f'data-{k}="{v}"' for k, v in data.items())
                 + (f' data-path="{html.escape(r.path)}"' if r.path is not None else "") + (' class="flag">' if r.flags else ">")
                 + f'<td class="m" style="--d:{r.depth}" title="{html.escape(r.name)}">{pages.toggle(kids)}{html.escape(label)}</td>'
-                + "".join(f'<td class="{c[1]}">{x}</td>' for c, x in zip(_COLS[1:], cells))
+                + "".join(f'<td class="{c[1]}">{x}</td>' for c, x in zip(_COLS[1:3], cells[:2]))
                 + '<td class="f">' + "".join(f'<span title="{html.escape(f)}">{f.split(":")[0]}</span>' for f in r.flags)
-                + "</td></tr>"
+                + "</td>" + "".join(f'<td class="{c[1]}">{x}</td>' for c, x in zip(_COLS[3:], cells[2:]))
+                + "</tr>"
             )  # fmt: skip
             parents.append(i)
-        head = "".join(f'<th class="{c}"' + (f' data-k="{k}"' if k else "") + f">{t}</th>" for t, c, k in _COLS)
+        # flags next to the call, where a narrow output shows them without scrolling
+        cols = [*_COLS[:3], _COLS[-1], *_COLS[3:-1]]
+        head = "".join(f'<th class="{c}"' + (f' data-k="{k}"' if k else "") + f">{t}</th>" for t, c, k in cols)
         return pages.table(pages.uid("txw"), _CSS, light=_LIGHT, dark=_DARK, markup=(
             f'<div class="hd"><b>{html.escape(self._title())}</b></div><div class="sc"><table><thead><tr>'
-            '<th colspan="3"></th><th colspan="6" class="gh">output</th><th colspan="7" class="gh g">d loss / d output</th>'
+            '<th colspan="4"></th><th colspan="6" class="gh w">output</th><th colspan="4" class="gh nw">output</th>'
+            '<th colspan="6" class="gh g w">d loss / d output</th><th colspan="4" class="gh g nw">d loss / d output</th>'
             f"</tr><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody></table></div>"
         ))
 
@@ -349,7 +353,8 @@ _CSS = """#ID td{vertical-align:top}#ID tr.flag td{background:var(--fl)}#ID tr.f
 #ID .f span{display:inline-block;white-space:nowrap;border:1px solid;border-radius:9px;padding:0 6px;margin:0 4px 2px 0}#ID .gh{text-align:center;border-bottom:0}
 #ID .g{border-left:1px solid var(--ln)}#ID .s{padding:2px 6px 0}#ID svg{display:block}
 #ID rect{fill:var(--mu);opacity:.45}#ID rect.me{fill:var(--ac);opacity:1}
-@container (max-width:720px){#ID .o{display:none}#ID .f{display:table-cell}
+#ID th.f{color:var(--mu)}#ID td.f{min-width:6ch}#ID .nw{display:none}
+@container (max-width:1100px){#ID .o,#ID .w{display:none}#ID .nw{display:table-cell}#ID .f{display:table-cell}
 #ID .m{position:sticky;left:0;z-index:1;background:var(--bg)}#ID tr.flag .m{background:linear-gradient(var(--fl),var(--fl)),var(--bg)}}"""
 
 

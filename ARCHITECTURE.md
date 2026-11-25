@@ -18,7 +18,7 @@ remat are JAX's own. Each module has one job:
 | `messages.py` | Error messages, hints and the notes added to exceptions. |
 | `function.py` | `Fn`: binds arguments, checks them and the result, runs the body; `config`. |
 | `decorators.py` | `@fn`, `@jit` (`donate="auto"` too), `@vectorize`, `@random`, `@remat`. |
-| `batching.py` | Mapping over extra leading axes: `f.vectorize(...)`, and plain calls that need it; eager mapped calls compiled from the second call; several batch axes, and nested mapped calls, lowered so that dots see one batch axis. |
+| `batching.py` | Mapping over extra leading axes: `f.vectorize(...)`, and plain calls that need it (not for jaxtyping-annotated functions unless asked: `Fn._auto`); eager mapped calls compiled from the second call; several batch axes, and nested mapped calls, lowered so that dots see one batch axis. |
 | `keys.py` | Implicit random keys (`expex.key()`). |
 | `modules.py` | `@expex.struct`: modules registered as pytrees whose methods are `@fn`s; the generated constructor (`Module(key, D=64)` builds, `Module(w, b)` takes values, `Module(key, cfg)` takes a config), `expex.build`, `model.sizes`, `model.at[...]` updates. |
 | `io.py` | `expex.save` / `expex.load`: one `.npz` per model, checked against the annotations on load. |
@@ -27,8 +27,9 @@ remat are JAX's own. Each module has one job:
 | `precision.py` | Mixed precision (`compute=jnp.bfloat16`): bodies wrapped to cast float inputs in and results back to their declared dtype; the compute dtype accepted for float annotations inside such a body. |
 | `consts.py` | `expex.eps`, `expex.tiny`, `expex.huge`: dtype limits resolved against the array they meet. |
 | `debug.py` | `expex.debug`: the debugging tools, gathered from `tools/`. |
-| `_diagram.py` | `expex.diagram` (being rewritten; it moves to `tools/` after). |
+| `_diagram.py`, `_diagram.html` | `expex.diagram`: the figure (layout, SVG, PNG) and its interactive page; it traces through `tools/trace.py`. |
 | `pytest_plugin.py` | `pytest --expex pkg`. |
+| `__main__.py`, **`cli/`** | **`python -m expex`**: `__init__.py` dispatches the subcommands (a path or module name alone is `prove`); `watch.py` re-proves on save (`prove --watch`); `shapes.py` reports every line's shapes and failures as JSON for editors (`editors/`). |
 | **`staging/`** | **Plain Python control flow on traced values.** |
 | `analysis.py` | What the converter reads off the syntax tree: names assigned and read, jumps, sizes used by name. |
 | `convert.py` | Rewrites a function's source so plain Python works on traced values. |
@@ -38,8 +39,9 @@ remat are JAX's own. Each module has one job:
 | `ops.py` | operators, in-place updates, `assert` / `raise` / `print` / `min` / `max`, checked locals, |
 | `axes.py` | axes by name: `x.sum(T)`, `axis=T`, `expex.einsum`, `expex.rearrange`. |
 | **`tools/`** | **Everything that looks at a function rather than runs it.** |
-| `trace.py` | The trace engine: a function (with its examples, size keywords, list lengths) traced on symbolic sizes, or on real arguments; walking jaxprs. |
-| `prove.py` | The prover (`expex.prove`) and the command line. |
+| `trace.py` | The trace engine: a function (with its examples, size keywords, list lengths) traced on symbolic sizes (those a constraint fixes, `V == 3 * (1 + 2 * self.deg_view)`, as numbers), or on real arguments; walking jaxprs. |
+| `prove.py` | The prover (`expex.prove`), and the `prove` subcommand: a module, a package, a file, or each file of a plain folder. |
+| `annotate.py` | `expex.annotate`: annotations for plain JAX code, read off one run on example inputs; also the source edit, diff and write helpers. |
 | `migrate.py` | `python -m expex migrate jaxtyping`: jaxtyping annotations rewritten in expex's style, with `annotate.py`'s edit, diff and write helpers. |
 | `cost.py` | `expex.cost`: FLOPs and parameters as polynomials in the sizes. |
 | `profile.py` | `expex.debug.profile`: FLOPs and bytes per source line. |
@@ -47,6 +49,8 @@ remat are JAX's own. Each module has one job:
 | `diff.py` | `expex.diff`: two models or checkpoints compared field by field. |
 | `watch.py` | `expex.debug.watch`: per-call output and gradient statistics, with flags. |
 | `nan.py`, `shapes.py`, `program.py` | `debug.find_nan`; `debug.shapes`; `debug.ops`, `timing`, `memory`. |
+| `inspect.py` | `expex.inspect`: one page with every tool's view of a model (summary, diagram, cost, watch), over one module tree. |
+| `display.py` | Notebook displays: structs, shape errors, proofs and cost estimates as HTML and text. |
 | `pages.py` | The HTML the tools write: page shell, light/dark palette, tree tables, JSON data. |
 
 A call to an `@fn` goes `Fn.__call__` → `_run` (opens a key scope if random) →

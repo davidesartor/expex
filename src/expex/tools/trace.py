@@ -21,6 +21,7 @@ import enum
 import inspect
 import math
 import os
+import re
 import types
 import typing
 from typing import Any, Callable, Iterator
@@ -33,6 +34,7 @@ from jax import export
 
 from .. import keys
 from ..annotations.dims import DAny, DConst, DEllipsis, DExpr, DName, DVar, Env
+from ..annotations.dims import resolve as solve_deferred
 from ..annotations.errors import ShapeError, StageError, coded
 from ..annotations.expr import divisibility, to_jax_constraint
 from ..annotations.spec import KeySpec, Spec, StaticSpec, Unsynthesizable, parse
@@ -274,6 +276,35 @@ def statics(f: Fn[Any, Any], fixed: dict[str, Any]) -> dict[str, int]:
     return out
 
 
+def pinned(f: Fn[Any, Any], statics: dict[str, int]) -> dict[str, int]:
+    """Sizes a constraint fixes to a number: ``V == 3 * (1 + 2 * self.deg_view)`` with ``deg_view=4``.
+
+    Traced as that number: a free symbol would disagree with the arrays the
+    function computes from the same fields (``posenc(..., self.deg_view)`` is
+    27 wide), and a size used only inside a sum (``W + V``) could not be
+    solved for.
+    """
+    import ast
+
+    from ..annotations.expr import _eval
+
+    inputs = {n for n in f.input_names if not n.startswith("*")}
+    out: dict[str, int] = {}
+    for w in [*f.where, *f.assumed]:
+        t = w._tree
+        if not (isinstance(t, ast.Compare) and len(t.ops) == 1 and isinstance(t.ops[0], ast.Eq)):
+            continue
+        for a, b in ((t.left, t.comparators[0]), (t.comparators[0], t.left)):
+            if isinstance(a, ast.Name) and a.id in inputs and a.id not in statics and a.id not in out:
+                try:
+                    v = _eval(b, {**statics, **out})
+                except Exception:
+                    continue
+                if isinstance(v, (int, np.integer)) and not isinstance(v, bool) and v >= 0:
+                    out[a.id] = int(v)
+    return out
+
+
 def constraints(f: Fn[Any, Any], statics: dict[str, int]) -> tuple[list[str], list[str]]:
     """``where`` constraints in jax.export syntax, and those that cannot be expressed.
 
@@ -468,6 +499,11 @@ def resolve(target: Any, sizes: dict[str, Any] | None = None, what: str = "trace
         env, spec = Env(), f.params[first].spec
         fixed[first] = Template(target.obj) if spec.leafy else target.obj
         spec.match(target.obj, first, env)
+        if env.deferred:  # sizes only inside a sum (`W + V`): solved for
+            try:
+                solve_deferred(env)
+            except Exception:
+                env.deferred = []
         sizes = {**{k: int(v) for k, v in env.dims.items() if isinstance(v, int)}, **sizes}
     static_kw = {k: v for k, v in sizes.items() if k in f.params}
     try:
@@ -479,6 +515,7 @@ def resolve(target: Any, sizes: dict[str, Any] | None = None, what: str = "trace
     notes = [f"{a}={v!r} (choose with {a}=...)" for a, v in fixed.items()
              if a not in static_kw and a not in f.examples and a != first]  # fmt: skip
     found = statics(f, fixed)
+    found.update({k: v for k, v in pinned(f, found).items() if k not in sizes})
     scope, _ = constraints(f, found)
     return Target(f, fixed, abstract, scope, found, static_kw, sizes, notes)
 
@@ -603,17 +640,30 @@ def source_of(eqn: Any) -> str:
         from jax._src import source_info_util
 
         if (frame := _user_frame(eqn)) is not None:
-            return f"{frame.file_name}:{frame.start_line} ({frame.function_name})"
+            return f"{frame.file_name}:{frame.start_line} ({user_function(frame.function_name)})"
         return str(source_info_util.summarize(eqn.source_info))
     except Exception:
         return "<unknown>"
+
+
+_GENERATED = re.compile(r"(?:\.<locals>)?\.?__bn_\w+?__")
+
+
+def user_function(name: str) -> str:
+    """A function's name as its user wrote it: the converter's helpers (``__bn_body_3__``) left out.
+
+    ``line_length.<locals>.__bn_body_3__`` (a ``while`` loop's body) is ``line_length``.
+    """
+    if "__bn_" not in name:
+        return name
+    return _GENERATED.sub("", name).strip(".") or name
 
 
 def source_key(eqn: Any) -> tuple[str, int, str]:
     """``(file, line, function)`` for grouping equations by source line."""
     try:
         if (frame := _user_frame(eqn)) is not None:
-            return frame.file_name, frame.start_line, frame.function_name
+            return frame.file_name, frame.start_line, user_function(frame.function_name)
     except Exception:
         pass
     return "<unknown>", 0, ""

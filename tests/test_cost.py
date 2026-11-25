@@ -117,6 +117,9 @@ def test_while_loop_is_counted_once_and_said_so():
         return x
 
     assert "trip count unknown, one iteration counted" in str(cost(halve))
+    # the note names the user's function, not the converter's helpers
+    (note,) = [n for n in cost(halve).notes if "while loop" in n]
+    assert "(test_while_loop_is_counted_once_and_said_so.<locals>.halve)" in note and "__bn_" not in note
 
 
 def test_static_int_from_keyword_or_noted():

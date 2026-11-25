@@ -73,11 +73,14 @@ class Config:
         #: A loop over a list of identical layers is traced once, as one ``lax.scan``;
         #: lists of up to this many layers are unrolled in the compiled program
         #: (``lax.scan(unroll=True)``, a barrier between layers), which runs faster (no
-        #: stacked activations) and, on CPU, compiles no slower than the rolled loop up
-        #: to at least 32 layers (benchmarks/results/compile-cpu-2026-11-23.md). 0: never.
-        self.unroll_layers: int = int(os.environ.get("EXPEX_UNROLL_LAYERS", "16"))
+        #: stacked activations) and, on CPU, compiles gradients faster than the rolled
+        #: loop from 2 to 64 layers (benchmarks/results/compile-cpu-2026-11-23.md). 0: never.
+        self.unroll_layers: int = int(os.environ.get("EXPEX_UNROLL_LAYERS", "32"))
         #: Map a call over extra leading axes of its arguments, when that is all that
         #: keeps them from matching (``@expex.fn(vectorize=False)`` opts one function out).
+        #: Functions annotated jaxtyping's way (``Float[Array, "b t"]``) are left out
+        #: unless this is set explicitly (here, by ``expex.config(vectorize=...)`` or by
+        #: ``EXPEX_VECTORIZE``), or the function says ``vectorize=True``.
         self.vectorize: bool = os.environ.get("EXPEX_VECTORIZE", "1") not in ("0", "false", "")
         #: Outside ``jax.jit``, run a mapped call (``f.vectorize``, or mapped
         #: automatically) compiled from its second call with the same shapes on.
@@ -85,6 +88,15 @@ class Config:
         #: Mixed precision for every ``@fn`` without a setting of its own (``jnp.bfloat16``,
         #: or a name): float inputs cast to it, float results back to their declared dtype.
         self.compute: Any = os.environ.get("EXPEX_COMPUTE") or None
+
+    #: Whether ``vectorize`` was set explicitly (see ``Fn._auto``): kept off the
+    #: instance, so it is not a setting.
+    _vectorize_set: bool = "EXPEX_VECTORIZE" in os.environ
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name == "vectorize" and "vectorize" in vars(self):  # set after __init__: explicit
+            Config._vectorize_set = True
+        object.__setattr__(self, name, value)
 
     def __call__(self, **changes: Any) -> "_Scoped":
         """``with expex.config(checked=False): ...`` changes settings inside the block."""
@@ -101,14 +113,19 @@ class _Scoped:
     def __init__(self, cfg: Config, changes: dict[str, Any]):
         self.cfg, self.changes = cfg, changes
         self.saved: dict[str, Any] = {}
+        self.was_set = False
 
     def __enter__(self) -> Config:
         self.saved = {k: getattr(self.cfg, k) for k in self.changes}
+        self.was_set = Config._vectorize_set
         vars(self.cfg).update(self.changes)
+        if "vectorize" in self.changes:
+            Config._vectorize_set = True
         return self.cfg
 
     def __exit__(self, *exc: Any) -> None:
         vars(self.cfg).update(self.saved)
+        Config._vectorize_set = self.was_set
 
 
 config = Config()
@@ -207,7 +224,8 @@ class Fn(Generic[P, R]):
         #: Set by ``@expex.random``: the function gets an implicit PRNG key.
         self.random = False
         #: ``@expex.fn(vectorize=...)``: whether a call maps over extra leading axes of its
-        #: arguments by itself. None follows ``expex.config.vectorize`` (on by default).
+        #: arguments by itself. None follows ``expex.config.vectorize`` (on by default),
+        #: except for jaxtyping-annotated functions (``_jaxtyping``): off unless set.
         self.auto_vectorize: bool | None = None
         #: The function that actually runs: ``raw`` with its control flow converted.
         self._impl: Callable[..., Any] = raw
@@ -275,6 +293,9 @@ class Fn(Generic[P, R]):
             raw_texts = sym.texts(raw)
             for k in self._pending:
                 self._unknown_in(k, raw_texts.get(k), glb, scope, names)
+        #: Annotated jaxtyping's way: such annotations were often never enforced, so a
+        #: call does not map over extra leading axes unless asked to (``_auto``).
+        self._jaxtyping = any(jt.uses(v) for v in anns.values())
         for k, v in anns.items():
             if (bare := jt.bare_stand_in(v)) is not None:
                 # `x: Int` with nothing imported: read as jaxtyping's, which needs a subscript
@@ -417,7 +438,9 @@ class Fn(Generic[P, R]):
                 if k not in self._pending:
                     continue
                 try:
-                    spec = parse(sym.evaluate(text, glb, scope, self.params))
+                    ann = sym.evaluate(text, glb, scope, self.params)
+                    spec = parse(ann)
+                    self._jaxtyping = self._jaxtyping or jt.uses(ann)
                 except Exception:
                     self._unknown_in(k, text, glb, scope, self.params)
                     continue
@@ -496,8 +519,18 @@ class Fn(Generic[P, R]):
             return batching.vectorize(self, args, kwargs, auto=True)
 
     def _auto(self) -> bool:
-        """Whether calls map over extra leading axes by themselves."""
-        return config.vectorize if self.auto_vectorize is None else self.auto_vectorize
+        """Whether calls map over extra leading axes by themselves.
+
+        A jaxtyping-annotated function does not unless it says ``vectorize=True``
+        or ``expex.config.vectorize`` was set explicitly: its annotations were often
+        never enforced, and mapping would turn a real mismatch into a confusing
+        error later on.
+        """
+        if self.auto_vectorize is not None:
+            return self.auto_vectorize
+        if self._jaxtyping and not Config._vectorize_set:
+            return False
+        return config.vectorize
 
     def _extra_rank(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
         """Unchecked calls: whether a plain array parameter has more axes than declared."""

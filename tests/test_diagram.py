@@ -5,6 +5,7 @@ import json
 import pathlib
 import re
 import sys
+import typing
 import xml.etree.ElementTree as ET
 
 import jax
@@ -239,6 +240,58 @@ def test_branches_and_while():
     assert edge(d, "x", "return") == "f32[T, D]"  # the else branch passes x through
     check_svg(d)
     assert {"if", "then", "while"} <= {t.split("  ")[0] for t in titles(d)}  # the else branch has nothing to draw
+
+
+@expex.fn
+def count_run[N](xs: expex.i32[N], i: expex.i32) -> expex.i32:
+    n = 1
+    for step in (1, -1):
+        j = i + step
+        while 0 <= j < N and xs[j] == xs[i]:  # n only counts: it depends on xs through the test
+            n += 1
+            j = j + step
+    return n
+
+
+def test_a_value_a_while_loop_only_counts_feeds_the_return():
+    # connect_four's line_length: `return` was drawn on the left, with no edge into it
+    d = diagram(count_run)
+    (ret,) = [n[0] for n in d.nodes if n[1] == "out"]
+    tests = [n[0] for n in d.nodes if n[2] == "test"]
+    assert len(tests) == 2 and {u for u, v, _ in d.edges if v == ret} == set(tests)
+    check_svg(d)
+
+
+class Pair(typing.NamedTuple):
+    lo: jax.Array
+    hi: jax.Array
+
+
+@expex.struct
+class Span[T]:
+    lo: f32[T]
+    hi: f32[T]
+    width: f32[T]
+    mid: f32[T]
+    size: f32[T]
+
+
+@expex.fn
+def spans[T](x: f32[T]) -> tuple[Span[T], f32[T]]:
+    return Span(x, x + 1, x * 0 + 1, x + 0.5, x), x
+
+
+@expex.fn
+def pair[T](x: f32[T]) -> Pair:
+    return Pair(x - 1, x + 1)
+
+
+def test_a_struct_result_is_labelled_by_its_class():
+    # was one long flattened list of every field's type: `return T T T T T T`
+    assert labels(diagram(pair), "out") == ["return Pair(lo, hi)"]
+    assert labels(diagram(spans), "out") == ["return (Span(5 fields), f32[T])"]
+    assert labels(diagram(gate), "out") == ["return f32[T, D]"]  # arrays: their types, as before
+    check_svg(diagram(pair))
 
 
 def test_page(transformer, tmp_path):

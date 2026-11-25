@@ -25,8 +25,9 @@ from typing import Any
 import jax
 import jax.random as jr
 
-from ..annotations.dims import DConst, DExpr, DName, Env
-from ..annotations.errors import coded, strip_see
+from ..annotations.dims import DConst, DExpr, DName, Env, describe
+from ..annotations.dims import resolve as solve_deferred
+from ..annotations.errors import Mismatch, ShapeError, coded, strip_see
 from ..annotations.spec import ArraySpec, NoneSpec, SeqSpec, StructSpec, UnionSpec, fixed_sizes, join, parse_owner
 from .. import function
 from ..function import Fn, unwrap
@@ -64,6 +65,7 @@ class Summary:
     order: list[str]
     notes: list[str] = field(default_factory=list)
     fixed: dict[str, int] = field(default_factory=dict)  # named fixed sizes: Rows in class Board[Rows = 6]
+    batch: tuple[int, ...] = ()  # leading axes of a batch of models; the rows are one element
 
     def _cells(self, r: Row) -> list[str]:
         fmt = lambda p: "" if p is None else p.format(self.order)
@@ -80,7 +82,8 @@ class Summary:
         line = lambda x: "  ".join(c.rjust(w[i]) if i in right else c.ljust(w[i]) for i, c in enumerate(x)).rstrip()  # fmt: skip
         rule = "─" * len(line(head))
         sizes = ", ".join([f"{k}={v}" for k, v in self.sizes.items()] + [f"{k} (= {v})" for k, v in self.fixed.items()])
-        out = [f"{self.name}   ({sizes})", line(head), rule, *map(line, body), rule, line(foot)]
+        name = self.name + (f" × {list(self.batch)}" if self.batch else "")
+        out = [f"{name}   ({sizes})", line(head), rule, *map(line, body), rule, line(foot)]
         return "\n".join(out + [f"note: {n}" for n in self.notes])
 
     __repr__ = __str__
@@ -111,7 +114,7 @@ class Summary:
         body = "".join(tr(i, r) for i, r in enumerate(self.rows))
         notes = "".join(f"<li>{html.escape(n)}</li>" for n in self.notes)
         return pages.table(pages.uid("txs"), _CSS, (
-            f'<div class="hd"><b>{html.escape(self.name)}</b> {sizes}</div><div class="sc"><table><thead><tr>'
+            f'<div class="hd"><b>{html.escape(self.name)}</b>{f" × {list(self.batch)}" if self.batch else ""} {sizes}</div><div class="sc"><table><thead><tr>'
             '<th>module</th><th>class</th><th data-k="params" class="n" title="parameters (click to sort)">params</th>'
             '<th class="f">formula</th><th class="n b">bytes</th><th data-k="flops" class="n" title="FLOPs of one call of __call__ (click to sort)">'
             'FLOPs</th><th class="f">formula</th></tr></thead>'
@@ -150,8 +153,11 @@ def summary(model: Any, config: Any = None, /, **sizes: int) -> Summary:
     spec = parse_owner(cls)
     if not isinstance(spec, StructSpec):
         raise coded("EX705", TypeError(f"expex.summary: {cls.__name__} is not a @expex.struct with array fields"))
-    env = Env()
-    spec.match(model, cls.__name__, env)
+    batch = _batch(spec, model, cls.__name__)
+    if batch:  # a batch of models (jax.vmap of a constructor): one element is summarized
+        k = len(batch)
+        model = jax.tree.map(lambda a: jax.ShapeDtypeStruct(a.shape[k:], a.dtype), model)
+    env = _sizes_of(spec, model, cls.__name__)
     known = {k: int(v) for k, v in env.dims.items() if isinstance(v, int) and k.isidentifier()}
     rows: list[Row] = []
     lists: dict[str, int] = {}
@@ -176,7 +182,11 @@ def summary(model: Any, config: Any = None, /, **sizes: int) -> Summary:
     calls = sorted((used | set(sizes)) - set(known) - {"L"} - set(order))  # T first, as expex.cost does
     order = list(dict.fromkeys([*calls, *order, *sorted(known.keys() - {"L"}), "L"]))
     shown = {k: v for k, v in sorted({**known, **sizes}.items(), key=lambda kv: order.index(kv[0]))}
-    return Summary(cls.__name__, rows, total, shown, order, s.notes, fixed_sizes(spec))
+    if batch:
+        n = math.prod(batch)
+        s.notes.insert(0, f"a batch {list(batch)} of {cls.__name__}: every row is one element; "
+                          f"the batch holds {n} × {params:,} = {n * params:,} parameters")  # fmt: skip
+    return Summary(cls.__name__, rows, total, shown, order, s.notes, fixed_sizes(spec), batch)
 
 
 @dataclass
@@ -208,8 +218,7 @@ class _Walk:
             if isinstance(s, StructSpec):
                 mapping: dict[str, Poly] = {}
                 _pair(parse_owner(s.cls), s, mapping)
-                env = Env()
-                parse_owner(s.cls).match(value, here, env)
+                env = _sizes_of(parse_owner(s.cls), value, here)
                 own = [p.__name__ for p in getattr(s.cls, "__type_params__", ())]
                 row.label = s.cls.__name__ + ("[" + ", ".join(f"{k}={env.dims.get(k, '?')}" for k in own) + "]" if own else "")  # fmt: skip
                 self.flops(row, s.cls, value, mapping)
@@ -239,6 +248,56 @@ class _Walk:
         row.flops_value = None if number.value is None else int(number.value)
         if number.value is None and (self.given or self.seen):
             self.notes.append(f"{row.path or 'total'}: no FLOP count without {', '.join(sorted(number.names()))}")
+
+
+def _batch(spec: Any, model: Any, path: str) -> tuple[int, ...]:
+    """The leading axes every array of ``model`` has beyond its annotation (a batch of models); ``()`` if none.
+
+    Raises a coded ``ShapeError`` if the model does not match its annotations
+    otherwise.
+    """
+    try:
+        spec.match(model, path, Env())
+        return ()
+    except Mismatch as m:
+        first = m
+    extra: set[tuple[int, ...]] = set()
+
+    def visit(s: Any, x: Any, p: str) -> Any:
+        rank = getattr(s, "core_rank", None)
+        shape = getattr(x, "shape", None)
+        if rank is not None and shape is not None:
+            extra.add(tuple(shape[: len(shape) - rank]) if len(shape) >= rank else (-1,))
+        return x
+
+    spec.walk(model, path, visit)
+    if len(extra) == 1 and (batch := next(iter(extra))) and -1 not in batch:
+        k = len(batch)
+        element = jax.tree.map(lambda a: jax.ShapeDtypeStruct(a.shape[k:], a.dtype), model)
+        try:
+            spec.match(element, path, Env())
+            return tuple(int(b) for b in batch)
+        except Mismatch as m:
+            first = m
+    raise coded("EX101", ShapeError(
+        f"expex.summary: {path} does not match its annotations"
+        + (", even as a batch of models" if len(extra) == 1 and next(iter(extra)) else "")
+        + f".\n\n    declared  {first.path}: {first.spec}\n    received  {describe(first.value)}\n\n    {first.reason}"
+        + ("" if len(extra) <= 1 else "\n\n    A batch of models has the same extra leading axes on every array; "
+           f"these have {', '.join(sorted(map(str, extra)))}.")
+    ))  # fmt: skip
+
+
+def _sizes_of(spec: Any, value: Any, path: str) -> Env:
+    """The sizes of a module, sizes used only inside a sum (``W + V``) solved for too."""
+    env = Env()
+    spec.match(value, path, env)
+    if env.deferred:
+        try:
+            solve_deferred(env)
+        except Exception:  # left unknown: shown as `?`
+            env.deferred = []
+    return env
 
 
 def _call_sizes(model: Any, sizes: dict[str, int]) -> dict[type, dict[str, int]]:

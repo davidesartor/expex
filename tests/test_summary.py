@@ -192,3 +192,27 @@ def test_html(tf_summary, tmp_path):
     tf_summary.save(path)
     text = path.read_text()
     assert text.startswith("<!doctype html>") and "<title>Transformer summary</title>" in text
+
+
+@expex.struct
+class _Block[D]:
+    w: f32[D, D] = jax.nn.initializers.normal(0.1)
+    b: f32[D] = 0.0
+
+    def __call__(self, x: f32[D]) -> f32[D]:
+        return jnp.tanh(x @ self.w + self.b)
+
+
+def test_a_batch_of_models():
+    # built with jax.vmap: every field has a leading axis [5]. The internal Mismatch
+    # ("expected 2 axes, got 3") used to leak out of expex.summary.
+    batch = jax.vmap(lambda k: _Block(k, D=4))(jr.split(jr.key(0), 5))
+    s = summary(batch)
+    assert s.batch == (5,) and s.sizes == {"D": 4} and s.total.params == 20  # one element
+    assert str(s).startswith("_Block × [5]   (D=4)")
+    assert "the batch holds 5 × 20 = 100 parameters" in str(s)
+    assert "× [5]" in s._repr_html_()
+    assert summary(_Block(jr.key(0), D=4)).batch == ()
+    with pytest.raises(expex.ShapeError) as e:  # not a batch: extra axes differ between fields
+        summary(_Block(jnp.ones((4, 4)), jnp.ones(4)).replace(b=jnp.ones((2, 3))))
+    assert e.value.code == "EX101" and "declared  _Block.b: f32[D]" in str(e.value)

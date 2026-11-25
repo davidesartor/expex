@@ -340,10 +340,3 @@ def cost(target: Any, config: Any = None, /, **sizes: Any) -> Cost:
         fn_fixed_sizes(f),
     )
 
-
-# Kept for ``_diagram.py`` while it is being rewritten: the trace engine under its old names.
-_setup = resolve
-
-
-def _trace(s: Target, n: int, preset: dict[str, int] | None = None) -> tuple[Any, dict[str, Any], list[str]]:
-    return s.trace(n, preset)

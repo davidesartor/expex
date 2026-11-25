@@ -92,6 +92,12 @@ def hint(f: Fn[Any, Any], m: Mismatch, role: str, env: Env) -> str:
         return (
             f"`{m.path}` has {extra} extra leading ax{'is' if extra == 1 else 'es'}. To map "
             f"over {'it' if extra == 1 else 'them'}, call {f.name}.vectorize(...)."
+            + (
+                " Functions annotated jaxtyping's way are not mapped by themselves: "
+                "@expex.fn(vectorize=True) makes plain calls map too."
+                if getattr(f, "_jaxtyping", False) and getattr(f, "auto_vectorize", None) is None
+                else ""
+            )
         )
     if len(shape) == rank and rank > 1:
         want_shape = []

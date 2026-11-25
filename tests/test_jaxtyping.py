@@ -79,9 +79,57 @@ def test_names_are_the_sizes(tmp_path, mode):
     msg = raises("EX101", f, ones((2, 3, 4)), ones((5, 3, 4)))
     assert "batch is 2 (from `q: f32[2, 3, 4]`), but axis 0 of `k` is 5." in msg
     assert expex.prove(f).ok
-    # extra leading axes are mapped over, as for expex's own annotations
-    assert f(ones((7, 2, 3, 4)), ones((7, 2, 5, 4))).shape == (7, 2, 3, 5)
+    # extra leading axes are not mapped over by a plain call (jaxtyping annotations were
+    # often never enforced): f.vectorize maps them, and a plain call says so
+    assert f.vectorize(ones((7, 2, 3, 4)), ones((7, 2, 5, 4))).shape == (7, 2, 3, 5)
+    msg = raises("EX101", f, ones((7, 2, 3, 4)), ones((7, 2, 5, 4)))
+    assert "call attend.vectorize(...)" in msg and "@expex.fn(vectorize=True)" in msg
     assert jax.jit(f)(ones((2, 3, 4)), ones((2, 5, 4))).shape == (2, 3, 5)
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_no_automatic_batching_unless_asked(tmp_path, mode, monkeypatch):
+    # jaxtyping annotations were often never enforced: mapping a call over extra axes
+    # turned real mismatches into confusing errors later on (the dynamax port)
+    m = load(tmp_path, '''
+        @expex.fn
+        def norm(x: Float[Array, "d"]) -> Float[Array, ""]:
+            return jnp.sqrt((x * x).sum())
+
+        @expex.fn(vectorize=True)
+        def norm_mapped(x: Float[Array, "d"]) -> Float[Array, ""]:
+            return jnp.sqrt((x * x).sum())
+
+        @expex.fn
+        def mixed[D](x: Float[Array, "d"], w: expex.f32[D]) -> Float[Array, ""]:
+            return (x * w).sum()
+
+        @expex.fn
+        def own_style[D](x: expex.f32[D]) -> expex.f32:
+            return jnp.sqrt((x * x).sum())
+
+        @expex.struct
+        class Scale:
+            w: Float[Array, "d"]
+
+            def __call__(self, x: Float[Array, "d"]) -> Float[Array, "d"]:
+                return x * self.w
+    ''', mode)
+    batch = ones((5, 3))
+    raises("EX101", m.norm, batch)  # as vectorize=False
+    raises("EX101", m.mixed, batch, ones(3))  # one jaxtyping annotation is enough
+    raises("EX101", m.Scale(w=ones(3)), batch)
+    assert m.norm.vectorize(batch).shape == (5,)  # asked for explicitly
+    assert m.norm_mapped(batch).shape == (5,)  # opted in on the function
+    assert m.own_style(batch).shape == (5,)  # expex-style annotations: unchanged
+    with expex.config(vectorize=True):  # set explicitly, globally
+        assert m.norm(batch).shape == (5,) and m.Scale(w=ones(3))(batch).shape == (5, 3)
+    raises("EX101", m.norm, batch)  # back to the default outside the block
+    with expex.config(vectorize=False):
+        raises("EX101", m.own_style, batch)
+    monkeypatch.setattr(expex.function.Config, "_vectorize_set", False)
+    monkeypatch.setattr(expex.config, "vectorize", True)  # assigned: explicit too
+    assert m.norm(batch).shape == (5,)
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -354,8 +402,9 @@ def test_with_jaxtyped_and_beartype(tmp_path):
         with pytest.raises(TypeCheckError):
             f(ones(3), 2.0)  # jaxtyping's check: a Python float is not an Array (expex would take it)
     raises("EX101", m.under, ones(3, jnp.int32), jnp.float32(2))  # expex's check
-    # expex on top maps over extra axes, then jaxtyping checks each element
-    assert m.under(ones((4, 3)), jnp.float32(2)).shape == (4, 3)
+    # expex on top maps over extra axes (when asked to), then jaxtyping checks each element
+    assert m.under.vectorize(ones((4, 3)), jnp.float32(2)).shape == (4, 3)
+    raises("EX101", m.under, ones((4, 3)), jnp.float32(2))  # not mapped by a plain call
     assert expex.prove(m.under).ok
     with pytest.raises(TypeCheckError):
         m.over(ones((4, 3)), jnp.float32(2))  # jaxtyping on top sees the batch first

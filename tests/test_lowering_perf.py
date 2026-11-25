@@ -191,6 +191,19 @@ def test_short_list_of_layers_is_one_scan_unrolled_when_compiled():
         np.testing.assert_allclose(a, b, rtol=1e-5, atol=1e-6)
 
 
+def test_stacks_of_up_to_32_layers_unroll_by_default(monkeypatch):
+    # benchmarks/results/compile-cpu-2026-11-23.md: with the barrier between layers,
+    # unrolled gradients compile and run faster than the rolled loop from 2 to 64 layers.
+    monkeypatch.delenv("EXPEX_UNROLL_LAYERS", raising=False)
+    assert expex.function.Config().unroll_layers == 32
+    x = jr.normal(jr.key(1), (8,))
+    with expex.config(unroll_layers=32):
+        (params,) = scans(lambda m, x: m(x), Stack(jr.key(0), W=8, blocks=32), x)
+        assert params["unroll"] == 32
+        (params,) = scans(lambda m, x: m(x), Stack(jr.key(0), W=8, blocks=33), x)
+        assert params["unroll"] == 1
+
+
 def test_long_lists_and_other_loops_stay_rolled():
     model, x = Stack(jr.key(0), W=8, blocks=4), jr.normal(jr.key(1), (8,))
     with expex.config(unroll_layers=3):

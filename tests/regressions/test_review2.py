@@ -103,15 +103,21 @@ def test_augmented_assignment_reads_the_target_first():
     assert convert(h)([1]) == [6] and log == ["i", "v"]
 
 
-def test_max_min_agree_between_eager_and_jit():
-    @fn
-    def f(n, x, u):
+def test_max_min_mean_what_python_means_eagerly():
+    # Was: eager max/min used jnp.maximum, to agree with jit on dtype and NaN. Decided since:
+    # converted code means what plain Python means on concrete values (fuzz seed 69542:
+    # max(x[0], 1) must be the int 1, usable as an index); only traced values go through jnp.
+    def plain(n, x, u):
         return max(n, x) // 2, max(x, 0), max(u, 100) + 100, max(x, float("nan"))
 
+    f = fn(plain)
     args = (jnp.int32(7), jnp.float32(2.5), jnp.uint8(200))
-    for a, b in zip(f(*args), jax.jit(f)(*args)):
-        assert jnp.asarray(a).dtype == jnp.asarray(b).dtype
+    for a, b in zip(f(*args), plain(*args)):
+        assert type(a) is type(b) and jnp.asarray(a).dtype == jnp.asarray(b).dtype
         assert np.array_equal(np.asarray(a), np.asarray(b), equal_nan=True)
+    # traced, the same values (NaN aside: jnp.maximum propagates it, Python's max does not)
+    for a, b in list(zip(f(*args), jax.jit(f)(*args)))[:3]:
+        assert float(a) == float(b)
 
 
 def test_traced_print_keeps_braces_and_keyword_arguments(capfd):

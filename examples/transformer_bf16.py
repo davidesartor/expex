@@ -6,7 +6,8 @@
 model compute in bf16: the parameters (f32, as annotated) and the other float
 inputs are cast to bf16 when a call starts, the modules it calls (blocks,
 attention, MLP) compute in bf16 too, and the loss comes back as the f32 its
-annotation declares, so are the gradients of the f32 parameters.
+annotation declares, as do the gradients of the f32 parameters. `m.loss(batch)`
+on a batch of sequences maps over it by itself, as for the f32 model.
 """
 
 import dataclasses

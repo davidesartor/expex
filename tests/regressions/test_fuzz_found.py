@@ -315,3 +315,40 @@ def test_an_annotated_local_in_a_method_sees_the_class_sizes():
     m = Lin(jnp.eye(3))
     assert m(jnp.ones(3)).shape == (3,)
     assert expex.prove(Lin.__call__).status == "proved"
+
+
+# ------------------------------------------------------------ builtins mean what Python means
+
+
+def test_max_and_min_of_concrete_values_are_the_builtins():
+    # fuzz seed 69542: `v5 += max(s, v5)` then `x[v5 % N]`. max_ used jnp.maximum even
+    # eagerly, so max(x[0], 1) was a float array where Python gives the int 1, and the
+    # later index failed ("Indexer must have integer or boolean type").
+    src = (
+        "def f[N](x: f32[N], k: i32) -> f32:\n"
+        "    i = max(x[0], 1)\n"
+        "    j = min(k, N - 1, 5)\n"
+        "    return x[i] + x[j] + abs(-x[0]) + round(2.4) + int(x[1]) + float(x[0])\n"
+    )
+    f = expex.fn(define(src, f32=f32, i32=i32))
+    x = jnp.array([0.5, 2.0, 3.0])
+    # as plain Python: x[1] + x[2] + 0.5 + 2 + 2 + 0.5
+    assert float(f(x, jnp.int32(7))) == 10.0
+    g = expex.fn(define("def f(a, b, c):\n    return max(a, b), min(a, b, c), max([a, b]), min(a, c, key=abs)\n"))
+    out = g(jnp.float32(0.5), 1, -2)
+    assert out[0] == 1 and type(out[0]) is int  # the builtin returns the argument itself
+    assert out[1] == -2 and type(out[1]) is int
+    assert out[2] == 1 and float(out[3]) == 0.5
+
+
+def test_max_and_min_of_traced_values_go_through_jnp():
+    f = expex.fn(define("def f(x, y):\n    return max(x, 1.0, y), min(x, y)\n"))
+    a, b = jax.jit(f)(jnp.float32(0.5), jnp.float32(2.0))
+    assert (float(a), float(b)) == (2.0, 0.5)
+    v = jax.vmap(f)(jnp.array([0.5, 3.0]), jnp.array([2.0, 0.0]))
+    assert v[0].tolist() == [2.0, 3.0] and v[1].tolist() == [0.5, 0.0]
+    # arrays of several elements, traced: element-wise (Python cannot compare them)
+    m = jax.jit(f)(jnp.array([1.0, 1.0]), jnp.array([0.0, 5.0]))
+    assert m[0].tolist() == [1.0, 5.0] and m[1].tolist() == [0.0, 1.0]
+    # under jax.grad outside jit, values are concrete: Python's max picks an argument
+    assert jax.grad(lambda x: f(x, 2.0)[0] * x)(3.0) == pytest.approx(6.0)

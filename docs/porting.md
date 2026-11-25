@@ -160,8 +160,8 @@ Code annotated with [jaxtyping](https://github.com/patrick-kidger/jaxtyping)
 needs no rewrite: put `@expex.fn` on it, and `Float[Array, "batch seq d"]`
 means to expex what `Float[Batch, Seq, D]` does. The names in the strings
 are the function's sizes, as if they were its type parameters, spelled as
-written. Calls are checked, extra leading axes are mapped over, and
-`expex.prove`, `expex.cost` and the diagrams work as for any `@expex.fn`.
+written. Calls are checked, and `expex.prove`, `expex.cost` and the
+diagrams work as for any `@expex.fn`.
 
 ```python
 from typing import TYPE_CHECKING
@@ -178,7 +178,7 @@ def extend(x: Float[Array, "*batch t"]) -> Float[Array, "*batch t+1"]:
     return jnp.concatenate([jnp.zeros(x.shape[:-1] + (1,)), x], axis=-1)
 
 print(lookup.signature)
-print(lookup(jnp.zeros((4, 2, 5), jnp.int32), jnp.ones((10, 8))).shape)  # 4 batches: mapped over
+print(lookup.vectorize(jnp.zeros((4, 2, 5), jnp.int32), jnp.ones((10, 8))).shape)  # 4 batches
 print(expex.prove(extend).ok)
 try:
     lookup(jnp.zeros((2, 5)), jnp.ones((10, 8)))  # float tokens
@@ -192,6 +192,17 @@ lookup(tokens: Int[batch, seq], table: Float[vocab, d]) -> Float[batch, seq, d]
 True
 EX101 expected dtype Int, got f32.
 ```
+
+**No automatic batching.** An expex-style function called with extra
+leading axes maps over them by itself. A jaxtyping-annotated one does not: it
+behaves as `@expex.fn(vectorize=False)`, and such a call is a `ShapeError`.
+jaxtyping annotations were often never enforced, so a mismatch they would
+have caught may be hiding in working code; mapping over it would turn that
+mismatch into a confusing error later on. Call `f.vectorize(...)` to map,
+or opt in with `@expex.fn(vectorize=True)` on the function, or for every
+function by setting `expex.config(vectorize=True)` (or `EXPEX_VECTORIZE=1`)
+explicitly. Once the annotations are known to hold, `python -m expex migrate
+jaxtyping` rewrites them in expex's style, which maps as usual.
 
 jaxtyping need not be installed. With it, expex reads its classes; without it
 (imported only for type checkers, as above), expex reads the annotation's

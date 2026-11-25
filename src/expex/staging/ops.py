@@ -348,13 +348,35 @@ def raise_(exc: Callable[[], Any], cause: Callable[[], Any] | None, site: str) -
 
 
 def _extreme(args: tuple[Any, ...], kwargs: dict[str, Any], builtin: Any, pair: Any) -> Any:
-    # With a JAX array among several arguments, use the array function in every
-    # mode, so that eager and compiled runs agree on dtype and on NaN handling.
-    if kwargs or len(args) < 2 or not any(isinstance(a, jax.Array) for a in args):
+    """``max`` / ``min`` as plain Python means them, wherever Python can answer.
+
+    With no traced argument, the builtin: ``max(x[0], 1)`` on a concrete ``x``
+    is ``1`` (an int, usable as an index) when Python says so, not a float
+    array. Only traced arguments whose values are unknown while tracing go
+    through ``jnp.maximum`` / ``jnp.minimum``; the concrete ones are first
+    reduced by the builtin.
+    """
+    if kwargs or len(args) < 2:
         return builtin(*args, **kwargs)
-    out = args[0]
-    for a in args[1:]:
+    traced = [a for a in args if isinstance(a, Tracer)]
+    if not traced:
+        return builtin(*args)
+    try:  # traced, but with values Python can compare (under jax.grad, outside jit)
+        return builtin(*args)
+    except (jax.errors.ConcretizationTypeError, ValueError):  # ValueError: several elements
+        pass
+    out = traced[0]
+    for a in traced[1:]:
         out = pair(out, a)
+    rest = [a for a in args if not isinstance(a, Tracer)]
+    if rest:
+        try:
+            concrete = builtin(*rest) if len(rest) > 1 else rest[0]
+        except (TypeError, ValueError):  # arrays with several elements: compared element-wise
+            concrete = rest[0]
+            for a in rest[1:]:
+                concrete = pair(concrete, a)
+        out = pair(out, concrete)
     return out
 
 

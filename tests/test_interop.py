@@ -331,7 +331,7 @@ def test_equinox_with_jaxtyping_annotations():
         def __init__(self, key: Any, i: int, o: int):
             self.w, self.b = jr.normal(key, (i, o)), jnp.zeros(o)
 
-        @expex.fn
+        @expex.fn(vectorize=True)  # jaxtyping-annotated: plain calls map only when asked to
         def __call__(self, x: Float[Array, " i"]) -> Float[Array, " o"]:
             return x @ self.w + self.b
 

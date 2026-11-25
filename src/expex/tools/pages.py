@@ -15,6 +15,10 @@ keeps only what is its own: its markup, its extra styles and its script.
   headers with ``data-k`` (rows sort within their parent by ``data-<k>``).
 - :func:`data`: a value as JSON that is safe inside ``<script>``.
 
+The table resets what notebook front ends set on every table in an output
+(JupyterLab's ``table-layout:fixed``, which made long cells overlap the next
+column, centred tables, striped rows, right-aligned cells).
+
 Light or dark follows ``prefers-color-scheme``; ``<html data-theme="light">`` or
 ``"dark"`` overrides it (the toggles of ``expex.inspect`` and the diagram page).
 Fragments that ``expex.inspect`` puts in one page mark the modules they show
@@ -71,8 +75,9 @@ def data(value: Any) -> str:
 #: Styles of a tree table inside ``#ID`` (replace ``#ID`` with the fragment's id).
 TABLE_CSS = f"""#ID{{color:var(--fg);background:var(--bg);font:13px/1.45 {SANS};max-width:100%;container-type:inline-size;border:1px solid var(--ln);border-radius:8px;padding:10px 12px}}
 #ID .hd{{margin-bottom:8px;display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline}}#ID .hd span{{color:var(--mu);font:12px {MONO}}}
-#ID .sc{{overflow-x:auto}}#ID table{{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}}
-#ID th,#ID td{{padding:3px 10px;border-bottom:1px solid var(--ln);text-align:left;white-space:nowrap;vertical-align:baseline}}
+#ID .sc{{overflow-x:auto}}#ID table{{border-collapse:collapse;border:0;width:100%;font-variant-numeric:tabular-nums;table-layout:auto;margin:0;font-size:inherit;color:inherit}}
+#ID th,#ID td{{padding:3px 10px;border:0;border-bottom:1px solid var(--ln);text-align:left;white-space:nowrap;vertical-align:baseline;line-height:1.45;max-width:none}}
+#ID thead{{border:0}}#ID tbody tr,#ID tbody tr:nth-child(odd){{background:transparent}}
 #ID th{{background:var(--hd);font-weight:600;color:var(--mu);font-size:12px;position:sticky;top:0}}#ID th[data-k]{{cursor:pointer;color:var(--ac)}}
 #ID th[data-k]::after{{content:" ↕";opacity:.5}}#ID th[data-dir="1"]::after{{content:" ↓";opacity:1}}#ID th[data-dir="-1"]::after{{content:" ↑";opacity:1}}
 #ID .n{{text-align:right}}#ID .m{{padding-left:calc(6px + var(--d)*16px);font-weight:500}}#ID .c,#ID .f{{font-family:{MONO};font-size:12px}}

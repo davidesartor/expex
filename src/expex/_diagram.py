@@ -62,6 +62,7 @@ top level) out as the partial trace's outputs. The diagram draws what was
 traced up to there, the failing call in red, and the path that feeds it.
 """
 
+import dataclasses
 import gzip
 import html
 import inspect
@@ -90,6 +91,7 @@ from .annotations.dims import fmt_dim, short_dtype
 from .annotations.errors import ShapeError, coded
 from .annotations.spec import fn_fixed_sizes
 from .tools import cost as _cost
+from .tools import trace as _trace
 from .tools.trace import sub_jaxprs
 
 #: Operations that are drawn (as small nodes) when outside every closed call.
@@ -127,6 +129,25 @@ def _brief(v: Any) -> str | None:
         parts = [p for p in map(_brief, v) if p]
         return f"({', '.join(parts)})" if parts else None
     return type(v).__name__ if any(_type(x) for x in jax.tree.leaves(v)) else None
+
+
+def _result(v: Any) -> str | None:
+    """A result that holds structs, short: ``Pixel(rgb, disp, acc)``, ``(Pixel(...), f32[S])``; None for arrays."""
+    if _type(v) is not None:
+        return None
+    if isinstance(v, (tuple, list)) and not hasattr(v, "_fields"):
+        parts = [_result(x) or _brief(x) for x in v]
+        if not any(_result(x) for x in v):
+            return None  # a tuple of arrays: drawn as their types
+        return f"({', '.join(p for p in parts if p)})"
+    if not any(_type(x) for x in jax.tree.leaves(v)):
+        return None
+    name = type(v).__name__
+    names = [f.name for f in dataclasses.fields(v)] if dataclasses.is_dataclass(v) else list(getattr(v, "_fields", ()))
+    if names:
+        fields = [f for f in names if any(_type(x) for x in jax.tree.leaves(getattr(v, f)))]
+        return f"{name}({', '.join(fields)})" if len(fields) <= 4 else f"{name}({len(fields)} fields)"
+    return name
 
 
 def _get(env: dict[Any, list[int]], v: Any) -> list[int]:
@@ -177,6 +198,7 @@ class _Hook:
         self.uid, self.depth, self.root = 0, 0, -1
         self.calls: dict[int, dict[str, Any]] = {}
         self.inputs: dict[str, str] = {}
+        self.result: str | None = None  # the top call's result when it holds structs: `Pixel(rgb, disp, acc)`
         self.sources: dict[str, str] = {}
         self.stop = stop
         self.open: list[int] = []  # the calls running now, outermost first
@@ -282,6 +304,7 @@ class _Hook:
                 self.modules.pop()
         self.calls[uid]["outs"] = _brief(out) or ""
         if top:
+            self.result = _result(out)
             with jax.named_scope("expex-out"):
                 out = _barrier(out)
         return out
@@ -315,6 +338,8 @@ class _Builder:
         self.within: list[str] = []  # the names of the jit-ed functions being walked (``_var``, ...)
         self.made: dict[Any, str] = {}  # each variable's primitive
         self.data: list[bool] = []  # depends on an input (else on constants and sizes only)
+        #: depends on the inputs only through loop tests (a counter: `n += 1` while ...)
+        self.counted: list[bool] = []
         self.near: list[frozenset[int]] = []  # the nearest drawn atoms each atom is computed from
         self.edges: list[tuple[int, int, int]] = []  # (from atom, to atom, type index)
         self.types: dict[str, int] = {}
@@ -341,7 +366,10 @@ class _Builder:
         if self.flops is not None:
             n = _cost.flops(types.SimpleNamespace(eqns=[eqn]), []).value if eqn is not None else 0
             self.flops.append(float(n or 0) * self.mult)
-        self.data.append(kind == "in" or any(self.data[a] for v in ins for a in _get(env, v)))
+        srcs = [a for v in ins for a in _get(env, v) if self.data[a]]
+        self.data.append(kind == "in" or bool(srcs))
+        self.counted.append(kind == "op" and label != "test" and bool(srcs)
+                            and all(self.counted[a] or self.atoms[a][1] == "test" for a in srcs))  # fmt: skip
         self.near.append(frozenset({me}) if label else frozenset().union(*[self.near[a] for v in ins for a in _get(env, v)]))
         for v in ins:
             if (t := _type(v.aval)) is not None:
@@ -360,8 +388,8 @@ class _Builder:
             outs: list[list[int]] | None = None
             if name == "optimization_barrier" and "expex-" in stack:
                 kind, what = ("in", stack.split("expex-in.")[-1].split("/")[0]) if "expex-in." in stack else ("out", "")
-                text = f"{what}: {self.hook.inputs.get(what, '')}" if kind == "in" else "return " + " ".join(
-                    filter(None, (_type(v.aval) for v in eqn.outvars)))  # fmt: skip
+                text = f"{what}: {self.hook.inputs.get(what, '')}" if kind == "in" else "return " + (
+                    self.hook.result or " ".join(filter(None, (_type(v.aval) for v in eqn.outvars))))  # fmt: skip
                 me = self.atom(-1, text, kind, eqn.invars if kind == "out" else [], env)
                 outs = [[me]] * len(eqn.outvars)
             elif name == "optimization_barrier":  # between unrolled layers (staging/loops.py): the values themselves
@@ -383,9 +411,13 @@ class _Builder:
                 cj = p["cond_jaxpr"].jaxpr
                 cenv = dict(zip(cj.invars, srcs(eqn.invars[:nc]) + init))
                 self.walk(cj, box, cenv)
-                self.atom(box, "test", "op", cj.outvars, cenv)
+                test = self.atom(box, "test", "op", cj.outvars, cenv)
                 body = self.sub(p["body_jaxpr"], box, srcs(eqn.invars[nc : nc + nb]) + init)
                 outs = [a + c for a, c in zip(init, body)]
+                # a value the loop only counts (`n += 1` while a test on the inputs holds) depends
+                # on the inputs through the test: draw that edge, or `return` would float unfed
+                counts = lambda c: not any(self.data[x] and not self.counted[x] and self.atoms[x][1] != "test" for x in c)  # noqa: E731
+                outs = [o + [test] if c and counts(c) and c != a else o for o, a, c in zip(outs, init, body)]
             elif (subs := [j for _, j in sub_jaxprs(p)]) and len(subs[0].invars) == len(eqn.invars):
                 self.within.append(str(p.get("name", "")))
                 outs = self.sub(subs[0], b, srcs(eqn.invars))  # jit, custom_jvp, remat, ...: inline
@@ -2076,7 +2108,7 @@ class Diagram:
 
 def _draw(target: Any, depth: int, sizes: dict[str, Any]) -> Diagram:
     """``diagram(target, depth, **sizes)``: see ``DiagramFn.__call__``."""
-    s = _cost._setup(target, dict(sizes), "draw")
+    s = _trace.resolve(target, dict(sizes), "draw")
     f, owner = s.f, getattr(s.f, "_owner_cls", None)
     known = set(f.params) | f.input_names | {"L"}
     known |= {t.__name__ for src in (f.raw, owner) for t in getattr(src, "__type_params__", ())}
@@ -2087,7 +2119,7 @@ def _draw(target: Any, depth: int, sizes: dict[str, Any]) -> Diagram:
         hook = _Hook()
         token = _fn.CALL_HOOK.set(hook)
         try:
-            jaxpr, _, lists = _cost._trace(s, n, preset)
+            jaxpr, _, lists = s.trace(n, preset)
         finally:
             _fn.CALL_HOOK.reset(token)
         return jaxpr, lists, hook

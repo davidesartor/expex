@@ -322,6 +322,19 @@ def resolve(env: Env) -> None:
             else:
                 rest.append(item)
         if not progress:
+            for i, item in enumerate(rest):  # symbolic sizes (the tools): `W + V` = `W + V` gives V = V
+                d, actual, path = item[0], item[1], item[2]
+                unbound = [n for n in d.expr.names if n not in env.dims]
+                if len(unbound) == 1 and is_symbolic(actual):
+                    solved = _solve_symbolic(d.expr, unbound[0], actual, env.dims)
+                    if solved is not None:
+                        env.dims[unbound[0]] = solved
+                        env.origin[unbound[0]] = f"solving `{d}` = {actual} for `{path}`"
+                        progress = True
+                        break
+            if progress:
+                pending = rest
+                continue
             d, actual, path, spec, value, axis = rest[0]
             names = ", ".join(n for n in sorted(d.expr.names) if n not in env.dims)
             raise Mismatch(
@@ -348,6 +361,23 @@ def _solve(expr: Expr, name: str, target: Any, dims: dict[str, Any]) -> int | No
         if not isinstance(cand, (int, np.integer)) or cand < 0 or expr({**dims, name: cand}) != target:
             return None
         return int(cand)
+    except Exception:
+        return None
+
+
+def _solve_symbolic(expr: Expr, name: str, target: Any, dims: dict[str, Any]) -> Any:
+    """Solve ``expr(name) == target`` for a symbolic ``target``: ``W + V`` = ``W + V`` gives ``V``.
+
+    Only for ``expr`` of slope 1 or -1 in ``name``, where the solution is a sum of
+    the symbols; checked by evaluating ``expr`` at it.
+    """
+    try:
+        f0 = expr({**dims, name: 0})
+        a = expr({**dims, name: 1}) - f0
+        if not (_same(a, 1) or _same(a, -1)):
+            return None
+        cand = (target - f0) if _same(a, 1) else (f0 - target)
+        return cand if _same(expr({**dims, name: cand}), target) else None
     except Exception:
         return None
 

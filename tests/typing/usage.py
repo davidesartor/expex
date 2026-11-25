@@ -89,6 +89,16 @@ class BoardBound[Rows: Literal[6], Cols: Literal[7]]:
     cells: i32[Rows, Cols]
 
 
+@expex.struct
+class Dense[I, O]:
+    w: f32[I, O]
+    b: f32[O]
+    act: bool = True
+
+    def __call__[B](self, x: f32[B, I]) -> f32[B, O]:
+        return x @ self.w + self.b
+
+
 class Model:
     @fn
     def call[D](self, x: f32[D], scale: float = 1.0) -> f32[D]:
@@ -109,6 +119,12 @@ assert_type(Board(jnp.zeros((6, 7), jnp.int32)).cells, jax.Array)
 assert_type(BoardLiteral(jnp.zeros((6, 7), jnp.int32)).cells, jax.Array)
 assert_type(BoardBound(jnp.zeros((6, 7), jnp.int32)).cells, jax.Array)
 
+dense: Dense[Hidden, Hidden] = Dense(jnp.ones((4, 3)), jnp.zeros(3))  # a frozen dataclass to checkers
+assert_type(dense.w, jax.Array)
+assert_type(dense.act, bool)
+assert_type(dense(x[0]), jax.Array)
+assert_type(Dense(w=jnp.ones((4, 3)), b=jnp.zeros(3), act=False).b, jax.Array)
+
 report = expex.prove(attend)
 assert_type(report.ok, bool)
 attend.check().raise_if_failed()
@@ -126,3 +142,6 @@ Model().call(x[0, 0], scale="big")  # E: scale must be a float
 rows("x")  # E: still checked where sizes are fixed
 rows_literal("x")  # E: still checked where sizes are fixed
 rows_bound("x")  # E: still checked where sizes are fixed
+Dense(jnp.ones((4, 3)))  # E: the field b is missing
+Dense(jnp.ones((4, 3)), jnp.zeros(3), act="yes")  # E: act must be a bool
+dense.w = jnp.ones((4, 3))  # E: a struct is frozen

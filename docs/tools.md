@@ -10,8 +10,14 @@ your editor. None of it needs example data.
 ```
 python -m expex pkg/                  # every @fn in a package, a module or a .py file
 python -m expex prove pkg/            # the same
+python -m expex scripts/              # a folder that is not a package: each .py file in it
 pytest --expex pkg                    # one test per function
 ```
+
+In a folder without `__init__.py`, each file is imported on its own (its
+folder on `sys.path`, so its own helper modules import), subfolders too; a
+file that fails to import is reported as an error and the others are still
+proved.
 
 ## Watch mode
 

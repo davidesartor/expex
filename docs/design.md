@@ -498,8 +498,9 @@ of them:
   section 2), which is what the originals' reshapes do by hand.
 - *Layer unrolling.* A loop over identical layers is one `lax.scan`, so a
   deep model traces in the time one layer takes. But a scanned stack stacks
-  its activations and does not fuse across layers. Stacks of up to 16 layers
-  are now given to XLA unrolled (`expex.config(unroll_layers=...)`). This
+  its activations and does not fuse across layers. Stacks of up to 32 layers
+  are now given to XLA unrolled (`expex.config(unroll_layers=...)`), with a
+  barrier between layers that keeps compile time linear in the depth. This
   closed Mamba's generation gap, whose original unrolls its layers.
 
 After these changes, [docs/reference.md](reference.md#ported-projects)

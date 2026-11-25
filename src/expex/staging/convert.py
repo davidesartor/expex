@@ -1011,7 +1011,8 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
     except KeyError as e:
         raise NotConverted(f"free variable {e} could not be resolved") from None
     raw.__globals__.setdefault(FLOW, runtime)
-    inner = inner.replace(co_name=orig_name, co_qualname=raw.__qualname__)
+    inner = _renamed(inner.replace(co_name=orig_name, co_qualname=raw.__qualname__),
+                     f"{factory.name}.<locals>.{fdef.name}", raw.__qualname__)  # fmt: skip
     new = types.FunctionType(inner, raw.__globals__, raw.__name__, raw.__defaults__, closure or None)
     new.__kwdefaults__ = raw.__kwdefaults__
     new.__qualname__ = raw.__qualname__
@@ -1025,6 +1026,21 @@ def convert(raw: Callable[..., Any]) -> Callable[..., Any]:
     new.__expex_defs__ = conv.defs  # type: ignore[attr-defined]
     new.__expex_local_names__ = conv.local_names  # type: ignore[attr-defined]
     return new
+
+
+def _renamed(code: types.CodeType, old: str, new: str) -> types.CodeType:
+    """``code`` with the generated functions inside it named after the user's function.
+
+    Tracebacks and the tools (``expex.cost``'s notes, ``debug.profile``) then show
+    ``line_length.<locals>.__bn_body_3__``, not ``__bn_factory__.<locals>.__bn_fn__...``.
+    """
+    consts = tuple(
+        _renamed(c.replace(co_qualname=new + c.co_qualname[len(old):]) if c.co_qualname.startswith(old) else c, old, new)
+        if isinstance(c, types.CodeType) else c
+        for c in code.co_consts
+    )  # fmt: skip
+    changed = any(a is not b for a, b in zip(consts, code.co_consts))  # code objects compare equal renamed
+    return code.replace(co_consts=consts) if changed else code
 
 
 def _rewrite(tree: ast.Module, fdef: ast.FunctionDef, raw: Any) -> tuple[_Converter, int]:

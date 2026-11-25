@@ -83,6 +83,21 @@ def test_prove_subcommand_and_the_old_form_agree(package):
     assert "3 functions: 3 proved" in new.stdout
 
 
+def test_a_folder_that_is_not_a_package_proves_each_file(tmp_path):
+    # was: ValueError: Empty module name
+    write(tmp_path / "scripts" / "core.py", CORE)
+    write(tmp_path / "scripts" / "other.py", OTHER)
+    write(tmp_path / "scripts" / "sub" / "other.py", OTHER.replace("ident", "same"))  # a second other.py
+    write(tmp_path / "scripts" / "broken.py", "import not_a_module_anywhere\n")
+    r = expex("scripts/", cwd=tmp_path)
+    assert "3 functions: 3 proved" in r.stdout, r.stdout + r.stderr
+    assert "ok    core.double" in r.stdout and "ok    sub_other.same" in r.stdout
+    assert re.search(r"error: scripts/broken.py: could not import it: ModuleNotFoundError", r.stdout)
+    assert r.returncode == 1  # a file that does not import is an error
+    (tmp_path / "scripts" / "broken.py").unlink()
+    assert expex("scripts", cwd=tmp_path).returncode == 0
+
+
 def test_help_lists_the_subcommands(tmp_path):
     r = expex("--help", cwd=tmp_path)
     assert r.returncode == 0

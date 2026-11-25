@@ -163,3 +163,19 @@ def test_html(setup, tmp_path):
     assert page.count('class="flag"') == len(w.flagged) > 0
     assert page.count("<svg") > 20 and "prefers-color-scheme:dark" in page
     assert "blocks[2].mlp.__call__" in w._repr_html_()
+
+
+def test_repeated_modules_without_gradients(setup):
+    # the loss does not reach the blocks (only `aux` does): their group of layers has
+    # no gradient statistics, and statistics.median([]) raised StatisticsError
+    m, batch = setup
+
+    def loss(m):
+        out = m.vectorize(batch[:, :-1])  # every block runs
+        return (m.embed**2).mean(), out
+
+    w = watch(loss, m)
+    blocks = [r for r in w.rows if r.name.startswith("blocks[") and r.name.endswith("].__call__")]
+    assert len(blocks) == 3 and all(r.grad is None for r in blocks)
+    assert not any("gradient" in f for r in blocks for f in r.flags)
+    assert "blocks[1].__call__" in w._repr_html_() and "blocks[1].__call__" in str(w)

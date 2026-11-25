@@ -328,6 +328,13 @@ ShapeError: normalize(): argument `scale` does not match its annotation, even wi
   `expex.config(vectorize=False)` (or `EXPEX_VECTORIZE=0`) for all of them.
   `@expex.fn(vectorize=True)`, or `@expex.vectorize`, keeps it on for one
   function regardless.
+- Functions annotated jaxtyping's way (`Float[Array, "b d"]`) are not mapped
+  by themselves: they behave as `vectorize=False` unless the function says
+  `vectorize=True` or `expex.config.vectorize` is set explicitly (by
+  `expex.config(vectorize=True)`, by assigning it, or by `EXPEX_VECTORIZE`).
+  Their annotations were often never enforced, and mapping would turn a real
+  mismatch into a confusing error later on
+  ([Coming from jaxtyping](porting.md#coming-from-jaxtyping)).
 
 Outside `jax.jit`, a mapped call would be traced again and run operation by
 operation on every call. So from the second call with the same shapes, dtypes

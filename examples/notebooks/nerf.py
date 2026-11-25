@@ -80,9 +80,9 @@ expex.prove(nerf)
 
 # %% [markdown]
 # **A summary** of the model. The MLPs' view-direction width `V` only appears inside `W + V`
-# (the colour branch takes the features and the encoded direction), so it cannot be read back
-# from the parameters alone: the summary shows `V=?`, and estimates for `NeRF`'s own methods need
-# the call's arguments. The MLP and the compositing are costed as formulas:
+# (the colour branch takes the features and the encoded direction); expex solves for it once
+# `W` is known from another layer. The MLP, the compositing and a whole ray are costed as
+# formulas; `P` and `V` are numbers there, fixed by the encoding degrees (the `assert` in `shade`):
 
 # %%
 expex.summary(model)
@@ -90,6 +90,7 @@ expex.summary(model)
 # %%
 print(expex.cost(nerf.MLP.__call__))
 print(expex.cost(nerf.composite))
+print(expex.cost(nerf.NeRF.render))
 
 # %% [markdown]
 # **A diagram** of the MLP, drawn from the code (interactive when you run the notebook): the

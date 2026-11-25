@@ -51,7 +51,7 @@ grads = jax.grad(lambda m: m(jnp.ones((4, 16))).sum())(model)   # a Stack too
 - Every method is an `@expex.fn` sharing the class's sizes, so
   `expex.prove(Block.__call__)` works without an instance.
 - A loop over identical layers is one `lax.scan`, so a deep model traces in
-  the time one layer takes. Up to 16 layers (`expex.config(unroll_layers=...)`,
+  the time one layer takes. Up to 32 layers (`expex.config(unroll_layers=...)`,
   or `EXPEX_UNROLL_LAYERS`; 0 for never), XLA gets the scan unrolled, which
   runs faster (activations are not stacked) and compiles about as fast, faster
   for gradients; deeper stacks stay one loop.
@@ -84,6 +84,17 @@ class Heads[D]:
 Heads(jnp.eye(8)).split(jnp.ones((5, 8))).shape      # (4, 5, 2)
 print(expex.prove(Heads.split).ok)                      # True
 ```
+
+**Type checkers** (pyright, mypy) see `@expex.struct` as a frozen
+dataclass (`typing.dataclass_transform`): they know the fields, their types,
+the value constructor `Block(w, b)`, and that assigning a field is an
+error. They do not know the constructor that builds from a key:
+`Stack(key, D=64)` is flagged (no parameter `D`, a key where a field is
+expected), and an initializer default (`w: f32[D, D] = normal(0.1)`) counts
+as a default, so a field without one after it is flagged too. Silence those
+lines with `# type: ignore[call-arg]` / `# pyright: ignore`, or build with
+`expex.build(Stack, key, D=64)`. Shapes are not checked statically: every
+array annotation is `jax.Array` to them.
 
 
 ## Changing part of a model

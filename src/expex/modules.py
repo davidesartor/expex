@@ -49,7 +49,7 @@ import functools
 import inspect
 import operator
 import re
-from typing import Any, Callable, Generic, TypeVar, overload
+from typing import Any, Callable, Generic, TypeVar, dataclass_transform, overload
 
 import jax
 import jax.numpy as jnp
@@ -78,6 +78,7 @@ _SKIP = {"__init__", "__post_init__", "__repr__", "__eq__", "__hash__", "__init_
 def struct(cls: T, /) -> T: ...
 @overload
 def struct(*, compute: Any = None, **moved: Any) -> Callable[[T], T]: ...
+@dataclass_transform(frozen_default=True)
 def struct(cls: Any = None, /, *, compute: Any = None, **moved: Any) -> Any:
     """Turn a class into a typed module. See the module docstring.
 
