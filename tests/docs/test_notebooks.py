@@ -18,7 +18,7 @@ import sys
 
 import pytest
 
-ROOT = pathlib.Path(__file__).parent.parent
+ROOT = pathlib.Path(__file__).parents[2]
 HERE = ROOT / "examples" / "notebooks"
 
 _spec = importlib.util.spec_from_file_location("notebooks_build", HERE / "build.py")

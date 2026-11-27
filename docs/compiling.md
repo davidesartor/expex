@@ -188,10 +188,9 @@ P('model',)
   other arrays (the step count) keep their placement.
 - `donate=` is as for `@expex.fn(jit=True)`: parameter names, or `"auto"` for
   what each call site reassigns.
-- `expex.save` takes any pytree holding structs, and `expex.load` reads it
-  back into a template of the same structure, checking every struct against
-  its annotations. With `mesh=` and `names=`, each array goes straight from
-  the file to its devices.
+- `expex.save` and `expex.load` take the whole training state
+  ([Saving and loading](modules.md#saving-and-loading)); with `mesh=` and
+  `names=`, each array goes straight from the file to its devices.
 
 [`examples/multidevice/train.py`](../examples/multidevice/train.py) trains the
 transformer of `examples/` on a 4 × 2 data × model mesh of 8 simulated CPU

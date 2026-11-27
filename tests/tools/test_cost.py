@@ -15,7 +15,7 @@ import expex
 from expex import f32, fn
 from expex.tools.cost import Poly, cost
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 def P(s: str) -> Poly:

@@ -13,7 +13,7 @@ import pytest
 import expex
 from expex.annotations.errors import CODES, DOCS_URL, code_of, coded, see, strip_see
 
-ROOT = pathlib.Path(__file__).parent.parent
+ROOT = pathlib.Path(__file__).parents[2]
 SRC = ROOT / "src" / "expex"
 PAGE = ROOT / "docs" / "errors.md"
 

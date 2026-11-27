@@ -392,7 +392,8 @@ def _between_layers(step: Callable[..., Any]) -> Callable[..., Any]:
     layer's fusions, which grows with the square of the depth: twice the
     compile time of the rolled loop, for no gain at run time. With it, the
     unrolled stack compiles faster than the rolled loop up to at least 64 layers
-    and runs as fast as without it (benchmarks/results/compile-cpu-2026-11-23.md).
+    and runs as fast as without it (benchmarks/results/compile-cpu-2026-11-23.md as of
+    commit 2891a76).
     """
 
     def barred(carry: tuple[Any, ...], xi: Any) -> Any:

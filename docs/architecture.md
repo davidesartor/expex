@@ -1,4 +1,8 @@
-# How expex is put together
+# Architecture
+
+[← The design of expex](design.md) · [Contents](README.md)
+
+How expex is put together, for contributors.
 
 Everything starts from `@expex.fn` (`decorators.py`), which makes an `Fn` (`function.py`);
 `@expex.vectorize` and `@expex.random` set flags on the same `Fn`, so they stack in any order.
@@ -64,5 +68,15 @@ The tools that need no data (`prove`, `cost`, `profile`, `summary`, `diagram`,
 `debug.shapes`) all go through `tools/trace.py`: `resolve(target, sizes)` then
 `.trace(n)`, with lists of modules given `n` elements.
 
-Tests: `tests/` per feature, `tests/regressions/` for bugs found by reviews,
-`tests/ports/` for ports checked against their originals.
+Tests, one file per feature, by area: `tests/core/` (checked calls, annotations, sizes,
+staging, batching, modules, interop), `tests/tools/` (the prover, cost, summary, diagrams,
+debugging tools, checkpoints, sharding, the command line and the pytest plugin), `tests/docs/`
+(every code block of the README and the guide, the notebooks, `expex.prove` on every
+example), `tests/typing/` (pyright and mypy on `usage.py`), `tests/ports/` for ports checked
+against their originals (with `tests/data/`), `tests/regressions/` for bugs found by reviews,
+ports and fuzzing, and `tests/fuzz/` for the differential fuzzer (`test_fuzz_smoke.py` in CI,
+`python -m tests.fuzz.run` for long runs).
+
+---
+
+[← The design of expex](design.md) · [Contents](README.md)

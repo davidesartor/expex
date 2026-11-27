@@ -1,4 +1,4 @@
-"""mkdocs hooks for the docs site (see mkdocs.yml).
+"""mkdocs hooks for the docs site (see mkdocs.yml, which keeps this file out of the site).
 
 - The front page is the repository's README.md, the guide's index is docs/README.md
   (served as guide.md), and CHANGELOG.md is a page too, so that each is written once.
@@ -14,7 +14,7 @@ from pathlib import Path
 
 from mkdocs.structure.files import File
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).parent.parent  # this file is docs/mkdocs_hooks.py
 GITHUB = "https://github.com/davidesartor/expex/blob/main/"
 
 # site page -> the repository file it comes from

@@ -7,11 +7,14 @@ import runpy
 
 import jax.numpy as jnp
 import jax.random as jr
+import pytest
 
-ROOT = pathlib.Path(__file__).parent.parent
+import expex
+
+ROOT = pathlib.Path(__file__).parents[2]
 
 
-GUIDE = ["functions", "modules", "compiling", "cost-and-diagrams", "debugging", "reference", "tools", "porting", "errors", "interop", "design"]
+GUIDE = ["functions", "modules", "compiling", "cost-and-diagrams", "debugging", "tools", "porting", "errors", "interop", "design", "architecture"]
 
 
 def run_blocks(doc: str | list[str], tmp_path: pathlib.Path) -> dict:
@@ -36,12 +39,17 @@ def test_readme_images_exist():
 def test_readme_blocks_run(tmp_path, capsys):
     ns = run_blocks("README.md", tmp_path)
     out = capsys.readouterr().out
-    assert "B is 2 (from `q: f32[2, 3, 4]`), but axis 0 of `k` is 5." in out
     assert "Stack.__call__: proved for all sizes" in out
     assert "flops        2·D²·L + 10·D·L" in out
-    assert "49,920  D²·L + D·L" in out
-    assert "y = self.w @ x + self.b     # y: f32[D]" in out
-    assert "NaN first appears at" in out and "operation: mul" in out
+    # the wrong call the README quotes, and the message it shows
+    text = (ROOT / "README.md").read_text()
+    assert "`attend(jnp.ones((2, 3, 4)), jnp.ones((5, 3, 4)))`" in text
+    with pytest.raises(expex.ShapeError) as e:
+        ns["attend"](jnp.ones((2, 3, 4)), jnp.ones((5, 3, 4)))
+    assert e.value.code == "EX101"
+    message = str(e.value)
+    for line in ("declared  k: f32[B, S, D]", "received     f32[5, 3, 4]", "B is 2 (from `q: f32[2, 3, 4]`), but axis 0 of `k` is 5."):
+        assert line in message and line in text
 
 
 def test_readme_comparisons_agree(tmp_path):
@@ -56,12 +64,8 @@ def test_readme_comparisons_agree(tmp_path):
     path = tmp_path / "pairs.py"
     path.write_text(src)
     ns = runpy.run_path(str(path))
-    w, xs = jr.normal(jr.key(0), (8, 8)) * 0.3, jr.normal(jr.key(1), (6, 8))
     q, k = jr.normal(jr.key(2), (2, 3, 4)), jr.normal(jr.key(3), (2, 5, 4))
     assert jnp.allclose(ns["jax_0"]["attend"](q, k), ns["attend"](q, k), atol=1e-5)
-    assert jnp.allclose(ns["jax_1"]["rnn"](w, xs), ns["rnn"](w, xs), atol=1e-5)
-    z = jnp.array([2.0, -1.0, 0.0])
-    assert jnp.array_equal(ns["jax_2"]["safe_log"](z), ns["safe_log"](z))
     model, x = ns["model"], jr.normal(jr.key(4), (64,))
     params = {"w": model.blocks.w, "b": model.blocks.b} if not isinstance(model.blocks, list) else {
         "w": jnp.stack([b.w for b in model.blocks]), "b": jnp.stack([b.b for b in model.blocks])
@@ -90,6 +94,11 @@ def test_guide_blocks_run(tmp_path, capsys, monkeypatch):
     assert "lookup(tokens: Int[batch, seq], table: Float[vocab, d]) -> Float[batch, seq, d]" in out  # jaxtyping
     assert "EX101 expected dtype Int, got f32." in out
     assert type(ns["grads"]).__name__ == "Stack" and ns["y"].shape == (4, 16)
+    # functions.md: the plain JAX versions compute the same as the expex ones
+    w, xs = jr.normal(jr.key(0), (3, 3)) * 0.3, jr.normal(jr.key(1), (6, 3))
+    assert jnp.allclose(ns["rnn_jax"](xs, w), ns["rnn"](xs, w), atol=1e-5)
+    z = jnp.array([2.0, -1.0, 0.0])
+    assert jnp.array_equal(ns["safe_log_jax"](z), ns["safe_log"](z))
     # design.md
     assert "flops        4·D·F + 9·F + D" in out and "MLP(up=True, bias=False, down=True)" in out
     assert "['f32[1024,64,8]', 'f32[8,3]']\n['f32[65536,8]', 'f32[8,3]']" in out

@@ -74,7 +74,8 @@ class Config:
         #: lists of up to this many layers are unrolled in the compiled program
         #: (``lax.scan(unroll=True)``, a barrier between layers), which runs faster (no
         #: stacked activations) and, on CPU, compiles gradients faster than the rolled
-        #: loop from 2 to 64 layers (benchmarks/results/compile-cpu-2026-11-23.md). 0: never.
+        #: loop from 2 to 64 layers (benchmarks/results/compile-cpu-2026-11-23.md, as of
+        #: commit 2891a76). 0: never.
         self.unroll_layers: int = int(os.environ.get("EXPEX_UNROLL_LAYERS", "32"))
         #: Map a call over extra leading axes of its arguments, when that is all that
         #: keeps them from matching (``@expex.fn(vectorize=False)`` opts one function out).

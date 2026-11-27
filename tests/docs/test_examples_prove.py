@@ -9,7 +9,7 @@ import pytest
 
 import expex
 
-ROOT = pathlib.Path(__file__).parent.parent
+ROOT = pathlib.Path(__file__).parents[2]
 EXAMPLES = sorted(
     p for p in (ROOT / "examples").glob("**/*.py")
     if "notebooks" not in p.parts and "__pycache__" not in p.parts

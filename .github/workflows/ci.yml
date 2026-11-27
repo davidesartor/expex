@@ -14,7 +14,7 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.14"
-  # tests/test_notebooks.py runs in its own job below
+  # tests/docs/test_notebooks.py runs in its own job below
   EXPEX_SKIP_NOTEBOOKS: "1"
 
 jobs:
@@ -83,4 +83,4 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
       - run: pip install -e ".[test]" optax matplotlib
-      - run: pytest -q -n auto -p no:cacheprovider tests/test_notebooks.py
+      - run: pytest -q -n auto -p no:cacheprovider tests/docs/test_notebooks.py

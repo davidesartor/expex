@@ -237,7 +237,7 @@ def test_the_transformer_in_bf16(monkeypatch):
     import pathlib
     import sys
 
-    monkeypatch.syspath_prepend(str(pathlib.Path(__file__).parent.parent / "examples"))
+    monkeypatch.syspath_prepend(str(pathlib.Path(__file__).parents[2] / "examples"))
     import transformer as T
 
     @expex.struct(compute=jnp.bfloat16)

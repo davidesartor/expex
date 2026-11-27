@@ -15,7 +15,7 @@ import pytest
 import expex
 from expex import f32
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture(scope="module")

@@ -18,7 +18,7 @@ from expex import Key, ShapeError, f32, fn
 from expex import batching
 from expex import function as _fn
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 @expex.struct

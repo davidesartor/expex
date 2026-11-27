@@ -1,6 +1,6 @@
 # Precision and debugging
 
-[← Cost and diagrams](cost-and-diagrams.md) · [Contents](README.md) · [Reference →](reference.md)
+[← Cost and diagrams](cost-and-diagrams.md) · [Contents](README.md) · [Command line and editors →](tools.md)
 
 ## Precision constants
 
@@ -123,4 +123,4 @@ blocks[5].__call__ ['activations growing: RMS ×2.8e+02 from blocks[4].__call__'
 
 ---
 
-[← Cost and diagrams](cost-and-diagrams.md) · [Contents](README.md) · [Reference →](reference.md)
+[← Cost and diagrams](cost-and-diagrams.md) · [Contents](README.md) · [Command line and editors →](tools.md)

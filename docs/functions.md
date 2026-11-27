@@ -244,6 +244,18 @@ jax.jit(rnn)(jnp.ones((100, 3)), jnp.eye(3))
 print(rnn.flow)        # {<line>: 'for -> lax.scan (carries h)'}
 ```
 
+In plain JAX, the same loop is a `lax.scan` with its step function written out,
+and the shapes live in a comment:
+
+```python
+def rnn_jax(xs, w):  # xs: [T, D], w: [D, D] -> [T, D]
+    def step(h, x):
+        h = jnp.tanh(w @ h + x)
+        return h, h
+    _, hs = jax.lax.scan(step, jnp.zeros(xs.shape[1]), xs)
+    return hs
+```
+
 On Python values every statement runs exactly as written. On traced values:
 
 - `if` becomes `lax.cond`, and `while` becomes `lax.while_loop`, with `break`,
@@ -286,6 +298,18 @@ def safe_log(x: f32) -> f32:
     return -jnp.inf
 
 safe_log(jnp.array([[1.0, -1.0], [jnp.e, 0.0]]))     # [[0, -inf], [1, -inf]]
+```
+
+In plain JAX, the same function takes two `jnp.where`s, the inner one to keep
+the branch not taken from making the gradient NaN. Called on an array, the
+`if` above runs as one select per element:
+
+```python
+@jax.jit
+def safe_log_jax(x):
+    ok = x > 0
+    safe = jnp.where(ok, x, 1.0)
+    return jnp.where(ok, jnp.log(safe), -jnp.inf)
 ```
 
 A call is mapped only when extra leading axes are all that keep its arguments
@@ -353,6 +377,43 @@ millisecond from the third call on. This changes what you see in Python:
   with `float(x)`, say) runs uncompiled, and is not compiled again.
 - `expex.config(compile_vectorized=False)` (or `EXPEX_COMPILE_VECTORIZED=0`)
   turns it off.
+
+## Annotation syntax
+
+Every kind of annotation, in one signature:
+
+```python
+from typing import Literal, NamedTuple
+from expex import Dim, Int, Key
+
+class RGB(Dim, size=3): ...          # a named fixed size
+
+class Params[D](NamedTuple):         # dataclasses work too
+    w: f32[D, D]
+    b: f32[D]
+
+@expex.fn
+def example[*Batch, H, W, Rows = 6, Cols = 7](   # Rows, Cols: sizes fixed at 6 and 7
+    img: f32[*Batch, H, W, RGB],     # *Batch: any number of axes
+    idx: Int[*Batch],                # any integer dtype
+    p: Params[W],                    # fields are checked, D is bound to W
+    pair: f32[Literal[2], ...],      # a literal size, then any axes
+    grid: f32[Rows, Cols],           # fixed sizes: 6 x 7, checked as Rows, Cols
+    scale: f32,                      # a scalar array or a Python number
+    steps: int = 1,                  # a plain Python value
+    key: Key | None = None,
+) -> f32[*Batch, H]:
+    return img.mean((-1, -2)) * scale * steps
+```
+
+| Kind | Annotations |
+|---|---|
+| Arrays | `f16 f32 f64 i8 … i64 u8 … u64 c64 c128`, any of a kind: `Float Int UInt Bool Complex Num Arr` |
+| Sizes | type parameters (`def f[B, T]`), `Literal[3]`, `class RGB(Dim, size=3)`, a type parameter fixed at a size (`def f[R = 3]`, `R = Literal[3]` or `R: Literal[3]`, then plain `R`), `*Rest` (any number of axes, the same everywhere), `...` (any number, unchecked), `Any` (one, unchecked) |
+| Derived sizes | `f32[T + 1]`, `f32[heads, D // heads]`, `f32[self.heads]`; constraints: a leading `assert T >= 2` |
+| Containers | `tuple[...]`, `list[X]`, `dict[str, X]`, `X \| None`, NamedTuples and dataclasses, generic ones too |
+| Stacked | `Batch[Transition, T, N]`: a `Transition` whose arrays all have leading axes `T, N` |
+| Plain values | `int`, `float`, `bool`, `str`, `Literal`, enums, callables, config classes |
 
 ---
 

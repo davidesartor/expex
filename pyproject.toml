@@ -95,5 +95,5 @@ exclude = ["__pycache__", "*.pyc", "*.ipynb"]
 testpaths = ["tests"]
 
 [tool.pyright]
-include = ["src", "tests/typing"]
+include = ["src", "tests/typing/usage.py"]
 pythonVersion = "3.14"

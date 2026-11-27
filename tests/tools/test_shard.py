@@ -31,7 +31,7 @@ def test_on_eight_devices():
     if EIGHT:
         pytest.skip("this process already has 8 devices; the tests ran here")
     env = dict(os.environ, XLA_FLAGS="--xla_force_host_platform_device_count=8")
-    src = os.path.join(os.path.dirname(__file__), "..", "src")
+    src = os.path.join(os.path.dirname(__file__), "..", "..", "src")
     env["PYTHONPATH"] = os.pathsep.join([src, env.get("PYTHONPATH", "")])
     r = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", __file__],

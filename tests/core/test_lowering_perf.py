@@ -192,7 +192,7 @@ def test_short_list_of_layers_is_one_scan_unrolled_when_compiled():
 
 
 def test_stacks_of_up_to_32_layers_unroll_by_default(monkeypatch):
-    # benchmarks/results/compile-cpu-2026-11-23.md: with the barrier between layers,
+    # benchmarks/results/compile-cpu-2026-11-23.md (as of commit 2891a76): with the barrier between layers,
     # unrolled gradients compile and run faster than the rolled loop from 2 to 64 layers.
     monkeypatch.delenv("EXPEX_UNROLL_LAYERS", raising=False)
     assert expex.function.Config().unroll_layers == 32

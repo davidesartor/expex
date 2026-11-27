@@ -8,7 +8,7 @@ shape error, `debug.watch`), checks it against the original's saved outputs in
 
 | Notebook | What it shows | |
 |---|---|---|
-| [quickstart](quickstart.ipynb) | The README's examples: checked shapes, loops and branches, modules, proofs, cost, `.at` edits, summary, diagrams (plain, timed, and the one a `ShapeError` carries), `inspect`, `find_nan`, `watch`, `annotate`; compiled-call speed against `jax.jit` and plain JAX | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidesartor/expex/blob/main/examples/notebooks/quickstart.ipynb) |
+| [quickstart](quickstart.ipynb) | The front page's examples and more: checked shapes, loops and branches, modules, proofs, cost, `.at` edits, summary, diagrams (plain, timed, and the one a `ShapeError` carries), `inspect`, `find_nan`, `watch`, `annotate`; compiled-call speed against `jax.jit` and plain JAX | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidesartor/expex/blob/main/examples/notebooks/quickstart.ipynb) |
 | [llama](llama.ipynb) | Llama 2 (llama-2-jax): training steps, KV-cache generation, a 7B-sized cost, a violated `T <= S` constraint, a planted exploding layer found by `watch`; logits to 7e-7, tokens exact | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidesartor/expex/blob/main/examples/notebooks/llama.ipynb) |
 | [mamba](mamba.ipynb) | Mamba (mamba-jax): the selective scan as a `for` loop staged as `lax.scan`, the mixer's diagram, a checked `.at` edit; logits to 6e-7, sampled tokens exact | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidesartor/expex/blob/main/examples/notebooks/mamba.ipynb) |
 | [vit](vit.ipynb) | The Vision Transformer: patches by axis names, the image size in the signature (a wrong image size refused), ViT-B/16's cost; logits to 5e-7 | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidesartor/expex/blob/main/examples/notebooks/vit.ipynb) |
@@ -65,7 +65,7 @@ python examples/notebooks/build.py --check              # are the .ipynb files u
 The committed outputs come from a run on a CPU. GitHub does not render inline pages with
 scripts, so in those outputs the interactive diagram and `expex.inspect` pages are PNG images
 (drawn by a headless browser) and the other expex displays their text. Running a notebook gives
-the interactive versions. `tests/test_notebooks.py` runs every notebook's code as a script and
+the interactive versions. `tests/docs/test_notebooks.py` runs every notebook's code as a script and
 checks that each `.ipynb` matches its source.
 
 The install cells and the badges point to the branch `main`: change `BRANCH` in

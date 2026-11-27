@@ -12,7 +12,7 @@ import pytest
 from expex.tools.diff import diff
 from expex.io import save
 
-ROOT = pathlib.Path(__file__).parent.parent
+ROOT = pathlib.Path(__file__).parents[2]
 sys.path.insert(0, str(ROOT / "examples"))
 from transformer import Transformer  # noqa: E402
 

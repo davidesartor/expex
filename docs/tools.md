@@ -1,6 +1,6 @@
 # Command line and editors
 
-[← Reference](reference.md) · [Contents](README.md) · [Porting JAX code →](porting.md)
+[← Precision and debugging](debugging.md) · [Contents](README.md) · [Porting JAX code →](porting.md)
 
 The prover and `expex.debug.shapes` from a terminal, while you edit, and in
 your editor. None of it needs example data.
@@ -147,4 +147,4 @@ install it from source.
 
 ---
 
-[← Reference](reference.md) · [Contents](README.md) · [Porting JAX code →](porting.md)
+[← Precision and debugging](debugging.md) · [Contents](README.md) · [Porting JAX code →](porting.md)

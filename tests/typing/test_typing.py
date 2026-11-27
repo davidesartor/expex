@@ -8,8 +8,8 @@ import sys
 
 import pytest
 
-ROOT = pathlib.Path(__file__).parent.parent
-USAGE = ROOT / "tests" / "typing" / "usage.py"
+ROOT = pathlib.Path(__file__).parents[2]
+USAGE = pathlib.Path(__file__).parent / "usage.py"
 EXPECTED = {
     i for i, line in enumerate(USAGE.read_text().splitlines(), 1) if "# E:" in line
 }

@@ -1,4 +1,5 @@
-"""The command line: `python -m expex [prove] ... [--watch]` and `python -m expex shapes`."""
+"""The command line (`python -m expex [prove] ... [--watch]`, `python -m expex shapes`) and the
+pytest plugin (`pytest --expex pkg`)."""
 
 import json
 import os
@@ -14,7 +15,7 @@ import time
 
 import pytest
 
-ROOT = pathlib.Path(__file__).parent.parent
+ROOT = pathlib.Path(__file__).parents[2]
 
 
 def env() -> dict[str, str]:
@@ -309,3 +310,64 @@ def test_docs_page_shows_real_output(tmp_path):
     assert r.stdout == text
     r = expex("shapes", "model.py", "--json", cwd=tmp_path)
     assert r.stdout.replace(str((tmp_path / "model.py").resolve()), "/path/to/model.py") == data
+
+
+# The pytest plugin, and the same module proved from the command line.
+
+MODULE = textwrap.dedent(
+    """
+    import jax.numpy as jnp
+    from expex import fn, f32
+
+    @fn
+    def good[B, T](x: f32[B, T]) -> f32[T, B]:
+        return x.T
+
+    @fn
+    def bad[B, T](x: f32[B, T]) -> f32[B, T]:
+        return x[:, 1:]
+
+    @fn
+    def needs_example[B](x: f32[B], mode: str) -> f32[B]:
+        return x if mode == "a" else -x
+
+    @fn(prove=False)
+    def opted_out[B](x: f32[B]) -> f32[B]:
+        return x[1:]
+    """
+)
+
+
+def test_plugin(pytester):
+    pytester.makepyfile(shapes_mod=MODULE)
+    pytester.syspathinsert()
+    result = pytester.runpytest("--expex", "shapes_mod", "-rs")
+    result.assert_outcomes(passed=1, failed=1, skipped=1)
+    result.stdout.fnmatch_lines(
+        [
+            "*returned     f32?B, T - 1?*",
+            "*Static parameter `mode` has no default*",
+        ]
+    )
+
+
+def test_plugin_ini_and_off_by_default(pytester):
+    pytester.makepyfile(shapes_mod=MODULE, test_x="def test_x(): pass")
+    pytester.syspathinsert()
+    pytester.runpytest().assert_outcomes(passed=1)
+    pytester.makeini("[pytest]\nexpex = shapes_mod\n")
+    pytester.runpytest().assert_outcomes(passed=2, failed=1, skipped=1)
+
+
+def test_cli_proves_a_module_by_name(tmp_path):
+    (tmp_path / "shapes_cli.py").write_text(MODULE)
+    r = subprocess.run(
+        [sys.executable, "-m", "expex", "shapes_cli"],
+        cwd=tmp_path, capture_output=True, text=True,
+    )  # fmt: skip
+    assert r.returncode == 1
+    assert "ok    shapes_cli.good" in r.stdout
+    assert "FAIL  shapes_cli.bad" in r.stdout
+    assert "skip  shapes_cli.needs_example" in r.stdout
+    assert "opted_out" not in r.stdout
+    assert "3 functions: 1 proved, 1 unchecked, 1 failed" in r.stdout

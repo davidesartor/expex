@@ -1,4 +1,4 @@
-"""Type-checked by pyright and mypy in tests/test_typing.py; never executed."""
+"""Type-checked by pyright and mypy in tests/typing/test_typing.py; never executed."""
 
 from dataclasses import dataclass
 from typing import Any, Literal, NamedTuple, assert_type

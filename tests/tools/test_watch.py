@@ -13,7 +13,7 @@ import expex
 from expex import f32, fn
 from expex.tools.watch import watch
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "examples"))
+sys.path.insert(0, str(Path(__file__).parents[2] / "examples"))
 from transformer import Transformer  # noqa: E402
 
 

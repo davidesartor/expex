@@ -31,16 +31,12 @@ The current numbers, which the README and the docs quote (CPU only; no GPU run y
 | [`compile-cpu-2026-11-25-v0.1.md`](results/compile-cpu-2026-11-25-v0.1.md) / [`.json`](results/compile-cpu-2026-11-25-v0.1.json) | compile times, best of 5 cold compiles |
 | [`overhead-cpu-2026-11-25-v0.1.md`](results/overhead-cpu-2026-11-25-v0.1.md) / [`.json`](results/overhead-cpu-2026-11-25-v0.1.json) | per-call overhead against plain JAX, 40 rounds |
 
-History, kept for comparison and no longer quoted. These were taken on a shared VM under heavy
-load (load average 9 to 20), before the lowering fixes of later commits, so their spreads are
-wide and some speedups differ a lot from the v0.1 run (Mamba's forward pass measured 14x there,
-5.2x on the quiet machine):
-
-| File | What |
-|---|---|
-| [`cpu-2026-11-23.md`](results/cpu-2026-11-23.md) / [`.json`](results/cpu-2026-11-23.json), [`cpu-2026-11-23-vit-mctx-nerf.json`](results/cpu-2026-11-23-vit-mctx-nerf.json) | the first full runs (ViT, mctx and NeRF in a separate run, appended to the same `.md`) |
-| [`cpu-2026-11-23-quick.md`](results/cpu-2026-11-23-quick.md) / [`.json`](results/cpu-2026-11-23-quick.json) | a `--quick` smoke run |
-| [`compile-cpu-2026-11-23.md`](results/compile-cpu-2026-11-23.md) / [`.json`](results/compile-cpu-2026-11-23.json), [`unroll-cpu-2026-11-23.json`](results/unroll-cpu-2026-11-23.json) | the compile-time investigation (before and after the layer barrier) and `unroll_layers` settings |
+Earlier runs (2026-11-23: the first full runs, a `--quick` smoke run, the compile-time
+investigation and the `unroll_layers` sweep) were taken on a shared VM under heavy load
+(load average 9 to 20), before the lowering fixes, so their spreads were wide and some
+speedups differed a lot from the v0.1 run (Mamba's forward pass measured 14x there, 5.2x on
+the quiet machine). They are no longer quoted and were removed; they are in the history at
+commit `2891a76` (`git show 2891a76:benchmarks/results/cpu-2026-11-23.md`).
 
 ## Running it on a GPU box, from scratch
 

@@ -14,7 +14,7 @@ import expex
 from expex import f32
 from expex.io import load, save
 
-ROOT = pathlib.Path(__file__).parent.parent
+ROOT = pathlib.Path(__file__).parents[2]
 sys.path.insert(0, str(ROOT / "examples" / "mamba"))
 import mamba  # noqa: E402
 

@@ -19,7 +19,7 @@ from expex import _diagram
 from expex import function as _fn
 from expex._diagram import Diagram, diagram
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 NS = "{http://www.w3.org/2000/svg}"
 
 

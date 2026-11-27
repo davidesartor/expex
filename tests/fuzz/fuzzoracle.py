@@ -113,10 +113,6 @@ class Outcome:
         return f"{self.mode}:{self.kind}"
 
 
-def _kind(v: Any) -> str:
-    return np.asarray(v).dtype.kind
-
-
 def same(truth: Any, got: Any, exact_dtype: bool = False) -> str | None:
     """None if ``got`` means the same as ``truth``; else why not."""
     try:
